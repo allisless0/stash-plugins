@@ -18,6 +18,10 @@ adding support for vibrating toys, which the original did not drive.
 If a funscript sits next to the video with the same base name, it loads
 automatically and the toolbar shows `♪ filename`.
 
+You do not need a toy connected for that. Scripts are found and loaded, and the
+signal preview works, as soon as the backend is running — useful for checking a
+script or a vibe mode before you connect anything.
+
 ## The toolbar
 
 **Device live / Device muted** is the master switch. Muted means nothing

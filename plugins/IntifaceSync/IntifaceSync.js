@@ -649,6 +649,11 @@
       }
       autoConnectIntiface();
 
+      if (pendingFindFunscripts !== null) {
+        sendMsg({ type: "findFunscripts", videoPath: pendingFindFunscripts.videoPath });
+        pendingFindFunscripts = null;
+      }
+
       // Heartbeat feeds the backend deadman. While the video plays it also
       // carries currentTime, so the backend can correct clock drift instead of
       // free-running from the last play/seek.
@@ -2181,7 +2186,6 @@ function injectStyles() {
 
     const hotkeyBtn = document.createElement("button");
     hotkeyBtn.id = `${PLUGIN_ID}-hotkey-btn`;
-    updateHotkeyBtn();
     hotkeyBtn.addEventListener("click", () => {
       if (!hotkeysAllowed) return;      // the plugin setting wins
       hotkeysOn = !hotkeysOn;
@@ -2189,6 +2193,7 @@ function injectStyles() {
       saveSettingsToStorage();
     });
     row2.appendChild(hotkeyBtn);
+    updateHotkeyBtn();        // only after mounting: byId cannot see it before
 
     const scopeBtn = document.createElement("button");
     function updateScopeBtn() {
@@ -2399,8 +2404,8 @@ function injectStyles() {
     currentScenePath = videoPath;
 
     if (videoPath) {
-      if (intifaceReady) sendMsg({ type: "findFunscripts", videoPath });
-      else               pendingFindFunscripts = { videoPath };
+      if (wsReady) sendMsg({ type: "findFunscripts", videoPath });
+      else         pendingFindFunscripts = { videoPath };
     }
 
     toolbarInjected = false;

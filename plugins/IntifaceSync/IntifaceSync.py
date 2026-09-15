@@ -1540,7 +1540,10 @@ class FunscriptPlayer:
             # vibrating devices (Lovense etc.) – continuous intensity
             if self.vibe_mode != "off":
                 scalar_devs = self.bp.scalar_devices()
-                if scalar_devs:
+                # With the preview on, tick even with no device attached: the
+                # scope should show what would be sent. _send_level() loops the
+                # device list, so an empty one emits nothing.
+                if scalar_devs or self.preview_cb is not None:
                     await self._vibe_tick(now_ms, scalar_devs)
 
             # stroking devices – keyframe driven (original behaviour)
@@ -1712,10 +1715,13 @@ class BackendServer:
                                  "smooth": MANUAL_DEFAULT_SMOOTH,
                                  "micro_ms": MANUAL_DEFAULT_MICROMS}
 
-        # Intiface
-        self.bp               = None
-        self.player           = None
+        # Intiface. The client and player exist before anything is connected so
+        # script loading and the signal preview work without a device attached;
+        # ButtplugClient._send() is a no-op while its socket is closed, so an
+        # idle player cannot drive anything.
         self._intiface_url    = "ws://localhost:12345"
+        self.bp               = ButtplugClient(self._intiface_url)
+        self.player           = FunscriptPlayer(self.bp)
 
         # Handy WiFi
         self._handy_key       = ""
@@ -1877,6 +1883,10 @@ class BackendServer:
             if self.player:
                 self.player.preview_cb = self._preview_emit if self._preview_on else None
                 self.player._preview_buf = []
+                # Without a device the loop may not be running; the scope needs
+                # it to produce anything at all.
+                if self._preview_on and (self.player.playing or self.player.manual_enabled):
+                    self.player._ensure_loop()
             log.info(f"Signal preview: {'on' if self._preview_on else 'off'}")
             await self._broadcast_status()
             return
@@ -1914,9 +1924,15 @@ class BackendServer:
                 except Exception as e:
                     log_debug(f"Disconnect before reconnect failed (ignored): {e}")
 
+            carried = self.player.actions if self.player else None
+
             self.bp     = ButtplugClient(url)
             self.player = FunscriptPlayer(self.bp)
 
+            # A script loaded while idle must survive the swap, or connecting a
+            # device would silently unload it.
+            if carried and self._pending_actions is None:
+                self.player.load(carried)
             if self._pending_actions is not None:
                 log.info(f"Loading buffered funscript ({len(self._pending_actions)} actions)")
                 self.player.load(self._pending_actions)

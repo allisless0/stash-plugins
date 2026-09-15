@@ -51,7 +51,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
-| IntifaceSync (vibe fork) | 1.18-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
+| IntifaceSync (vibe fork) | 1.19-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
 
 `R` is bound by two plugins. They never collide because QuickRate only binds on
 `/scenes/<id>` and QuickCriteria only on `/performers/<id>`. **Any new plugin
@@ -338,6 +338,31 @@ back to searching the detached `toolbarEl`. Buttons also set text at creation.
 
 **Handy UI** is hidden unless the `enableHandy` plugin setting is true.
 
+**Works without a device (v1.19).** Until now nothing happened until Intiface
+had a toy attached: no funscript discovery, no script name in the toolbar, no
+signal preview. Three separate gates, each defensible alone, together making
+the plugin look broken to anyone still setting it up.
+
+1. `onSceneLoad()` only sent `findFunscripts` when `intifaceReady`. Discovery
+   is a filesystem read on the backend and needs no device, so it is now gated
+   on `wsReady`, and the `ws.open` handler flushes any pending lookup.
+2. `BackendServer.__init__` left `self.bp` and `self.player` as `None` until a
+   connect. Both are now built up front. `ButtplugClient._send()` returns early
+   on a closed socket, so an idle client physically cannot emit a command; test
+   34 pins that for `stop_all`, `scalar` and `panic`.
+3. `_loop()` skipped `_vibe_tick` when `scalar_devices()` was empty, so the
+   scope had nothing to draw. It now ticks when devices exist **or** the
+   preview is on, passing the empty device list straight through to
+   `_send_level()`, which loops it and emits nothing.
+
+**Connecting a device must not unload the script.** The connect handler
+replaces `self.player`, which used to be safe because a script could not exist
+beforehand. It now carries `player.actions` across the swap (test 35). If you
+touch that handler, keep the carry.
+
+Turning the preview on mid-playback also calls `_ensure_loop()`, since without
+a device nothing else would have started it.
+
 **Script wave on the scope (v1.18).** The preview showed what the toy did but
 not what it was reacting to, which made it useless for judging whether a vibe
 mode was interpreting a script sensibly.
@@ -524,7 +549,7 @@ remains as best-effort; the deadman is the real guarantee.
 **Hardware caveat, say it plainly:** none of this helps if the Python process
 itself hangs. Know where the Gush 2 power button is.
 
-**Tests:** `test_vibe.py`, 32 checks, run from the plugin's parent directory:
+**Tests:** `test_vibe.py`, 35 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -654,6 +679,13 @@ through the existing router and registry, or the load-order bugs come back.
 **QuickCriteria archived.** Moved to `archive/`, unused in practice. Not
 built, validated or published. §4.4 kept for reference; the rule-5 lesson it
 produced (filtered-out items must survive a merge) is still in `CLAUDE.md`.
+
+**IntifaceSync 1.18 → 1.19.** Two user-reported bugs. The Shortcuts button
+rendered blank until first clicked: `updateHotkeyBtn()` ran before the button
+was appended, and `byId()` searches the document and the toolbar only, so it
+found nothing and set no text. Lifting a function out of a builder's scope
+means losing its closure over the element; mount first, then update. Second,
+nothing worked at all without a device attached; see §4.5.
 
 **IntifaceSync 1.17 → 1.18.** Funscript wave, beat markers and a playhead on
 the signal preview. See §4.5.

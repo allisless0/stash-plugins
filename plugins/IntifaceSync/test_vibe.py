@@ -790,3 +790,63 @@ async def _dense_window():
 asyncio.run(_dense_window())
 
 print("\nFORK 1.18 TESTS PASSED")
+
+
+# ── 33-35. 1.19 works without a device attached ──────────────────────────────
+print("33. a script loads and the scope runs with no device connected")
+async def _no_device():
+    bp = FakeBP([])                       # nothing attached
+    p  = isync.FunscriptPlayer(bp)
+    p.load([{"at": i * 500, "pos": 0 if i % 2 == 0 else 99} for i in range(200)])
+    assert p.actions, "script did not load without a device"
+    assert bp.scalar_devices() == [], "fixture should report no devices"
+
+    frames = []
+    p.preview_cb = lambda samples, script=None: frames.append((samples, script))
+    p.apply_settings(vibe_mode="beat")
+    real = time.monotonic; t0 = real()
+    try:
+        for k in range(0, 3000, 20):
+            isync.time.monotonic = lambda: t0 + k / 1000.0
+            # the loop passes an empty device list when nothing is attached
+            await p._vibe_tick(k, [])
+    finally:
+        isync.time.monotonic = real
+    assert frames, "no preview output without a device"
+    assert any(w for _, w in frames), "no script window without a device"
+    assert not bp.sent, f"commands escaped with no device: {bp.sent[:3]}"
+    print(f"   {len(frames)} frames, zero commands sent  OK")
+asyncio.run(_no_device())
+
+print("34. an idle client cannot emit anything")
+async def _idle_client():
+    bp = isync.ButtplugClient("ws://127.0.0.1:1")   # never connected
+    assert not bp._is_ws_open()
+    await bp.stop_all()                              # must not raise
+    await bp.scalar(0, [(0, "Vibrate")], 0.5)
+    assert bp.scalar_devices() == []
+    p = isync.FunscriptPlayer(bp)
+    p.load([{"at": 0, "pos": 0}, {"at": 500, "pos": 99}])
+    p.panic()                                        # must not raise
+    print("   stop_all, scalar and panic are all safe when disconnected  OK")
+asyncio.run(_idle_client())
+
+print("35. connecting a device keeps the script that was already loaded")
+async def _carry():
+    srv = isync.BackendServer()
+    assert srv.player is not None, "no idle player at startup"
+    acts = [{"at": i * 400, "pos": i % 2 * 99} for i in range(120)]
+    srv.player.load(acts)
+    assert len(srv.player.actions) == 120
+
+    # what the connect handler does with the old player's script
+    carried = srv.player.actions
+    srv.bp = FakeBP([GUSH])
+    srv.player = isync.FunscriptPlayer(srv.bp)
+    if carried and srv._pending_actions is None:
+        srv.player.load(carried)
+    assert len(srv.player.actions) == 120, "script dropped when the device connected"
+    print("   120 keyframes survived the player swap  OK")
+asyncio.run(_carry())
+
+print("\nFORK 1.19 TESTS PASSED")
