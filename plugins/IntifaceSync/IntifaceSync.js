@@ -1694,8 +1694,13 @@ function injectStyles() {
   }
 
   function buildManualPopover() {
+    injectStyles();          // it lives on document.body, not inside the toolbar
     const pop = document.createElement("div");
     pop.id = `${PLUGIN_ID}-pattern-pop`;
+    // Belt and braces: if the stylesheet ever fails to apply, these keep the
+    // panel out of the document flow instead of dumping it at the end of the
+    // page. Everything else about its appearance stays in the stylesheet.
+    pop.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none;";
     pop.addEventListener("pointerdown", (ev) => ev.stopPropagation());
 
     const head = document.createElement("div");
@@ -1783,9 +1788,14 @@ function injectStyles() {
   }
 
   function toggleManualPopover(force) {
-    if (!manualPop) manualPop = buildManualPopover();
+    if (!manualPop) {
+      if (force === false) return;      // nothing to hide, do not build one
+      manualPop = buildManualPopover();
+    }
     const show = force !== undefined ? force : !manualPop.classList.contains("is-open");
     manualPop.classList.toggle("is-open", show);
+    manualPop.style.opacity       = show ? "" : "0";
+    manualPop.style.pointerEvents = show ? "" : "none";
     if (show) {
       positionManualPopover();
       updateManualUI();
@@ -1807,7 +1817,8 @@ function injectStyles() {
   }
 
   document.addEventListener("pointerdown", (ev) => {
-    if (manualPop && manualPop.contains(ev.target)) return;
+    if (!manualPop || !manualPop.classList.contains("is-open")) return;
+    if (manualPop.contains(ev.target)) return;
     if (byId(`${PLUGIN_ID}-pattern-btn`)?.contains(ev.target)) return;
     toggleManualPopover(false);
   }, true);

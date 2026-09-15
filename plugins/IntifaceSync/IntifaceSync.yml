@@ -1,6 +1,6 @@
 name: IntifaceSync
 description: "Syncs Funscripts with Buttplug.io / Intiface Central / TheHandy devices. Vibe fork adds support for vibrating (scalar) toys such as Lovense."
-version: 1.19-vibe
+version: 1.20-vibe
 url: https://github.com/allisless0/stash-plugins
 
 exec:

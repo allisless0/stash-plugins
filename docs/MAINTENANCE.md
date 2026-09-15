@@ -51,7 +51,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
-| IntifaceSync (vibe fork) | 1.19-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
+| IntifaceSync (vibe fork) | 1.20-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
 
 `R` is bound by two plugins. They never collide because QuickRate only binds on
 `/scenes/<id>` and QuickCriteria only on `/performers/<id>`. **Any new plugin
@@ -337,6 +337,29 @@ back to searching the detached `toolbarEl`. Buttons also set text at creation.
 **Do not reintroduce raw `getElementById` for plugin ids.**
 
 **Handy UI** is hidden unless the `enableHandy` plugin setting is true.
+
+**Popover leaked onto every page (v1.20 fix).** The pattern popover appeared
+unstyled at the bottom of the scenes list, performers, everywhere. Three causes
+stacked:
+
+1. The document-level dismiss handler called `toggleManualPopover(false)` on
+   *every* click anywhere in Stash, and that function built the panel if it did
+   not exist. So the first click on any page created it. It now returns early
+   when `force === false` and there is nothing to hide, and the handler
+   short-circuits unless a popover exists and is open.
+2. The panel lives on `document.body`, outside the toolbar, but its CSS came
+   from `injectStyles()`, which only runs inside `buildToolbar()`. On a page
+   with no player there is no toolbar, so the panel rendered as ordinary block
+   content in the document flow. `buildManualPopover()` now calls
+   `injectStyles()` itself.
+3. Nothing hid it without CSS. It now carries inline
+   `position:fixed;opacity:0;pointer-events:none`, cleared when genuinely
+   shown, so a stylesheet failure cannot dump it into the page.
+
+**General rule this is an instance of:** anything appended to `document.body`
+rather than to the toolbar must not depend on the toolbar for its styling or
+its lifecycle. The signal preview is safe because it is a child of the toolbar;
+the popover was not.
 
 **Works without a device (v1.19).** Until now nothing happened until Intiface
 had a toy attached: no funscript discovery, no script name in the toolbar, no
@@ -679,6 +702,9 @@ through the existing router and registry, or the load-order bugs come back.
 **QuickCriteria archived.** Moved to `archive/`, unused in practice. Not
 built, validated or published. §4.4 kept for reference; the rule-5 lesson it
 produced (filtered-out items must survive a merge) is still in `CLAUDE.md`.
+
+**IntifaceSync 1.19 → 1.20.** User reported the pattern popover showing at the
+bottom of every page. See §4.5.
 
 **IntifaceSync 1.18 → 1.19.** Two user-reported bugs. The Shortcuts button
 rendered blank until first clicked: `updateHotkeyBtn()` ran before the button
