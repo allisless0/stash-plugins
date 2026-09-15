@@ -1,7 +1,7 @@
 # Stash plugins
 
-Five Stash plugins. Four are pure frontend JS; IntifaceSync also has a Python
-backend that drives sex toys over Buttplug.io / Intiface Central.
+Two Stash plugins. QuickTools is pure frontend JS; IntifaceSync also has a
+Python backend that drives sex toys over Buttplug.io / Intiface Central.
 
 **`docs/MAINTENANCE.md` is the real documentation.** Read the section for whatever
 you are touching before you change it. It records why things are the way they
@@ -64,6 +64,10 @@ Backend tasks; reloading plugins does not restart the Python process.
   and `retryInjectToolbar()` handle re-injection.
 - **Stash's video player is video.js.** Capture-phase listeners are needed to
   stop it swallowing or acting on clicks.
+- **QuickTools has exactly one of each global handler** — one keydown router,
+  one pointerdown dismiss, one dblclick. That is the point of the merge. Adding
+  a second listener for a new feature reintroduces the load-order bugs the
+  merge removed; route it through the existing ones instead.
 
 ## Style
 

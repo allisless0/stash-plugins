@@ -4,27 +4,18 @@
 
 Public repo at `github.com/allisless0/stash-plugins`.
 
-```bash
-cd stash-plugins
-git init -b main
-git add .
-git commit -m "Initial import: IntifaceSync 1.16-vibe, QuickRate 1.3.0, QuickMark 1.1.0, QuickNav 1.1.0"
-git remote add origin git@github.com:allisless0/stash-plugins.git
-git push -u origin main
-```
-
-Set the identity **before the first commit** if you do not want your usual name
-and address on these:
+The repo is already live. Day-to-day:
 
 ```bash
-git config user.name  "allisless0"
-git config user.email "allisless0@users.noreply.github.com"
+git add -A
+git commit -m "your message"
+git push
 ```
 
-The email matters more than the name. Without it, commits carry whatever global
-email you have configured, which may link back to another identity.
+Pushing to `main` triggers validate, build and publish. A failing
+`validate.sh` blocks the release, so nothing broken reaches users.
 
-## Enable Pages
+## Pages
 
 GitHub > repo **Settings > Pages** > Build and deployment > Source:
 **GitHub Actions**. Then push once. The workflow validates, builds and

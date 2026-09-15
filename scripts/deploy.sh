@@ -10,7 +10,7 @@ if [ -z "$DEST" ]; then
   exit 1
 fi
 ./scripts/validate.sh || { echo "Refusing to deploy: validation failed." >&2; exit 1; }
-for d in IntifaceSync QuickRate QuickMark QuickNav; do
+for d in IntifaceSync QuickTools; do
   [ -d "plugins/$d" ] || continue
   mkdir -p "$DEST/$d"
   cp -v "plugins/$d"/*.js "plugins/$d"/*.yml "$DEST/$d/" 2>/dev/null || true

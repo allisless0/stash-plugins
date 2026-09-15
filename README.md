@@ -1,7 +1,7 @@
 # Stash plugins
 
-Four plugins for [Stash](https://stashapp.cc). Three are keyboard shortcuts
-for things that normally cost several clicks. One drives sex toys.
+Two plugins for [Stash](https://stashapp.cc). One is a set of player
+shortcuts, the other drives sex toys.
 
 ## Install
 
@@ -15,14 +15,16 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 
 ## What's here
 
-| Plugin | Key | Where | What it does |
-|---|---|---|---|
-| **QuickRate** | `R` | scene page | Type a 0.0–10.0 rating without leaving the player. Auto-saves; `Esc` undoes. |
-| **QuickMark** | `M` | scene page | Create a scene marker at the current position. Search tags, or pick a recent one with a number key. |
-| **QuickNav** | double-click | scene page | Right half of the video plays the next scene in the queue, left half the previous. |
-| **IntifaceSync** | `E` `\` `[` `]` `0` | scene player | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
+| Plugin | Keys | What it does |
+|---|---|---|
+| **QuickTools** | `R` `M` double-click | Three scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, and double-click queue navigation. Each can be turned off. |
+| **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 
 Each folder under `plugins/` has its own README with the details.
+
+QuickTools replaces the earlier QuickRate, QuickMark and QuickNav plugins. If
+you have those installed, uninstall them first — running both means two sets of
+handlers fighting over the same keys. Recent marker tags carry over.
 
 ## IntifaceSync in brief
 

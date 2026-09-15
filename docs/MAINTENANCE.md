@@ -47,9 +47,9 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickRate | 1.3.0 | UI only | `R` | `/scenes/<id>` | ~490 |
-| QuickNav | 1.1.0 | UI only | dbl-click | `/scenes/<id>` | ~180 |
-| QuickMark | 1.1.0 | UI only | `M` | `/scenes/<id>` | ~500 |
+| QuickTools | 1.0.0 | UI only | `R` `M` dbl-click | `/scenes/<id>` | ~1010 |
+
+
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 | IntifaceSync (vibe fork) | 1.16-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
 
@@ -564,6 +564,26 @@ Added sync heartbeat, playbackRate support, buffering handling, and index
 re-seating on offset change. See §4.5 "Clock sync".
 
 **IntifaceSync 1.14 → 1.15.** Signal preview scope for debugging. See §4.5.
+
+**QuickRate, QuickMark and QuickNav merged into QuickTools 1.0.0.** All three
+targeted the same page, were all input shortcuts, and all fought video.js for
+clicks: one concern, not three. The merge was not cosmetic. QuickRate and
+QuickMark each shipped their own copy of `isVideoSurface()` and the
+swallow-window logic, and §3.5b told the maintainer to keep the two copies
+identical by hand. There is now one of each global handler: one keydown router,
+one pointerdown dismiss, one dblclick. A `setActive()` panel registry enforces
+one open panel at a time, which also fixes a latent bug where pressing `R` with
+the marker panel up produced two overlapping panels both claiming the keyboard.
+
+Behaviour is otherwise unchanged and the `quickMarkRecentTags` localStorage key
+is reused, so recents survive the switch. Nav is opt-in
+(`enableNav`, default off) because it replaces double-click-to-fullscreen;
+rating and markers are opt-out (`disableRating`, `disableMarkers`). Settings
+are read once at load from `configuration { plugins }`, so a settings change
+needs a page reload.
+
+**Do not add a second global listener to QuickTools.** Route new features
+through the existing router and registry, or the load-order bugs come back.
 
 **QuickCriteria archived.** Moved to `archive/`, unused in practice. Not
 built, validated or published. §4.4 kept for reference; the rule-5 lesson it
