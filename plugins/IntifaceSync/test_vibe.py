@@ -703,7 +703,9 @@ async def _preview_on():
     p.load([{"at": i * 500, "pos": 0 if i % 2 == 0 else 99} for i in range(50)])
     p.apply_settings(vibe_mode="beat")
     frames = []
-    p.preview_cb = frames.append
+    # v1.18 added a second argument; a one-arg callback now raises and the
+    # player swallows it, which is exactly how this test caught the change.
+    p.preview_cb = lambda samples, script=None: frames.append(samples)
     devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
     try:
         for k in range(0, 5000, 20):
@@ -726,3 +728,65 @@ async def _preview_on():
 asyncio.run(_preview_on())
 
 print("\nFORK 1.15 TESTS PASSED")
+
+
+# ── 31-32. 1.18 script window in the signal preview ──────────────────────────
+print("31. preview carries the visible slice of the script")
+async def _script_window():
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    beats = [{"at": i * 500, "pos": 0 if i % 2 == 0 else 99} for i in range(400)]
+    p.load(beats)
+    p.apply_settings(vibe_mode="beat")
+    frames = []
+    p.preview_cb = lambda samples, script=None: frames.append((samples, script))
+    devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+    try:
+        for k in range(0, 4000, 20):
+            isync.time.monotonic = lambda: t0 + k / 1000.0
+            await p._vibe_tick(60000 + k, devs)
+    finally:
+        isync.time.monotonic = real
+
+    windows = [w for _, w in frames if w]
+    assert windows, "no script window ever sent"
+    w = windows[0]
+    assert set(w) >= {"t0", "t1", "pts"}, f"bad window shape {list(w)}"
+    assert w["t0"] < 60000 < w["t1"], "window does not bracket the playhead"
+    assert len(w["pts"]) <= isync.PREVIEW_SCRIPT_MAX, f"{len(w['pts'])} points, not downsampled"
+    for at, pos in w["pts"]:
+        assert w["t0"] <= at <= w["t1"], f"point {at} outside the window"
+        assert 0 <= pos <= 100
+    assert "beats" in w and w["beats"], "beat mode sent no beat markers"
+    # windows are throttled below the sample batch rate
+    assert len(windows) < len(frames), "a window on every frame is too chatty"
+    print(f"   {len(frames)} frames, {len(windows)} windows, "
+          f"{len(w['pts'])} pts, {len(w['beats'])} beats  OK")
+asyncio.run(_script_window())
+
+print("32. dense scripts are downsampled and non-beat modes send no markers")
+async def _dense_window():
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    dense = [{"at": i * 33, "pos": int(50 + 40 * math.sin(i * 33 / 1000 * 2 * math.pi))}
+             for i in range(3000)]
+    p.load(dense)
+    p.apply_settings(vibe_mode="speed")
+    frames = []
+    p.preview_cb = lambda samples, script=None: frames.append((samples, script))
+    devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+    try:
+        for k in range(0, 3000, 20):
+            isync.time.monotonic = lambda: t0 + k / 1000.0
+            await p._vibe_tick(40000 + k, devs)
+    finally:
+        isync.time.monotonic = real
+    w = next(w for _, w in frames if w)
+    raw = isync.PREVIEW_SCRIPT_BACK + isync.PREVIEW_SCRIPT_AHEAD
+    assert len(w["pts"]) <= isync.PREVIEW_SCRIPT_MAX, f"{len(w['pts'])} points from a 33ms script"
+    assert "beats" not in w, "speed mode should not send beat markers"
+    assert w["pts"][0][0] < w["pts"][-1][0], "points out of order"
+    print(f"   {raw}ms of 33ms keyframes -> {len(w['pts'])} pts, no markers  OK")
+asyncio.run(_dense_window())
+
+print("\nFORK 1.18 TESTS PASSED")

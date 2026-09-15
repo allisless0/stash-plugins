@@ -51,7 +51,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
-| IntifaceSync (vibe fork) | 1.16-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
+| IntifaceSync (vibe fork) | 1.18-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
 
 `R` is bound by two plugins. They never collide because QuickRate only binds on
 `/scenes/<id>` and QuickCriteria only on `/performers/<id>`. **Any new plugin
@@ -338,6 +338,71 @@ back to searching the detached `toolbarEl`. Buttons also set text at creation.
 
 **Handy UI** is hidden unless the `enableHandy` plugin setting is true.
 
+**Script wave on the scope (v1.18).** The preview showed what the toy did but
+not what it was reacting to, which made it useless for judging whether a vibe
+mode was interpreting a script sensibly.
+
+`_preview_script_window(media_ms)` returns the slice of `self.actions` covering
+`PREVIEW_SCRIPT_BACK` (9 s) behind to `PREVIEW_SCRIPT_AHEAD` (3 s) ahead,
+thinned by **stride, not interpolation**, to `PREVIEW_SCRIPT_MAX` (260) points.
+Stride matters: keeping real keyframes means beat markers still land on points
+the player actually fires on. The first kept point sits at or before the
+window start on purpose, so the drawn line does not begin mid-scope; `t0`/`t1`
+therefore report the bounds of the returned points, not the requested range.
+In beat mode the window also carries `beats`, taken from `self._beats`, which
+for a peak-picked script is a small subset of the keyframes.
+
+Windows ride along with the sample batches but are throttled separately to
+`PREVIEW_SCRIPT_MS` (500), so roughly two per second against five sample
+batches.
+
+**`preview_cb` now takes `(samples, script=None)`.** The signature change is
+why test 30 broke: a one-argument callback raises inside `_preview_sample`,
+which swallows it, and the frames list stays empty. That is the intended
+failure mode, but keep it in mind when adding preview consumers.
+
+Frontend: samples carry both the backend clock (`t`) and media time (`m`), so
+the script is mapped to screen from the newest sample that has an `m`, scaled
+by `statusData.rate`. Drawn first, under the output traces, in grey, with beat
+markers as faint verticals and a dashed playhead. Tests 31-32.
+
+**Toolbar redesign (v1.17).** The bar had grown into one flat flex row of
+unlabelled number boxes: `Tease | 7 | s | buzz 400 ms | build 0 cyc | max 100 % |
+micro 120 ms`. Every value was legitimate and none of it was readable.
+
+Split by how often a control is touched. Row 1 keeps only mid-scene controls:
+the master switch, the loaded script, Manual with its intensity slider, and a
+pattern button that doubles as a readout. Everything that *shapes* a pattern
+moved into `#IntifaceSync-pattern-pop`, a popover anchored to that button.
+
+The popover is six pattern cards, each with a one-line description of what it
+does, over two sections (Timing, Output limits). Fields carry a real label and
+a sentence of help instead of a three-letter abbreviation and a tooltip:
+`buzz` → Buzz length, `floor` → Dip to, `max` → Power limit, `cyc` → Build-up.
+`updateManualUI()` hides every field the current pattern does not read and
+relabels the period field between "Cycle length" and "Repeat every", because
+the same number means different things for burst patterns.
+
+`buttonStyle()` was already a stub returning `""`; state is now carried by
+classes (`is-on`, `is-live`, `is-muted`, `is-locked`) rather than inline
+styles, so the CSS block is the single place button appearance is decided.
+
+**"Output ON/OFF" is now "Device live / Device muted"** with a power glyph. The
+old label read as a verb to some people and a state to others, so clicking it
+was a coin flip. It is a master kill switch; the label now says which state it
+is in, not what clicking will do.
+
+**The popover lives on `document.body`, not inside the toolbar.** The
+owner-lock `pointerdown` and the dismiss handler both explicitly exempt it. If
+you move it back inside the toolbar, the takeover logic will fire on every
+click inside the panel.
+
+**`disableHotkeys` plugin setting (v1.17).** `hotkeysAllowed` (from plugin
+config) gates `hotkeysOn` (the per-browser toolbar toggle). Both must be true.
+When the setting is on, the toolbar button reads "Shortcuts off", is
+non-interactive, and its tooltip points at the setting. `updateHotkeyBtn()` had
+to be lifted out of `buildToolbar()` scope so the async config load can call it.
+
 **Funscript display (v1.16).** Row 1 shows only the script actually loaded
 (`♪ name`, greyed with a trailing `…` while the load is pending, full path in
 the tooltip). The `<select>` still exists and still drives `loadFunscript()`,
@@ -459,7 +524,7 @@ remains as best-effort; the deadman is the real guarantee.
 **Hardware caveat, say it plainly:** none of this helps if the Python process
 itself hangs. Know where the Gush 2 power button is.
 
-**Tests:** `test_vibe.py`, 30 checks, run from the plugin's parent directory:
+**Tests:** `test_vibe.py`, 32 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -498,6 +563,7 @@ under new labels that mean something different. Recalculate makes ratings
 |---|---|
 | IntifaceSync | **Untested on live hardware since v1.10.** Do the dry run: tease on, kill the browser, confirm stop within ~15s. Then: two tabs, confirm spectator text appears and takeover works. |
 | IntifaceSync | Backend does not reliably stay up; auto-start is throttled but the root cause (task failing vs port 7880 unreachable from browser) is unconfirmed. Check `docker exec Stash ps aux \| grep -i intiface`. The 2026-09-14 log shows 40 minutes of `Failed to connect to Intiface` timeouts before a successful connect: that was Intiface Central not running yet, not a plugin fault. |
+| IntifaceSync | v1.17 UI is untested in a browser. It parses and the IIFE executes against stubbed globals, nothing more. Check the popover positions correctly when the player is fullscreen, and that it is not clipped by the player container. |
 | IntifaceSync | Signal preview untested against a real device stream; sample timestamps are backend-monotonic, so if the canvas looks frozen check that frames are arriving rather than that the toy is idle. |
 | IntifaceSync | Clock sync untested on hardware. Check `driftMs` in the status payload during a long scene; it should stay under ~150 and never trend. |
 | IntifaceSync | `SYNC_GAIN` 0.25 at a 2 s heartbeat means a 100 ms drift takes ~8 s to ease out. Fine for vibrators, possibly too slow for a stroker. |
@@ -588,6 +654,14 @@ through the existing router and registry, or the load-order bugs come back.
 **QuickCriteria archived.** Moved to `archive/`, unused in practice. Not
 built, validated or published. §4.4 kept for reference; the rule-5 lesson it
 produced (filtered-out items must survive a merge) is still in `CLAUDE.md`.
+
+**IntifaceSync 1.17 → 1.18.** Funscript wave, beat markers and a playhead on
+the signal preview. See §4.5.
+
+**IntifaceSync 1.16 → 1.17.** Toolbar redesign for public use, plus a
+`disableHotkeys` plugin setting. See §4.5. Also added `plugins/IntifaceSync/README.md`,
+which did not exist: the plugin was shipping to strangers with no user-facing
+documentation at all.
 
 **IntifaceSync 1.15 → 1.16.** Funscript dropdown replaced by a plain label;
 picker demoted to the advanced row and only shown when there is a real choice.

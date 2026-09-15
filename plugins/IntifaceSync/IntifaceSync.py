@@ -136,6 +136,10 @@ SYNC_SNAP_MS          = 150     # drift beyond this: re-anchor hard
 SYNC_GAIN             = 0.25    # otherwise pull this fraction of the drift per report
 PREVIEW_HZ            = 25      # signal preview sample rate, off unless the user asks
 PREVIEW_BATCH_MS      = 200     # bundle samples into one frame to keep the socket quiet
+PREVIEW_SCRIPT_MS     = 500     # resend the visible slice of the script this often
+PREVIEW_SCRIPT_BACK   = 9000    # ms of script history the scope can show
+PREVIEW_SCRIPT_AHEAD  = 3000    # ms of lookahead, so you see what is coming
+PREVIEW_SCRIPT_MAX    = 260     # points per window; more than this is invisible anyway
 MANUAL_DEFAULT_LEVEL  = 1.00    # master intensity starts at full; pull it down to taste
 # Sub-step intensity. The hardware floor is one step (5% on every Lovense toy).
 # To get below it, pulse between 0 and one step and let the motor's own inertia
@@ -787,6 +791,7 @@ class FunscriptPlayer:
         self._preview_buf      = []
         self._preview_last_s   = 0.0
         self._preview_flush_s  = 0.0
+        self._preview_script_s = 0.0
         self.stroke_min        = 0.0
         self.stroke_max        = 1.0
         self.invert            = False
@@ -993,6 +998,54 @@ class FunscriptPlayer:
         shaped = lo + raw * (hi - lo)
         return max(0.0, min(1.0, shaped * self.master))
 
+    def _preview_script_window(self, media_ms: float) -> dict | None:
+        """The slice of the funscript the scope can currently show.
+
+        Sent alongside the samples so the preview can draw what the toy is
+        reacting to, not just what it did. Downsampled by stride rather than by
+        interpolation: keeping real keyframes means the beat markers still line
+        up with the points the player actually fires on."""
+        actions = self.actions
+        if not actions:
+            return None
+        lo = media_ms - PREVIEW_SCRIPT_BACK
+        hi = media_ms + PREVIEW_SCRIPT_AHEAD
+        i0 = max(0, self._beat_index(actions, lo))
+        pts = []
+        i = i0
+        while i < len(actions) and actions[i]["at"] <= hi:
+            pts.append(actions[i])
+            i += 1
+        if not pts:
+            return None
+        stride = max(1, len(pts) // PREVIEW_SCRIPT_MAX + 1)
+        thinned = pts[::stride]
+        if thinned[-1] is not pts[-1]:
+            thinned.append(pts[-1])
+
+        # The first kept point sits at or before `lo` on purpose: without it the
+        # drawn line would begin part-way across the scope. Report the bounds of
+        # what is actually in the window rather than the requested range.
+        out = {
+            "t0":  round(thinned[0]["at"]),
+            "t1":  round(thinned[-1]["at"]),
+            "pts": [[round(a["at"]), a["pos"]] for a in thinned],
+        }
+        # Beat mode fires on turnarounds, which for a dense script are a small
+        # subset of the keyframes. Mark them so the scope shows why a burst
+        # happened where it did.
+        if self.effective_vibe_mode() == "beat" and self._beats:
+            b0 = max(0, self._beat_index(self._beats, lo))
+            beats = []
+            j = b0
+            while j < len(self._beats) and self._beats[j]["at"] <= hi:
+                beats.append(round(self._beats[j]["at"]))
+                j += 1
+                if len(beats) > PREVIEW_SCRIPT_MAX:
+                    break
+            out["beats"] = beats
+        return out
+
     def _preview_sample(self, target: float, level: float,
                         media_ms: float | None = None, sent: bool = False) -> None:
         """Buffer one point for the debug scope. Cheap no-op when disabled."""
@@ -1012,8 +1065,13 @@ class FunscriptPlayer:
         if (now_s - self._preview_flush_s) * 1000.0 >= PREVIEW_BATCH_MS:
             self._preview_flush_s = now_s
             buf, self._preview_buf = self._preview_buf, []
+            script = None
+            if (media_ms is not None
+                    and (now_s - self._preview_script_s) * 1000.0 >= PREVIEW_SCRIPT_MS):
+                self._preview_script_s = now_s
+                script = self._preview_script_window(media_ms)
             try:
-                self.preview_cb(buf)
+                self.preview_cb(buf, script)
             except Exception as e:
                 log.debug(f"Preview callback failed: {e}")
         elif len(self._preview_buf) > PREVIEW_HZ * 2:
@@ -1670,12 +1728,15 @@ class BackendServer:
         self._last_setup_path = None
         self._last_setup_tunnel = None
 
-    def _preview_emit(self, samples: list) -> None:
+    def _preview_emit(self, samples: list, script: dict | None = None) -> None:
         """Called from the player's audio-rate loop, so it must not await."""
         if not self._preview_on or not self.clients:
             return
+        msg = {"type": "preview", "samples": samples}
+        if script:
+            msg["script"] = script
         try:
-            asyncio.ensure_future(self._broadcast({"type": "preview", "samples": samples}))
+            asyncio.ensure_future(self._broadcast(msg))
         except RuntimeError:
             pass
 

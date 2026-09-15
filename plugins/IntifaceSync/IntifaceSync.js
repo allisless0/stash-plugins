@@ -191,7 +191,8 @@
   let scalarStep            = 0.05;      // device floor, refreshed from status
   let handyEnabled          = false;     // Handy UI hidden unless enabled in settings
   let advancedOpen          = false;
-  let hotkeysOn             = true;
+  let hotkeysOn             = true;    // toolbar toggle, per-browser
+  let hotkeysAllowed        = true;    // plugin setting; false disables them outright
   let vibeMode              = "speed";   // "speed" | "position" | "beat" | "auto" | "off"
   let beatMs                = 120;       // beat mode burst length
   let beatEdge              = "all";     // "all" | "low" | "high"
@@ -202,6 +203,7 @@
   let previewCanvas         = null;
   let previewRaf            = null;
   let previewSentCount      = 0;         // rolling count for the cmd/s readout
+  let previewScript         = null;      // {t0, t1, pts:[[mediaMs,pos]], beats:[mediaMs]}
   let vibeMaxSpeed          = 500;       // funscript units/sec = full intensity
   let vibeSmooth            = 0.30;
   let vibeSubstep           = false;    // pulse below the hardware floor
@@ -302,14 +304,15 @@
   function updateOutputUI() {
     const btn = byId(`${PLUGIN_ID}-output-btn`);
     if (btn) {
-      btn.textContent  = outputOn ? "Output ON" : "Output OFF";
-      btn.style.cssText = buttonStyle(outputOn ? "#333" : "#a33");
+      btn.textContent = outputOn ? "\u23FB  Device live" : "\u23FB  Device muted";
+      btn.classList.toggle("is-live", outputOn);
+      btn.classList.toggle("is-muted", !outputOn);
       btn.title = outputOn
-        ? "Everything is live. Press E to cut all output."
-        : "All output is cut, scripts and manual both. Press E to resume.";
+        ? "The toy can be driven. Click to cut all output at once."
+        : "Nothing reaches the toy, script or manual. Click to allow output again.";
     }
     const bar = byId(`${PLUGIN_ID}-toolbar`);
-    if (bar) bar.style.opacity = outputOn ? "" : "0.55";
+    if (bar) bar.classList.toggle("is-muted", !outputOn);
   }
 
   // ── Manual control ─────────────────────────────────────────────────────────
@@ -350,76 +353,113 @@
     setManual(true, manualLevel + delta);
   }
 
+  function updateHotkeyBtn() {
+    const btn = byId(`${PLUGIN_ID}-hotkey-btn`);
+    if (!btn) return;
+    if (!hotkeysAllowed) {
+      btn.textContent = "Shortcuts off";
+      btn.title = "Disabled in Settings \u203a Plugins \u203a IntifaceSync. " +
+                  "Every control is still available here in the toolbar.";
+      btn.classList.remove("is-on");
+      btn.classList.add("is-locked");
+      return;
+    }
+    btn.classList.remove("is-locked");
+    btn.textContent = hotkeysOn ? "Shortcuts on" : "Shortcuts off";
+    btn.title = "E output \u00b7 \\ manual \u00b7 [ ] level \u00b7 0 stop";
+    btn.classList.toggle("is-on", hotkeysOn);
+  }
+
+  function updateManualHint() {
+    // The single most useful number is whether the peak lands above or below
+    // the motor's own floor, because that decides whether Micro does anything.
+    const hint = byId(`${PLUGIN_ID}-manual-hint`);
+    if (!hint) return;
+    const peak     = (manualLevel / 100) * (manualCeiling / 100);
+    const pct      = (peak * 100).toFixed(1);
+    const floorPct = (scalarStep * 100).toFixed(0);
+    if (peak <= 0) {
+      hint.textContent = "Silent. Raise the intensity slider.";
+    } else if (peak < scalarStep) {
+      hint.textContent = vibeSubstep
+        ? `Peak ${pct}%, below this motor's ${floorPct}% floor. Micro pulsing is producing it.`
+        : `Peak ${pct}%, below this motor's ${floorPct}% floor. Turn Micro on or it will stay silent.`;
+    } else {
+      hint.textContent = `Peak ${pct}%. This motor's floor is ${floorPct}%, so Micro is idle.`;
+    }
+  }
+
   function updateManualUI() {
     const btn = byId(`${PLUGIN_ID}-manual-btn`);
-    const sld = byId(`${PLUGIN_ID}-manual-level`);
-    const lbl = byId(`${PLUGIN_ID}-manual-val`);
     if (btn) {
-      btn.textContent = manualOn ? "Manual ON" : "Manual";
-      btn.style.cssText = buttonStyle(manualOn ? "#2a6" : "#333");
+      btn.textContent = manualOn ? "Manual on" : "Manual";
+      btn.classList.toggle("is-on", manualOn);
     }
+
+    const sld = byId(`${PLUGIN_ID}-manual-level`);
     if (sld && String(manualLevel) !== sld.value) sld.value = String(manualLevel);
+    const lbl = byId(`${PLUGIN_ID}-manual-val`);
     if (lbl) lbl.textContent = `${manualLevel}%`;
 
-    const shapeSel = byId(`${PLUGIN_ID}-manual-shape`);
-    if (shapeSel && shapeSel.value !== manualShape) shapeSel.value = manualShape;
+    const patBtn = byId(`${PLUGIN_ID}-pattern-btn`);
+    if (patBtn) patBtn.textContent = `${shapeLabel(manualShape)} \u25BE`;
 
-    const cycles = manualShape !== "constant";
-    const per    = byId(`${PLUGIN_ID}-manual-period`);
-    const unit   = byId(`${PLUGIN_ID}-manual-period-unit`);
-    if (per) {
-      per.style.display = cycles ? "" : "none";
-      // Burst shapes are "one buzz every N seconds", the others are a cycle
-      // length, so the tooltip should not claim both.
-      per.title = (manualShape === "pulse" || manualShape === "tease")
-        ? "Seconds between buzzes"
-        : "Seconds per cycle";
+    // Highlight the chosen card.
+    if (manualPop) {
+      manualPop.querySelectorAll(`.${PLUGIN_ID}-card`).forEach((c) => {
+        c.classList.toggle("is-sel", c.dataset.shape === manualShape);
+      });
     }
-    if (unit) unit.style.display = cycles ? "" : "none";
 
-    // Show only the knobs the current shape actually reads.
+    // Only show the fields the current pattern actually reads. Anything else
+    // is noise the user would reasonably expect to do something.
+    const burst = manualShape === "pulse" || manualShape === "tease";
     const shown = {
-      onms:    manualShape === "pulse" || manualShape === "tease",
-      depth:   manualShape === "wave"  || manualShape === "ramp" ||
-               manualShape === "random",
+      period:  manualShape !== "constant",
+      onms:    burst,
+      depth:   manualShape === "wave" || manualShape === "ramp" || manualShape === "random",
       build:   manualShape === "tease",
       ceiling: true,
       microms: vibeSubstep,
     };
-    Object.keys(shown).forEach(k => {
+    Object.keys(shown).forEach((k) => {
       const box = byId(`${PLUGIN_ID}-manual-${k}-box`);
-      if (box) box.style.display = shown[k] ? "inline-flex" : "none";
+      if (box) box.style.display = shown[k] ? "" : "none";
     });
 
-    const onms = byId(`${PLUGIN_ID}-manual-onms`);
-    if (onms && String(manualOnMs) !== onms.value) onms.value = String(manualOnMs);
-    const dep  = byId(`${PLUGIN_ID}-manual-depth`);
-    if (dep && String(manualDepth) !== dep.value) dep.value = String(manualDepth);
-    const bld  = byId(`${PLUGIN_ID}-manual-build`);
-    if (bld && String(manualBuild) !== bld.value) bld.value = String(manualBuild);
-    const ceil = byId(`${PLUGIN_ID}-manual-ceiling`);
-    if (ceil && String(manualCeiling) !== ceil.value) ceil.value = String(manualCeiling);
-    const mic  = byId(`${PLUGIN_ID}-manual-microms`);
-    if (mic && String(manualMicroMs) !== mic.value) mic.value = String(manualMicroMs);
-
-    // Live readout: the single most useful number is whether the peak output
-    // lands above or below the motor's own floor, because that decides whether
-    // Micro does anything at all.
-    const hint = byId(`${PLUGIN_ID}-manual-hint`);
-    if (hint) {
-      const peak = (manualLevel / 100) * (manualCeiling / 100);
-      const pct  = (peak * 100).toFixed(1);
-      const floorPct = (scalarStep * 100).toFixed(0);
-      if (peak <= 0) {
-        hint.textContent = "silent";
-      } else if (peak < scalarStep) {
-        hint.textContent = vibeSubstep
-          ? `peak ${pct}% — under the ${floorPct}% floor, Micro is driving it`
-          : `peak ${pct}% — under the ${floorPct}% floor, turn Micro on`;
-      } else {
-        hint.textContent = `peak ${pct}% — ${floorPct}% floor, Micro idle`;
-      }
+    // Burst patterns are "one buzz every N seconds"; the rest are a cycle
+    // length. Same field, different meaning, so relabel rather than explain.
+    const perBox = byId(`${PLUGIN_ID}-manual-period-box`);
+    if (perBox) {
+      const lab  = perBox.querySelector("label");
+      const help = perBox.querySelector(`.${PLUGIN_ID}-field-help`);
+      if (lab)  lab.textContent  = burst ? "Repeat every" : "Cycle length";
+      if (help) help.textContent = burst
+        ? "Time from the start of one buzz to the start of the next."
+        : "How long one full rise and fall takes.";
     }
+
+    // The timing section can end up with nothing in it (Steady).
+    const timing = byId(`${PLUGIN_ID}-sec-timing`);
+    if (timing) {
+      const any = ["period", "onms", "depth", "build"].some(
+        (k) => shown[k]
+      );
+      timing.style.display = any ? "" : "none";
+    }
+
+    const sync = (id, v) => {
+      const el = byId(`${PLUGIN_ID}-manual-${id}`);
+      if (el && String(v) !== el.value) el.value = String(v);
+    };
+    sync("period",  manualPeriod);
+    sync("onms",    manualOnMs);
+    sync("depth",   manualDepth);
+    sync("build",   manualBuild);
+    sync("ceiling", manualCeiling);
+    sync("microms", manualMicroMs);
+
+    updateManualHint();
   }
 
   // ── GraphQL ────────────────────────────────────────────────────────────────
@@ -479,6 +519,10 @@
       if (typeof cfg?.enableHandy === "boolean" && cfg.enableHandy !== handyEnabled) {
         handyEnabled = cfg.enableHandy;
         applyHandyVisibility();
+      }
+      if (typeof cfg?.disableHotkeys === "boolean") {
+        hotkeysAllowed = !cfg.disableHotkeys;
+        updateHotkeyBtn();
       }
       const url = cfg?.intifaceUrl || "ws://localhost:12345";
       log(`Auto-connecting to Intiface: ${url}`);
@@ -573,6 +617,11 @@
 
   loadPluginConfig().then((cfg) => {
     if (typeof cfg?.enableHandy === "boolean") handyEnabled = cfg.enableHandy;
+    if (typeof cfg?.disableHotkeys === "boolean") {
+      hotkeysAllowed = !cfg.disableHotkeys;
+      if (!hotkeysAllowed) log("Keyboard shortcuts disabled in plugin settings");
+      updateHotkeyBtn();
+    }
     applyHandyVisibility();
   }).catch(() => {});
 
@@ -682,6 +731,7 @@
 
     if (msg.type === "preview") {
       if (!previewOn || !Array.isArray(msg.samples)) return;
+      if (msg.script) previewScript = msg.script;
       const now = msg.samples.length ? msg.samples[msg.samples.length - 1].t : 0;
       previewSamples.push(...msg.samples);
       // trim to the visible window, plus a little slack
@@ -1114,13 +1164,133 @@ function injectStyles() {
         height: 32px !important;
       }
     }
+
+    /* ── Grouping ───────────────────────────────────────────── */
+    .${PLUGIN_ID}-group {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 3px 4px 3px 10px;
+      border-left: 1px solid rgba(255,255,255,0.10);
+    }
+    .${PLUGIN_ID}-num {
+      min-width: 40px; text-align: right;
+      font-variant-numeric: tabular-nums; opacity: 0.85;
+    }
+    #${PLUGIN_ID}-toolbar.is-muted { opacity: 0.6; }
+
+    /* ── Stateful buttons ───────────────────────────────────── */
+    #${PLUGIN_ID}-toolbar button.${PLUGIN_ID}-primary { font-weight: 600; }
+    #${PLUGIN_ID}-toolbar button.is-live {
+      background: rgba(60,200,130,0.14);
+      border-color: rgba(60,200,130,0.45);
+      color: #7de8b4;
+    }
+    #${PLUGIN_ID}-toolbar button.is-muted {
+      background: rgba(235,80,80,0.16);
+      border-color: rgba(235,80,80,0.5);
+      color: #ff9a9a;
+    }
+    #${PLUGIN_ID}-toolbar button.is-on {
+      background: rgba(90,169,255,0.18);
+      border-color: rgba(90,169,255,0.5);
+      color: #9ecbff;
+    }
+    #${PLUGIN_ID}-toolbar button.is-locked {
+      opacity: 0.45; cursor: not-allowed;
+    }
+    #${PLUGIN_ID}-pattern-btn { min-width: 92px; }
+
+    /* ── Pattern popover ────────────────────────────────────── */
+    #${PLUGIN_ID}-pattern-pop {
+      position: fixed; left: 0; top: 0; z-index: 10050;
+      width: 360px; max-height: 70vh; overflow-y: auto;
+      background: rgba(22,25,31,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.65);
+      padding: 14px 16px 12px;
+      color: #e8eaed;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 12px;
+      opacity: 0; pointer-events: none; transform: translateY(4px);
+      transition: opacity .12s ease, transform .12s ease;
+    }
+    #${PLUGIN_ID}-pattern-pop.is-open {
+      opacity: 1; pointer-events: auto; transform: translateY(0);
+    }
+    .${PLUGIN_ID}-pop-head { margin-bottom: 10px; }
+    .${PLUGIN_ID}-pop-head strong { font-size: 13px; display: block; }
+    .${PLUGIN_ID}-pop-sub {
+      display: block; margin-top: 2px; font-size: 11px;
+      color: #8e97a3; line-height: 1.4;
+    }
+    .${PLUGIN_ID}-cards {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card {
+      display: flex; flex-direction: column; gap: 2px;
+      text-align: left; padding: 8px 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 7px; cursor: pointer; color: inherit;
+      font-family: inherit; transition: all .12s ease;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card:hover {
+      background: rgba(90,169,255,0.10);
+      border-color: rgba(90,169,255,0.35);
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card.is-sel {
+      background: rgba(90,169,255,0.18);
+      border-color: rgba(90,169,255,0.65);
+    }
+    .${PLUGIN_ID}-card-name { font-size: 12px; font-weight: 600; }
+    .${PLUGIN_ID}-card-blurb {
+      font-size: 10.5px; color: #8e97a3; line-height: 1.35;
+    }
+
+    .${PLUGIN_ID}-section {
+      margin-top: 14px; padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .${PLUGIN_ID}-sec-title {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: #737d8a; margin-bottom: 8px;
+    }
+    .${PLUGIN_ID}-field { margin-bottom: 10px; }
+    .${PLUGIN_ID}-field:last-child { margin-bottom: 0; }
+    .${PLUGIN_ID}-field-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .${PLUGIN_ID}-field-head label { font-size: 12px; color: #d3d8de; }
+    .${PLUGIN_ID}-field-ctl { display: inline-flex; align-items: center; gap: 5px; }
+    #${PLUGIN_ID}-pattern-pop input[type=number] {
+      width: 66px; background: rgba(0,0,0,0.35); color: #e8eaed;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 5px;
+      padding: 4px 6px; font-size: 12px; font-family: inherit;
+      text-align: right; outline: none;
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=number]:focus {
+      border-color: rgba(90,169,255,0.6);
+    }
+    .${PLUGIN_ID}-unit { font-size: 11px; color: #737d8a; min-width: 34px; }
+    .${PLUGIN_ID}-field-help {
+      margin-top: 3px; font-size: 10.5px; color: #7c8593; line-height: 1.4;
+    }
+    .${PLUGIN_ID}-pop-foot {
+      margin-top: 14px; padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 11px; color: #9aa3b0; line-height: 1.45;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #${PLUGIN_ID}-pattern-pop { transition: none; }
+    }
+    @media (max-width: 520px) {
+      #${PLUGIN_ID}-pattern-pop { width: calc(100vw - 24px); }
+      .${PLUGIN_ID}-cards { grid-template-columns: 1fr; }
+    }
   `;
   document.head.appendChild(st);
 }
-
-  function buttonStyle(bg) {
-    return "";
-  }
 
   // ── Toolbar components ─────────────────────────────────────────────────────
   // ── Signal preview (debug scope) ───────────────────────────────────────────
@@ -1141,8 +1311,9 @@ function injectStyles() {
     legend.style.cssText = "font-size:10px;opacity:0.6;padding-top:2px;" +
                            "display:flex;gap:12px;flex-wrap:wrap;";
     legend.innerHTML =
-      '<span style="color:#4af">— target</span>' +
-      '<span style="color:#4f8">▮ level sent</span>' +
+      '<span style="color:#96a0b4">\u2014 script</span>' +
+      '<span style="color:#4af">\u2014 target</span>' +
+      '<span style="color:#4f8">\u25AE level sent</span>' +
       '<span style="color:#fa4">| command</span>' +
       `<span id="${PLUGIN_ID}-preview-stats"></span>`;
     wrap.appendChild(legend);
@@ -1179,6 +1350,49 @@ function injectStyles() {
     if (scalarStep > 0) {
       g.strokeStyle = "#553"; g.setLineDash([4 * dpr, 4 * dpr]);
       g.beginPath(); g.moveTo(0, Y(scalarStep)); g.lineTo(w, Y(scalarStep)); g.stroke();
+      g.setLineDash([]);
+    }
+
+    // ── Funscript, drawn first so the output sits on top of it ──────────────
+    // Samples carry both the backend clock (t) and media time (m), which gives
+    // the mapping from script position to screen. Anchor on the newest sample
+    // that has a media stamp; at playbackRate 1 one media ms is one wall ms.
+    let anchor = null;
+    for (let i = pts.length - 1; i >= 0; i--) {
+      if (pts[i].m !== null && pts[i].m !== undefined) { anchor = pts[i]; break; }
+    }
+    if (previewScript && anchor && previewScript.pts?.length > 1) {
+      const rate = (statusData && statusData.rate) || 1;
+      const mediaToX = (mediaMs) => X(anchor.t + (mediaMs - anchor.m) / rate);
+
+      // Position track occupies the full height; it is a separate quantity
+      // from intensity, so it gets its own faint styling rather than sharing
+      // the 0-1 axis visually.
+      g.strokeStyle = "rgba(150,160,180,0.55)";
+      g.lineWidth = dpr;
+      g.beginPath();
+      previewScript.pts.forEach(([at, pos], i) => {
+        const x = mediaToX(at);
+        const y = Y(pos / 100);
+        if (i) g.lineTo(x, y); else g.moveTo(x, y);
+      });
+      g.stroke();
+
+      // Beat markers: where beat mode will actually fire.
+      if (previewScript.beats?.length) {
+        g.strokeStyle = "rgba(150,160,180,0.30)";
+        for (const at of previewScript.beats) {
+          const x = mediaToX(at);
+          if (x < -10 || x > w + 10) continue;
+          g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+        }
+      }
+
+      // Playhead: where the script is being read right now.
+      const px = mediaToX(anchor.m);
+      g.strokeStyle = "rgba(255,255,255,0.28)";
+      g.setLineDash([3 * dpr, 3 * dpr]);
+      g.beginPath(); g.moveTo(px, 0); g.lineTo(px, h); g.stroke();
       g.setLineDash([]);
     }
 
@@ -1230,6 +1444,7 @@ function injectStyles() {
   function setPreview(on) {
     previewOn = !!on;
     previewSamples = [];
+    previewScript  = null;
     const wrap = byId(`${PLUGIN_ID}-preview-wrap`);
     if (wrap) wrap.style.display = previewOn ? "block" : "none";
     sendMsg({ type: "preview", enabled: previewOn });
@@ -1353,16 +1568,33 @@ function injectStyles() {
   }
 
   // ── Handy WiFi Panel ───────────────────────────────────────────────────────
+  // ── Manual mode ────────────────────────────────────────────────────────────
+  // The toolbar shows only what you touch mid-scene: on/off, intensity, and
+  // which pattern is running. Everything that shapes the pattern lives in a
+  // popover, because those are set-once values and having eight unlabelled
+  // number boxes in the player chrome made the whole bar unreadable.
+
+  // Plain-language description of each pattern, shown on its card and echoed
+  // in the popover header so the selected one is never ambiguous.
+  const MANUAL_SHAPES = [
+    ["constant", "Steady",  "One level, held. No movement."],
+    ["wave",     "Wave",    "Rises and falls smoothly, over and over."],
+    ["pulse",    "Pulse",   "A short buzz at a regular beat, silence between."],
+    ["ramp",     "Ramp",    "Climbs to the top, drops, climbs again."],
+    ["tease",    "Tease",   "Buzzes that start short and grow longer."],
+    ["random",   "Random",  "Unpredictable level, changing on its own."],
+  ];
+  const shapeLabel = (v) => (MANUAL_SHAPES.find((x) => x[0] === v) || ["", v, ""])[1];
+  const shapeBlurb = (v) => (MANUAL_SHAPES.find((x) => x[0] === v) || ["", "", ""])[2];
+
   function buildManualControls() {
     const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;" +
-                         "padding-left:10px;margin-left:2px;border-left:1px solid #3a3a3a;";
+    wrap.className = `${PLUGIN_ID}-group`;
 
     const btn = document.createElement("button");
     btn.id = `${PLUGIN_ID}-manual-btn`;
-    btn.textContent  = manualOn ? "Manual ON" : "Manual";
-    btn.style.cssText = buttonStyle(manualOn ? "#2a6" : "#333");
-    btn.title = "Drive the toy directly, ignoring the funscript. Hotkey: \\";
+    btn.className = `${PLUGIN_ID}-primary`;
+    btn.title = "Drive the toy directly, ignoring the funscript.";
     btn.addEventListener("click", () => setManual(!manualOn));
     wrap.appendChild(btn);
 
@@ -1371,156 +1603,212 @@ function injectStyles() {
     sld.type  = "range";
     sld.min   = "0"; sld.max = "100"; sld.step = "1";
     sld.value = String(manualLevel);
-    sld.title = "Master intensity. Scales the funscript output and sets the " +
-                "manual level. Hotkeys: [ softer, ] stronger";
+    sld.title = "Intensity. Also scales funscript output.";
     sld.className = `${PLUGIN_ID}-slider`;
-    sld.style.width = "150px";
-    // Live: dragging changes output immediately, whether a script is playing or not.
+    sld.style.width = "130px";
+    // Live: dragging changes output immediately, script playing or not.
     sld.addEventListener("input", () => {
       manualLevel = parseInt(sld.value, 10);
       const lbl = byId(`${PLUGIN_ID}-manual-val`);
       if (lbl) lbl.textContent = `${manualLevel}%`;
       throttledManual();
+      updateManualHint();
     });
     sld.addEventListener("change", () => setManual(manualOn, manualLevel));
     wrap.appendChild(sld);
 
     const val = document.createElement("span");
     val.id = `${PLUGIN_ID}-manual-val`;
-    val.style.cssText = "min-width:38px;text-align:right;opacity:0.85;" +
-                        "font-variant-numeric:tabular-nums;";
+    val.className = `${PLUGIN_ID}-num`;
     val.textContent = `${manualLevel}%`;
     wrap.appendChild(val);
 
-    // Waveform for manual mode.
-    const shapeSel = document.createElement("select");
-    shapeSel.id = `${PLUGIN_ID}-manual-shape`;
-    shapeSel.style.cssText = "background:#222;color:#fff;border:1px solid #555;" +
-                             "border-radius:3px;padding:2px 4px;font-size:11px;";
-    shapeSel.title = "How manual mode moves. Constant holds one level, the rest cycle.";
-    [
-      ["constant", "Constant"],
-      ["wave",     "Wave"],
-      ["pulse",    "Pulse"],
-      ["ramp",     "Ramp"],
-      ["tease",    "Tease"],
-      ["random",   "Random"],
-    ].forEach(([v, label]) => {
-      const o = document.createElement("option");
-      o.value = v; o.textContent = label;
-      shapeSel.appendChild(o);
+    // Opens the pattern popover and doubles as the current-pattern readout.
+    const patBtn = document.createElement("button");
+    patBtn.id = `${PLUGIN_ID}-pattern-btn`;
+    patBtn.title = "Choose and tune the manual pattern";
+    patBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleManualPopover();
     });
-    shapeSel.value = manualShape;
-    shapeSel.addEventListener("change", () => {
-      manualShape = shapeSel.value;
-      saveSettingsToStorage();
-      updateManualUI();
-      sendManual();
-      log(`Manual shape: ${manualShape}`, "debug");
-    });
-    wrap.appendChild(shapeSel);
-
-    // Cycle length, only meaningful for the shaped modes.
-    const per = document.createElement("input");
-    per.id    = `${PLUGIN_ID}-manual-period`;
-    per.type  = "number";
-    per.min   = "0.5"; per.max = "60"; per.step = "0.5";
-    per.value = String(manualPeriod);
-    per.title = "Seconds per cycle";
-    per.style.cssText = "width:52px;background:#222;color:#fff;border:1px solid #555;" +
-                        "border-radius:3px;padding:2px 4px;font-size:11px;";
-    per.addEventListener("change", () => {
-      const v = parseFloat(per.value);
-      if (!isNaN(v)) {
-        manualPeriod = Math.max(0.5, Math.min(60, v));
-        per.value = String(manualPeriod);
-        saveSettingsToStorage();
-        sendManual();
-      }
-    });
-    wrap.appendChild(per);
-
-    const perUnit = document.createElement("span");
-    perUnit.id = `${PLUGIN_ID}-manual-period-unit`;
-    perUnit.textContent = "s";
-    perUnit.style.cssText = "opacity:0.6;";
-    wrap.appendChild(perUnit);
-
-    // Per-shape fine tuning. Each control announces itself with a label so it
-    // is obvious which knob belongs to the shape currently selected.
-    function numField(id, label, min, max, step, get, set, title, unit) {
-      const box = document.createElement("span");
-      box.id = `${PLUGIN_ID}-manual-${id}-box`;
-      box.style.cssText = "display:inline-flex;align-items:center;gap:3px;";
-
-      const lab = document.createElement("span");
-      lab.textContent = label;
-      lab.style.cssText = "opacity:0.6;font-size:11px;";
-      box.appendChild(lab);
-
-      const inp = document.createElement("input");
-      inp.id   = `${PLUGIN_ID}-manual-${id}`;
-      inp.type = "number";
-      inp.min  = String(min); inp.max = String(max); inp.step = String(step);
-      inp.value = String(get());
-      inp.title = title;
-      inp.style.cssText = "width:56px;background:#222;color:#fff;border:1px solid #555;" +
-                          "border-radius:3px;padding:2px 4px;font-size:11px;";
-      inp.addEventListener("change", () => {
-        const v = parseFloat(inp.value);
-        if (isNaN(v)) { inp.value = String(get()); return; }
-        set(Math.max(min, Math.min(max, v)));
-        inp.value = String(get());
-        saveSettingsToStorage();
-        updateManualUI();
-        sendManual();
-      });
-      box.appendChild(inp);
-
-      if (unit) {
-        const u = document.createElement("span");
-        u.textContent = unit;
-        u.style.cssText = "opacity:0.6;font-size:11px;";
-        box.appendChild(u);
-      }
-      wrap.appendChild(box);
-      return box;
-    }
-
-    numField("onms", "buzz", 60, 10000, 20,
-             () => manualOnMs, v => { manualOnMs = Math.round(v); },
-             "How long each buzz lasts. Pulse and Tease only. " +
-             "Short values read as a tap, long values as a throb.", "ms");
-
-    numField("depth", "floor", 0, 95, 5,
-             () => manualDepth, v => { manualDepth = Math.round(v); },
-             "How far Wave and Ramp dip between peaks, as a percentage of the " +
-             "peak. 0 means they fall all the way to silence.", "%");
-
-    numField("build", "build", 0, 200, 1,
-             () => manualBuild, v => { manualBuild = Math.round(v); },
-             "Tease only. Number of cycles spent growing the buzz from its " +
-             "shortest to its full length. 0 disables the build.", "cyc");
-
-    numField("ceiling", "max", 1, 100, 1,
-             () => manualCeiling, v => { manualCeiling = Math.round(v); },
-             "Ceiling on motor output. The intensity slider spans 0 to this, " +
-             "so dropping it to 10 spreads the whole slider across the " +
-             "gentlest tenth of the motor's range.", "%");
-
-    numField("microms", "micro", 40, 1000, 10,
-             () => manualMicroMs, v => { manualMicroMs = Math.round(v); },
-             "Length of each micro on-pulse when the requested level sits " +
-             "below the motor's own floor. Short is a tick, long is a purr. " +
-             "Needs Micro switched on.", "ms");
-
-    const hint = document.createElement("span");
-    hint.id = `${PLUGIN_ID}-manual-hint`;
-    hint.style.cssText = "opacity:0.55;font-size:11px;white-space:nowrap;";
-    wrap.appendChild(hint);
+    wrap.appendChild(patBtn);
 
     return wrap;
   }
+
+  // ── Pattern popover ────────────────────────────────────────────────────────
+  let manualPop = null;
+
+  function numRow(id, label, help, min, max, step, unit, get, set) {
+    const row = document.createElement("div");
+    row.id = `${PLUGIN_ID}-manual-${id}-box`;
+    row.className = `${PLUGIN_ID}-field`;
+
+    const head = document.createElement("div");
+    head.className = `${PLUGIN_ID}-field-head`;
+
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.setAttribute("for", `${PLUGIN_ID}-manual-${id}`);
+    head.appendChild(lab);
+
+    const ctl = document.createElement("div");
+    ctl.className = `${PLUGIN_ID}-field-ctl`;
+
+    const inp = document.createElement("input");
+    inp.id   = `${PLUGIN_ID}-manual-${id}`;
+    inp.type = "number";
+    inp.min  = String(min); inp.max = String(max); inp.step = String(step);
+    inp.value = String(get());
+    inp.addEventListener("change", () => {
+      const v = parseFloat(inp.value);
+      if (isNaN(v)) { inp.value = String(get()); return; }
+      set(Math.max(min, Math.min(max, v)));
+      inp.value = String(get());
+      saveSettingsToStorage();
+      updateManualUI();
+      sendManual();
+    });
+    ctl.appendChild(inp);
+
+    if (unit) {
+      const u = document.createElement("span");
+      u.className = `${PLUGIN_ID}-unit`;
+      u.textContent = unit;
+      ctl.appendChild(u);
+    }
+    head.appendChild(ctl);
+    row.appendChild(head);
+
+    const hint = document.createElement("div");
+    hint.className = `${PLUGIN_ID}-field-help`;
+    hint.textContent = help;
+    row.appendChild(hint);
+
+    return row;
+  }
+
+  function buildManualPopover() {
+    const pop = document.createElement("div");
+    pop.id = `${PLUGIN_ID}-pattern-pop`;
+    pop.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+
+    const head = document.createElement("div");
+    head.className = `${PLUGIN_ID}-pop-head`;
+    head.innerHTML = `<strong>Manual pattern</strong>
+      <span class="${PLUGIN_ID}-pop-sub">How the toy behaves when the funscript is not driving it</span>`;
+    pop.appendChild(head);
+
+    // Pattern cards
+    const grid = document.createElement("div");
+    grid.className = `${PLUGIN_ID}-cards`;
+    MANUAL_SHAPES.forEach(([value, label, blurb]) => {
+      const card = document.createElement("button");
+      card.className = `${PLUGIN_ID}-card`;
+      card.dataset.shape = value;
+      card.innerHTML = `<span class="${PLUGIN_ID}-card-name">${label}</span>
+                        <span class="${PLUGIN_ID}-card-blurb">${blurb}</span>`;
+      card.addEventListener("click", () => {
+        manualShape = value;
+        saveSettingsToStorage();
+        updateManualUI();
+        sendManual();
+        log(`Manual pattern: ${value}`, "debug");
+      });
+      grid.appendChild(card);
+    });
+    pop.appendChild(grid);
+
+    // Timing, relabelled per pattern by updateManualUI()
+    const timing = document.createElement("div");
+    timing.className = `${PLUGIN_ID}-section`;
+    timing.id = `${PLUGIN_ID}-sec-timing`;
+    timing.innerHTML = `<div class="${PLUGIN_ID}-sec-title">Timing</div>`;
+    timing.appendChild(numRow(
+      "period", "Cycle length",
+      "How long one full cycle takes.",
+      0.5, 60, 0.5, "sec",
+      () => manualPeriod, (v) => { manualPeriod = Math.round(v * 2) / 2; }
+    ));
+    timing.appendChild(numRow(
+      "onms", "Buzz length",
+      "How long each buzz lasts. Short reads as a tap, long as a throb.",
+      60, 10000, 20, "ms",
+      () => manualOnMs, (v) => { manualOnMs = Math.round(v); }
+    ));
+    timing.appendChild(numRow(
+      "depth", "Dip to",
+      "How far it falls between peaks, as a share of the peak. 0 falls to silence.",
+      0, 95, 5, "%",
+      () => manualDepth, (v) => { manualDepth = Math.round(v); }
+    ));
+    timing.appendChild(numRow(
+      "build", "Build-up",
+      "Cycles spent growing each buzz from its shortest to its full length. 0 turns the build off.",
+      0, 200, 1, "cycles",
+      () => manualBuild, (v) => { manualBuild = Math.round(v); }
+    ));
+    pop.appendChild(timing);
+
+    // Output limits
+    const limits = document.createElement("div");
+    limits.className = `${PLUGIN_ID}-section`;
+    limits.innerHTML = `<div class="${PLUGIN_ID}-sec-title">Output limits</div>`;
+    limits.appendChild(numRow(
+      "ceiling", "Power limit",
+      "The strongest the motor may go. Lowering it stretches the whole intensity slider across a gentler range.",
+      1, 100, 1, "%",
+      () => manualCeiling, (v) => { manualCeiling = Math.round(v); }
+    ));
+    limits.appendChild(numRow(
+      "microms", "Micro pulse",
+      "Length of each pulse used to reach levels below the motor's floor. Short is a tick, long is a purr.",
+      40, 1000, 10, "ms",
+      () => manualMicroMs, (v) => { manualMicroMs = Math.round(v); }
+    ));
+    pop.appendChild(limits);
+
+    const foot = document.createElement("div");
+    foot.className = `${PLUGIN_ID}-pop-foot`;
+    foot.id = `${PLUGIN_ID}-manual-hint`;
+    pop.appendChild(foot);
+
+    document.body.appendChild(pop);
+    return pop;
+  }
+
+  function toggleManualPopover(force) {
+    if (!manualPop) manualPop = buildManualPopover();
+    const show = force !== undefined ? force : !manualPop.classList.contains("is-open");
+    manualPop.classList.toggle("is-open", show);
+    if (show) {
+      positionManualPopover();
+      updateManualUI();
+    }
+  }
+
+  function positionManualPopover() {
+    const anchor = byId(`${PLUGIN_ID}-pattern-btn`);
+    if (!anchor || !manualPop) return;
+    const a = anchor.getBoundingClientRect();
+    const r = manualPop.getBoundingClientRect();
+    const pad = 10;
+    let left = a.left;
+    let top  = a.top - r.height - 8;                 // above the toolbar by default
+    if (top < pad) top = a.bottom + 8;               // no room, drop below
+    left = Math.max(pad, Math.min(left, window.innerWidth - r.width - pad));
+    manualPop.style.left = Math.round(left) + "px";
+    manualPop.style.top  = Math.round(top) + "px";
+  }
+
+  document.addEventListener("pointerdown", (ev) => {
+    if (manualPop && manualPop.contains(ev.target)) return;
+    if (byId(`${PLUGIN_ID}-pattern-btn`)?.contains(ev.target)) return;
+    toggleManualPopover(false);
+  }, true);
+  window.addEventListener("resize", () => {
+    if (manualPop?.classList.contains("is-open")) positionManualPopover();
+  });
 
   function buildVibeControls() {
     const wrap = document.createElement("span");
@@ -1797,10 +2085,11 @@ function injectStyles() {
     row1.appendChild(scriptLabel);
 
 
+    // Master kill switch. "Output ON/OFF" read as a verb to some people and a
+    // state to others, so say which it is and show it.
     const outBtn = document.createElement("button");
     outBtn.id = `${PLUGIN_ID}-output-btn`;
-    outBtn.textContent  = outputOn ? "Output ON" : "Output OFF";
-    outBtn.style.cssText = buttonStyle(outputOn ? "#333" : "#a33");
+    outBtn.className = `${PLUGIN_ID}-primary`;
     outBtn.addEventListener("click", () => setOutput(!outputOn));
     row1.appendChild(outBtn);
 
@@ -1808,9 +2097,8 @@ function injectStyles() {
 
     // Advanced toggle
     const gearBtn = document.createElement("button");
-    gearBtn.textContent = "⚙";
+    gearBtn.textContent = "\u2699";
     gearBtn.title = "Advanced settings";
-    gearBtn.style.cssText = buttonStyle("#333");
     row1.appendChild(gearBtn);
 
     // Connect (Intiface only)
@@ -1870,8 +2158,8 @@ function injectStyles() {
     const subBtn = document.createElement("button");
     function updateSubBtn() {
       const floorPct = (scalarStep * 100).toFixed(0);
-      subBtn.textContent  = vibeSubstep ? "Micro: ON" : "Micro: OFF";
-      subBtn.style.cssText = buttonStyle(vibeSubstep ? "#2a6" : "#333");
+      subBtn.textContent = vibeSubstep ? "Micro pulsing on" : "Micro pulsing off";
+      subBtn.classList.toggle("is-on", vibeSubstep);
       subBtn.title =
         `Gets you below the motor's own floor of ${floorPct}%. It rapidly ` +
         "pulses between silence and one step, and the motor's inertia averages " +
@@ -1892,12 +2180,10 @@ function injectStyles() {
     row2.appendChild(subBtn);
 
     const hotkeyBtn = document.createElement("button");
-    function updateHotkeyBtn() {
-      hotkeyBtn.textContent = hotkeysOn ? "⌨ Hotkeys: ON" : "⌨ Hotkeys: OFF";
-      hotkeyBtn.style.cssText = buttonStyle(hotkeysOn ? "#2a6" : "#333");
-    }
+    hotkeyBtn.id = `${PLUGIN_ID}-hotkey-btn`;
     updateHotkeyBtn();
     hotkeyBtn.addEventListener("click", () => {
+      if (!hotkeysAllowed) return;      // the plugin setting wins
       hotkeysOn = !hotkeysOn;
       updateHotkeyBtn();
       saveSettingsToStorage();
@@ -1906,8 +2192,8 @@ function injectStyles() {
 
     const scopeBtn = document.createElement("button");
     function updateScopeBtn() {
-      scopeBtn.textContent  = previewOn ? "📈 Signal: ON" : "📈 Signal: OFF";
-      scopeBtn.style.cssText = buttonStyle(previewOn ? "#2a6" : "#333");
+      scopeBtn.textContent = previewOn ? "Signal preview on" : "Signal preview";
+      scopeBtn.classList.toggle("is-on", previewOn);
       scopeBtn.title = "Live scope of what is actually being sent to the toy. " +
                        "Debug only: it streams ~25 samples/sec from the backend, " +
                        "so leave it off during normal use.";
@@ -1919,15 +2205,12 @@ function injectStyles() {
     });
     row2.appendChild(scopeBtn);
 
-    const hint = document.createElement("span");
-    hint.style.cssText = "opacity:0.55;font-size:11px;";
-    hint.textContent = "E output · \\ manual · [ ] level · 0 stop";
-    row2.appendChild(hint);
+
 
     gearBtn.addEventListener("click", () => {
       advancedOpen = !advancedOpen;
       row2.style.display = advancedOpen ? "flex" : "none";
-      gearBtn.style.cssText = buttonStyle(advancedOpen ? "#2a6" : "#333");
+      gearBtn.classList.toggle("is-on", advancedOpen);
       // closing the panel hides the scope, so stop paying for the stream
       if (!advancedOpen && previewOn) { setPreview(false); updateScopeBtn(); }
     });
@@ -2171,7 +2454,7 @@ function injectStyles() {
 
   function installHotkeys() {
     document.addEventListener("keydown", (e) => {
-      if (!hotkeysOn) return;
+      if (!hotkeysOn || !hotkeysAllowed) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (typingInAField(e.target)) return;
       if (!byId(`${PLUGIN_ID}-toolbar`)) return;

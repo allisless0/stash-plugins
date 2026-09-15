@@ -1,6 +1,6 @@
 name: IntifaceSync
 description: "Syncs Funscripts with Buttplug.io / Intiface Central / TheHandy devices. Vibe fork adds support for vibrating (scalar) toys such as Lovense."
-version: 1.16-vibe
+version: 1.18-vibe
 url: https://github.com/allisless0/stash-plugins
 
 exec:
@@ -19,6 +19,10 @@ settings:
   enableHandy:
     displayName: Show The Handy controls
     description: "Off by default. Turn on only if you use a Handy over WiFi; it adds the mode switch and connection key panel to the toolbar."
+    type: BOOLEAN
+  disableHotkeys:
+    displayName: Disable keyboard shortcuts
+    description: "Stops the plugin listening for E, backslash, square brackets and 0. Turn this on if those keys clash with other plugins or with how you use Stash. All controls remain available in the toolbar."
     type: BOOLEAN
 
 tasks:
