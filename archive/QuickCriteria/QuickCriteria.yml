@@ -1,0 +1,17 @@
+name: QuickCriteria
+description: "Keyboard companion for the Advanced Rating plugin. Press R on a performer page to score every criterion, with evidence from their scene ratings. Does not touch scenes."
+version: 2.3.0
+
+ui:
+  javascript:
+    - QuickCriteria.js
+
+settings:
+  parentTagName:
+    displayName: Parent tag name
+    description: "The Advanced Rating parent tag for performers. Leave as the default unless you renamed it."
+    type: STRING
+  hiddenCriteria:
+    displayName: Hidden criteria
+    description: "Comma-separated criterion names to leave out of the panel. Use this for criteria you disabled in Advanced Rating, since disabling keeps their tags on disk."
+    type: STRING

@@ -1,0 +1,7 @@
+name: QuickMark
+description: "Add a scene marker at the current playback position without leaving the player. Press M."
+version: 1.1.0
+
+ui:
+  javascript:
+    - QuickMark.js

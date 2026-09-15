@@ -1,0 +1,7 @@
+name: QuickNav
+description: "Double-click the right half of the video to play the next scene in the queue, the left half for the previous one. Replaces the default double-click-to-fullscreen."
+version: 1.1.0
+
+ui:
+  javascript:
+    - QuickNav.js

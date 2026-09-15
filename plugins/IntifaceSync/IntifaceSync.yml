@@ -1,0 +1,32 @@
+name: IntifaceSync
+description: "Syncs Funscripts with Buttplug.io / Intiface Central / TheHandy devices. Vibe fork adds support for vibrating (scalar) toys such as Lovense."
+version: 1.16-vibe
+url: https://github.com/allisless0/stash-plugins
+
+exec:
+  - python
+  - "{pluginDir}/IntifaceSync.py"
+
+ui:
+  javascript:
+    - IntifaceSync.js
+
+settings:
+  intifaceUrl:
+    displayName: Intiface Server URL
+    description: WebSocket URL of the Intiface Central Server
+    type: STRING
+  enableHandy:
+    displayName: Show The Handy controls
+    description: "Off by default. Turn on only if you use a Handy over WiFi; it adds the mode switch and connection key panel to the toolbar."
+    type: BOOLEAN
+
+tasks:
+  - name: Start Backend
+    description: Launch the IntifaceSync Python backend in the background
+    defaultArgs:
+      mode: startBackend
+  - name: Stop Backend
+    description: Stop the IntifaceSync Python backend
+    defaultArgs:
+      mode: stopBackend

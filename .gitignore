@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.log
+intiface_sync.log
+.DS_Store
+*.funscript
+*.mp4
+.claude/settings.local.json
+_site/

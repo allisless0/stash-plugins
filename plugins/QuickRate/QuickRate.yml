@@ -1,0 +1,7 @@
+name: QuickRate
+description: "Rate the scene you are watching on a 0.0-10.0 scale without leaving the player. Press R."
+version: 1.3.0
+
+ui:
+  javascript:
+    - QuickRate.js
