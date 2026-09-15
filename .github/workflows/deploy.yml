@@ -27,7 +27,7 @@ jobs:
           python-version: "3.12"
       - run: pip install pyyaml
       - name: Run the full validation suite
-        run: ./scripts/validate.sh
+        run: bash ./scripts/validate.sh
 
   build:
     needs: validate
