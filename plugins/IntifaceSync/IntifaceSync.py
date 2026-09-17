@@ -123,6 +123,19 @@ BEAT_GAP_MS           = 3000    # keyframes further apart than this are a pause,
 BEAT_DETECT_EDGE      = 5       # a "beat" keyframe sits within this of 0 or 100
 BEAT_DETECT_FRAC      = 0.95    # fraction of keyframes that must be edge values
 BEAT_DETECT_MIN       = 40      # do not classify tiny scripts
+# Graded beat scripts ("Cock Hero Colors" and friends) alternate on every
+# keyframe like a square wave but never reach 0/100, because the swing height
+# is carrying the intensity instead. Structurally a beat script, so detect it
+# on the structure and read the level off the swing rather than the pace.
+BEAT_ALT_FRAC         = 0.90    # fraction of moves that must reverse direction
+BEAT_MIN_MEDIAN_SWING = 25      # median swing, keeps low-amplitude ripple out
+BEAT_GRID_FRAC        = 0.60    # intervals that must sit on the tempo grid
+BEAT_GRID_TOL         = 0.08    # ...within this fraction of the subdivision
+BEAT_AMP_PCT          = 0.90    # swing percentile mapped to full intensity
+BEAT_AMP_REF_MIN      = 40.0    # ...clamped, so a timid script still reaches the top
+BEAT_AMP_REF_MAX      = 100.0   # ...and a spiky one is not normalised into a drone
+BEAT_AMP_FLOOR        = 0.15    # smallest swing still worth a burst
+BEAT_THIN_MIN_MS      = 150     # beats closer than this get merged, see _thin_beats
 # Peak picking: FunGen and other trackers emit at a fixed frame rate (33ms at
 # 30fps), so most keyframes are interpolation points, not stroke turnarounds.
 # Beat mode runs on extracted turning points instead of the raw list.
@@ -753,11 +766,49 @@ def is_dense_script(actions: list) -> bool:
     return gaps[len(gaps) // 2] < BEAT_DENSE_MEDIAN_MS
 
 
-def detect_beat_script(actions: list) -> bool:
-    """Cock Hero style: nearly every keyframe is 0 or 100 and they alternate.
-    Anything with real intermediate positions is a normal script."""
+def tempo_grid_score(actions: list) -> float:
+    """How musically quantised the timing is: the fraction of intervals that
+    are a simple subdivision or multiple of the modal interval.
+
+    This is what separates a Cock Hero script from an ordinary hand-scripted
+    stroker file. Both alternate on nearly every keyframe with big swings, so
+    shape alone cannot tell them apart, but only one is locked to a beat grid.
+    """
+    gaps = [actions[i + 1]["at"] - actions[i]["at"] for i in range(len(actions) - 1)]
+    gaps = [g for g in gaps if 0 < g <= BEAT_GAP_MS]
+    if len(gaps) < BEAT_DETECT_MIN:
+        return 0.0
+    counts: dict = {}
+    for g in gaps:
+        k = round(g / 10) * 10
+        counts[k] = counts.get(k, 0) + 1
+    base = max(counts, key=counts.get)
+    if base <= 0:
+        return 0.0
+    on_grid = 0
+    for g in gaps:
+        r = g / base
+        for n in (0.25, 1 / 3, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0):
+            if abs(r - n) <= BEAT_GRID_TOL * max(1.0, n):
+                on_grid += 1
+                break
+    return on_grid / len(gaps)
+
+
+def detect_beat_script(actions: list) -> str:
+    """Classify a Cock Hero style script. Returns "edge", "graded" or "".
+
+    "edge"   nearly every keyframe is 0 or 100 and they alternate. Intensity
+             lives in the beat rate, so beat level comes from the pace.
+    "graded" every keyframe is still a turnaround, but the swings are graded
+             (11<->90, 34<->81). Intensity lives in the swing height, so beat
+             level comes from the amplitude.
+    ""       a normal script; speed mode handles it.
+    """
     if len(actions) < BEAT_DETECT_MIN:
-        return False
+        return ""
+
+    # Path A: classic 0/100 square wave.
     edge = 0
     alternations = 0
     last_side = None
@@ -770,11 +821,38 @@ def detect_beat_script(actions: list) -> bool:
         if last_side is not None and side != last_side:
             alternations += 1
         last_side = side
-    if edge / len(actions) < BEAT_DETECT_FRAC:
-        return False
     # a stroker script that happens to hit both ends still alternates; the
     # give-away is that it does so on essentially every keyframe
-    return alternations >= (edge - 1) * 0.9
+    if (edge / len(actions) >= BEAT_DETECT_FRAC
+            and alternations >= (edge - 1) * 0.9):
+        return "edge"
+
+    # Path B: graded square wave. Judge the shape, not the absolute positions.
+    # A dense tracker script fails this twice over: it runs several samples in
+    # one direction, and its per-sample swings are small.
+    if is_dense_script(actions):
+        return ""
+    turns = moves = 0
+    direction = 0
+    swings: list = []
+    for i in range(1, len(actions)):
+        d = actions[i]["pos"] - actions[i - 1]["pos"]
+        if d == 0:
+            continue
+        moves += 1
+        swings.append(abs(d))
+        nd = 1 if d > 0 else -1
+        if direction and nd != direction:
+            turns += 1
+        direction = nd
+    if moves < BEAT_DETECT_MIN:
+        return ""
+    swings.sort()
+    if (turns / moves >= BEAT_ALT_FRAC
+            and swings[len(swings) // 2] >= BEAT_MIN_MEDIAN_SWING
+            and tempo_grid_score(actions) >= BEAT_GRID_FRAC):
+        return "graded"
+    return ""
 
 
 class FunscriptPlayer:
@@ -806,6 +884,10 @@ class FunscriptPlayer:
         self.beat_edge          = "all"      # "all" | "low" | "high": which keyframes count as beats
         self.beat_prominence    = BEAT_PEAK_PROMINENCE
         self._script_is_beat    = False
+        self._script_beat_kind  = ""     # "" | "edge" | "graded"
+        self._beat_level_src    = "speed"  # "speed" | "amp"
+        self._beat_amp_ref      = BEAT_AMP_REF_MAX  # swing that means full intensity
+        self._beats_peak_picked = False  # dense script reduced to turnarounds
         self._beats             = []     # keyframes beat mode fires on
         self.vibe_max_speed     = VIBE_DEFAULT_MAXSPEED
         self.vibe_smooth        = VIBE_DEFAULT_SMOOTH
@@ -911,17 +993,80 @@ class FunscriptPlayer:
         speed = abs(b["pos"] - a["pos"]) / span * 1000.0
         return (pos, speed)
 
+    @staticmethod
+    def _annotate_beats(beats: list) -> list:
+        """Attach the pace and swing each beat is judged by, so thinning can
+        merge a run of beats without losing how hard that run was."""
+        out: list = []
+        for i, b in enumerate(beats):
+            ref = amp = None
+            if i + 1 < len(beats):
+                iv = beats[i + 1]["at"] - b["at"]
+                if 0 < iv <= BEAT_GAP_MS:
+                    ref, amp = iv, abs(beats[i + 1]["pos"] - b["pos"])
+            if ref is None and i > 0:
+                iv = b["at"] - beats[i - 1]["at"]
+                if 0 < iv <= BEAT_GAP_MS:
+                    ref, amp = iv, abs(b["pos"] - beats[i - 1]["pos"])
+            nb = dict(b)
+            nb["_ref"] = ref
+            nb["_amp"] = amp
+            out.append(nb)
+        return out
+
+    @staticmethod
+    def _thin_beats(beats: list) -> list:
+        """Drop beats no scalar device can articulate. A burst needs
+        MANUAL_MIN_ON_MS to spin the motor up and BEAT_MIN_GAP_MS of silence
+        after it, and the on-edge command is held off by VIBE_MIN_INTERVAL_MS
+        for the BLE link. Below BEAT_THIN_MIN_MS apart that is unsatisfiable:
+        the rate limiter swallows most of the beats and the rest smear into a
+        solid buzz. Keep one beat per window and carry the loudest swing of the
+        run onto it, so a fast passage still reads as a loud passage."""
+        if not beats:
+            return beats
+        out = [beats[0]]
+        for b in beats[1:]:
+            if b["at"] - out[-1]["at"] >= BEAT_THIN_MIN_MS:
+                out.append(b)
+                continue
+            prev = out[-1]
+            if (b.get("_amp") or 0) > (prev.get("_amp") or 0):
+                prev["_amp"] = b["_amp"]
+        return out
+
     def _rebuild_beats(self) -> None:
         """Beat mode fires on turnarounds. A square-wave beat script already IS
         turnarounds, so it is used as-is; a densely sampled tracker script gets
-        peak-picked first."""
-        if not self.actions or self._script_is_beat or not is_dense_script(self.actions):
+        peak-picked first. Graded scripts, and anything beating faster than the
+        device can follow, get annotated and thinned on top."""
+        if not self.actions:
             self._beats = self.actions
             return
-        peaks = extract_peaks(self.actions, self.beat_prominence, BEAT_PEAK_MIN_SEP_MS)
-        # If picking collapsed the script to almost nothing the settings are
-        # wrong for this file; fall back rather than go silent.
-        self._beats = peaks if len(peaks) >= BEAT_DETECT_MIN else self.actions
+        self._beats_peak_picked = False
+        if self._script_is_beat or not is_dense_script(self.actions):
+            base = self.actions
+        else:
+            peaks = extract_peaks(self.actions, self.beat_prominence, BEAT_PEAK_MIN_SEP_MS)
+            # If picking collapsed the script to almost nothing the settings are
+            # wrong for this file; fall back rather than go silent.
+            base = peaks if len(peaks) >= BEAT_DETECT_MIN else self.actions
+            self._beats_peak_picked = base is peaks
+
+        # Normalise amplitude against this script's own reach, not the 0-100
+        # nominal range: a script that tops out at 70 should still get to full.
+        swings = sorted(abs(base[i + 1]["pos"] - base[i]["pos"])
+                        for i in range(len(base) - 1))
+        if swings:
+            ref = swings[min(len(swings) - 1, int(len(swings) * BEAT_AMP_PCT))]
+            self._beat_amp_ref = max(BEAT_AMP_REF_MIN, min(BEAT_AMP_REF_MAX, float(ref)))
+
+        needs_thinning = any(0 < base[i + 1]["at"] - base[i]["at"] < BEAT_THIN_MIN_MS
+                             for i in range(len(base) - 1))
+        if not needs_thinning and self._beat_level_src != "amp":
+            self._beats = base          # unchanged path, keeps identity
+            return
+        self._beats = self._thin_beats(self._annotate_beats(base))
 
     def effective_vibe_mode(self) -> str:
         if self.vibe_mode == "auto":
@@ -961,34 +1106,39 @@ class FunscriptPlayer:
 
         # pace reference: the interval to the next keyframe, or the previous one
         # at the end of a section. Two long gaps around it = isolated, stay quiet.
-        ref = dpos = None
-        if i + 1 < len(actions):
-            iv = actions[i + 1]["at"] - a["at"]
-            if 0 < iv <= BEAT_GAP_MS:
-                ref, dpos = iv, abs(actions[i + 1]["pos"] - a["pos"])
-        if ref is None and i > 0:
-            iv = a["at"] - actions[i - 1]["at"]
-            if 0 < iv <= BEAT_GAP_MS:
-                ref, dpos = iv, abs(a["pos"] - actions[i - 1]["pos"])
+        if "_ref" in a:
+            ref, dpos = a["_ref"], a["_amp"]      # precomputed, survives thinning
+        else:
+            ref = dpos = None
+            if i + 1 < len(actions):
+                iv = actions[i + 1]["at"] - a["at"]
+                if 0 < iv <= BEAT_GAP_MS:
+                    ref, dpos = iv, abs(actions[i + 1]["pos"] - a["pos"])
+            if ref is None and i > 0:
+                iv = a["at"] - actions[i - 1]["at"]
+                if 0 < iv <= BEAT_GAP_MS:
+                    ref, dpos = iv, abs(a["pos"] - actions[i - 1]["pos"])
         if ref is None:
             return 0.0
 
         on_ms = min(self.beat_on_ms, max(MANUAL_MIN_ON_MS, ref - BEAT_MIN_GAP_MS))
         if t_ms - a["at"] > on_ms:
             return 0.0
-        speed  = dpos / ref * 1000.0
-        target = self._vibe_target(1.0, speed)
+        if self._beat_level_src == "amp":
+            # Graded script: the swing carries the intensity. Pace is already
+            # expressed as how often the bursts land, so using it again here
+            # would cancel the swing out (they move together by construction).
+            target = self._shape(max(BEAT_AMP_FLOOR, min(1.0, dpos / self._beat_amp_ref)))
+        else:
+            target = self._vibe_target(1.0, dpos / ref * 1000.0)
         if target <= 0.0:
             return 0.0
         # never hand a burst to the sub-step pulser; one step is the floor here
         step = self.bp.scalar_step() if hasattr(self.bp, "scalar_step") else VIBE_STEP
         return max(step, target)
 
-    def _vibe_target(self, pos: float, speed: float) -> float:
-        if self.vibe_mode == "position":
-            raw = pos
-        else:
-            raw = speed / self.vibe_max_speed if self.vibe_max_speed > 0 else 0.0
+    def _shape(self, raw: float) -> float:
+        """Intensity limits, invert and master, applied to a 0..1 request."""
         raw = max(0.0, min(1.0, raw))
         if self.invert:
             raw = 1.0 - raw
@@ -997,6 +1147,13 @@ class FunscriptPlayer:
         lo, hi = self.stroke_min, self.stroke_max
         shaped = lo + raw * (hi - lo)
         return max(0.0, min(1.0, shaped * self.master))
+
+    def _vibe_target(self, pos: float, speed: float) -> float:
+        if self.vibe_mode == "position":
+            raw = pos
+        else:
+            raw = speed / self.vibe_max_speed if self.vibe_max_speed > 0 else 0.0
+        return self._shape(raw)
 
     def _preview_script_window(self, media_ms: float) -> dict | None:
         """The slice of the funscript the scope can currently show.
@@ -1406,12 +1563,17 @@ class FunscriptPlayer:
     def load(self, actions: list) -> None:
         self.actions = sorted(actions, key=lambda a: a["at"])
         self._last_sent_idx = -1
-        self._script_is_beat = detect_beat_script(self.actions)
+        self._script_beat_kind = detect_beat_script(self.actions)
+        self._script_is_beat   = bool(self._script_beat_kind)
+        self._beat_level_src   = "amp" if self._script_beat_kind == "graded" else "speed"
         self._rebuild_beats()
         if self.actions:
             extra = ""
             if self._script_is_beat:
-                extra = " [beat script]"
+                extra = f" [beat script: {self._script_beat_kind}]"
+                if len(self._beats) < len(self.actions):
+                    extra += (f", thinned {len(self.actions)} -> {len(self._beats)} "
+                              f"beats for the device")
             elif self._beats is not self.actions:
                 extra = (f" [dense, {len(self._beats)} peaks extracted "
                          f"for beat mode]")
@@ -1819,12 +1981,12 @@ class BackendServer:
                                   else self._manual.get("micro_ms", MANUAL_DEFAULT_MICROMS)),
                 "scalarStep": (self.bp.scalar_step() if self.bp else VIBE_STEP),
                 "beatScript": bool(self.player and self.player._script_is_beat),
+                "beatKind": (self.player._script_beat_kind if self.player else ""),
                 "beatPeaks": (len(self.player._beats) if self.player else 0),
                 "driftMs": (round(self.player._sync_drift_ms) if self.player else 0),
                 "previewOn": self._preview_on,
                 "rate": (self.player.rate if self.player else 1.0),
-                "beatPicked": bool(self.player and self.player.actions
-                                   and self.player._beats is not self.player.actions),
+                "beatPicked": bool(self.player and self.player._beats_peak_picked),
                 "vibeEffective": (self.player.effective_vibe_mode() if self.player else "speed"),
                 "devices":   [
                     {"index": idx, "name": dev.get("DeviceName", "?"),

@@ -2301,7 +2301,8 @@ function injectStyles() {
       const { connected, playing, devices, error } = statusData;
       let devNames = (devices || []).map(d => d.name).join(", ") || "–";
       if (statusData.beatScript) {
-        devNames += statusData.vibeEffective === "beat" ? " ♩beat" : " ♩(beat script, mode not beat)";
+        const kind = statusData.beatKind === "graded" ? "beat/amp" : "beat";
+        devNames += statusData.vibeEffective === "beat" ? ` ♩${kind}` : " ♩(beat script, mode not beat)";
       } else if (statusData.beatPicked && statusData.vibeEffective === "beat") {
         devNames += ` ♩${statusData.beatPeaks} peaks`;
       }
