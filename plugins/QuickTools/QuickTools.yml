@@ -1,6 +1,6 @@
 name: QuickTools
-description: "Keyboard and mouse shortcuts for the scene player. R rates, M adds a marker, double-click jumps through the scene queue. Each feature can be turned off."
-version: 1.0.0
+description: "Keyboard and mouse shortcuts for the scene player. R rates, M adds a marker, D marks the scene for delete, double-click jumps through the scene queue. Each feature can be turned off."
+version: 1.1.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
@@ -16,6 +16,14 @@ settings:
     displayName: Disable marker panel (M)
     description: "Turn off the M hotkey that adds a scene marker at the current position."
     type: BOOLEAN
+  disableDelete:
+    displayName: Disable mark for delete (D)
+    description: "Turn off the D hotkey that toggles the delete tag on the current scene."
+    type: BOOLEAN
+  deleteTagName:
+    displayName: Delete tag name
+    description: "Tag that D toggles. Created the first time you press D. Leave blank for 'Marked for Delete'. Nothing is ever deleted by the plugin: filter the scene list by this tag when you want to clear them out."
+    type: STRING
   enableNav:
     displayName: Enable double-click queue navigation
     description: "Off by default because it replaces double-click-to-fullscreen. When on, double-clicking the right half of the video plays the next scene in the queue and the left half the previous one. Hold Shift to get fullscreen back."

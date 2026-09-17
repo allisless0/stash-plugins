@@ -1,9 +1,10 @@
 /**
  * QuickTools - Stash UI plugin
  *
- * Three shortcuts for the scene player, sharing one core:
+ * Four shortcuts for the scene player, sharing one core:
  *   R            rate the scene, 0.0 - 10.0
  *   M            add a marker at the current position
+ *   D            toggle the "Marked for Delete" tag
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -104,14 +105,24 @@
   // Defaults are the shipped behaviour: rating and markers on, nav off. Nav is
   // opt-in because it replaces double-click-to-fullscreen, which people have
   // muscle memory for.
-  const settings = { disableRating: false, disableMarkers: false, enableNav: false };
+  const settings = {
+    disableRating:  false,
+    disableMarkers: false,
+    enableNav:      false,
+    disableDelete:  false,
+    deleteTagName:  "",     // blank means DEFAULT_DELETE_TAG
+  };
 
   async function loadSettings() {
     try {
       const d   = await gql(`query { configuration { plugins } }`);
       const own = d?.configuration?.plugins?.[PLUGIN_ID] ?? {};
       for (const key of Object.keys(settings)) {
-        if (typeof own[key] === "boolean") settings[key] = own[key];
+        const want = typeof settings[key];
+        const got  = own[key];
+        if (typeof got !== want) continue;
+        if (want === "string") { if (got.trim()) settings[key] = got.trim(); }
+        else settings[key] = got;
       }
       log(`Settings: ${JSON.stringify(settings)}`);
     } catch (e) {
@@ -227,8 +238,39 @@
 }
 #qt-flash.qt-on { opacity: 1; transform: scale(1); }
 
+/* marked for delete: persistent badge, pinned to the player's top-right */
+#qt-del-badge {
+  position: fixed; z-index: 10002; pointer-events: none;
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 5px; white-space: nowrap;
+  background: rgba(26,15,15,.82); border: 1px solid #a3403a;
+  color: #f0d3d0; font-size: 12px; font-weight: 600; letter-spacing: .03em;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  opacity: 0; transform: translateY(-4px);
+  transition: opacity .14s ease, transform .14s ease;
+}
+#qt-del-badge.qt-on { opacity: 1; transform: translateY(0); }
+#qt-del-badge .qt-del-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #e2574c; box-shadow: 0 0 6px #e2574c;
+}
+
+/* marked for delete: the brief confirmation over the player */
+#qt-del-toast {
+  position: fixed; z-index: 10003; pointer-events: none;
+  padding: 10px 18px; border-radius: 6px; white-space: nowrap;
+  background: rgba(0,0,0,.74); border: 1px solid #a3403a;
+  color: #fff; font-size: 15px; font-weight: 600;
+  box-shadow: 0 6px 22px rgba(0,0,0,.55);
+  opacity: 0; transform: translate(-50%,-50%) scale(.92);
+  transition: opacity .16s ease, transform .16s ease;
+}
+#qt-del-toast.qt-on  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+#qt-del-toast.qt-off { border-color: #4a5560; }
+#qt-del-toast.qt-err { border-color: #f5a623; color: #f5d8a0; font-size: 13px; }
+
 @media (prefers-reduced-motion: reduce) {
-  .qt-panel, #qt-flash { transition: none; }
+  .qt-panel, #qt-flash, #qt-del-badge, #qt-del-toast { transition: none; }
 }
 `;
     document.head.appendChild(s);
@@ -1017,6 +1059,257 @@
     return { onDblClick };
   })();
 
+  // ═══ Marked for delete (D) ═════════════════════════════════════════════════
+  // A plain tag, not a custom field or a sentinel rating, because the reaping
+  // step already exists: filter the scene list by the tag, select all, delete.
+  // This module only has to keep one tag_ids array honest.
+  //
+  // Deliberately not a panel. It never registers with the panel registry, so
+  // it does not steal the keyboard and does not close on the next click.
+
+  const Del = (() => {
+    const DEFAULT_NAME = "Marked for Delete";
+    const CACHE_KEY    = "quickToolsDeleteTag";   // { name, id }
+    const TOAST_MS     = 1400;
+    const POLL_MS      = 500;
+
+    let tagId      = null;    // resolved lazily, never on page load
+    let lookedUp   = false;   // a no-create lookup has run for the current name
+    let sceneId    = null;
+    let marked     = false;
+    let busy       = false;
+    let badge      = null;
+    let toast      = null;
+    let toastTimer = null;
+    let rafPending = false;
+
+    const tagName = () => (settings.deleteTagName || DEFAULT_NAME);
+
+    // ── Tag resolution ───────────────────────────────────────────────────────
+    // The id is cached in localStorage against the name it was resolved for, so
+    // renaming the tag in the plugin settings invalidates it for free.
+
+    function readCached() {
+      try {
+        const o = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+        return (o && o.name === tagName() && o.id) ? String(o.id) : null;
+      } catch { return null; }
+    }
+
+    function writeCached(id) {
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ name: tagName(), id })); }
+      catch (e) { log(`Could not cache the delete tag: ${e.message}`); }
+    }
+
+    function forgetCached() {
+      try { localStorage.removeItem(CACHE_KEY); } catch {}
+      tagId = null;
+      lookedUp = false;
+    }
+
+    async function findTag() {
+      const name = tagName();
+      const d = await gql(
+        `query ($f: FindFilterType) { findTags(filter: $f) { tags { id name } } }`,
+        { f: { q: name, per_page: 25, sort: "name", direction: "ASC" } }
+      );
+      const hit = (d?.findTags?.tags ?? [])
+        .find((t) => t.name.toLowerCase() === name.toLowerCase());
+      return hit ? String(hit.id) : null;
+    }
+
+    // create=false is the page-load path: if the tag does not exist yet then no
+    // scene can carry it, so there is nothing to check and nothing to create.
+    async function ensureTag(create) {
+      if (tagId) return tagId;
+
+      const cached = readCached();
+      if (cached) { tagId = cached; return tagId; }
+
+      if (!lookedUp) {
+        tagId = await findTag();
+        lookedUp = true;
+        if (tagId) { writeCached(tagId); return tagId; }
+      }
+      if (!create) return null;
+
+      const d = await gql(
+        `mutation ($input: TagCreateInput!) { tagCreate(input: $input) { id name } }`,
+        { input: { name: tagName() } }
+      );
+      tagId = d?.tagCreate?.id ? String(d.tagCreate.id) : null;
+      if (tagId) writeCached(tagId);
+      return tagId;
+    }
+
+    // ── Scene state ──────────────────────────────────────────────────────────
+
+    async function sceneTags(id) {
+      const d = await gql(`query ($id: ID!) { findScene(id: $id) { id tags { id } } }`, { id });
+      return (d?.findScene?.tags ?? []).map((t) => String(t.id));
+    }
+
+    // sceneUpdate replaces tag_ids rather than appending to it, so the whole
+    // array has to be read back and rewritten. This is the one real trap here.
+    async function applyToggle(sid, tid) {
+      const tags = await sceneTags(sid);
+      const has  = tags.includes(tid);
+      const next = has ? tags.filter((t) => t !== tid) : tags.concat(tid);
+      await gql(
+        `mutation ($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+        { input: { id: sid, tag_ids: next } }
+      );
+      return !has;
+    }
+
+    async function toggle() {
+      const id = currentSceneId();
+      if (!id || busy) return;
+      busy = true;
+      try {
+        let tid = await ensureTag(true);
+        if (!tid) throw new Error("could not resolve the tag");
+
+        let now;
+        try {
+          now = await applyToggle(id, tid);
+        } catch (e) {
+          // Most likely a cached id for a tag that has since been deleted in
+          // Stash. Forget it, resolve again, and try exactly once more.
+          log(`Toggle failed (${e.message}), re-resolving the tag`);
+          forgetCached();
+          tid = await ensureTag(true);
+          if (!tid) throw e;
+          now = await applyToggle(id, tid);
+        }
+
+        sceneId = id;
+        marked  = now;
+        renderBadge();
+        showToast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off");
+        refetch(["FindScene", "FindScenes"]);
+      } catch (e) {
+        log(`Delete mark failed: ${e.message}`, "error");
+        showToast(`Could not tag: ${e.message}`, "qt-err");
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function refresh() {
+      const id = currentSceneId();
+      sceneId = id;
+      marked  = false;
+      renderBadge();
+      if (!id) return;
+
+      const tid = await ensureTag(false);
+      if (!tid) return;
+      try {
+        const tags = await sceneTags(id);
+        if (currentSceneId() !== id) return;   // navigated away mid-flight
+        marked = tags.includes(tid);
+        renderBadge();
+      } catch (e) {
+        log(`Delete tag check failed: ${e.message}`);
+      }
+    }
+
+    // ── Badge and toast ──────────────────────────────────────────────────────
+    // Both live in the body and are placed from the video's bounding rect, the
+    // same trick positionPanel uses. Appending into the player's own DOM would
+    // be tidier to write and would last until React's next render.
+    //
+    // Fullscreen is the exception: a fixed element in the body is not painted
+    // over a fullscreen element, so the nodes move into it and back.
+
+    function host() { return document.fullscreenElement || document.body; }
+
+    function build() {
+      injectStyles();
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.id = "qt-del-badge";
+        badge.innerHTML = `<span class="qt-del-dot"></span><span>${escapeHtml(tagName())}</span>`;
+      }
+      if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "qt-del-toast";
+      }
+      const h = host();
+      if (badge.parentNode !== h) h.appendChild(badge);
+      if (toast.parentNode !== h) h.appendChild(toast);
+    }
+
+    function playerRect() {
+      const v = videoEl();
+      if (!v) return null;
+      const r = v.getBoundingClientRect();
+      return (r.width > 40 && r.height > 40) ? r : null;
+    }
+
+    function renderBadge() {
+      if (!marked || !onScenePage()) {
+        if (badge) badge.classList.remove("qt-on");
+        return;
+      }
+      const r = playerRect();
+      if (!r) { if (badge) badge.classList.remove("qt-on"); return; }
+
+      build();
+      badge.style.top   = Math.round(r.top + 10) + "px";
+      badge.style.right = Math.round(window.innerWidth - r.right + 10) + "px";
+      badge.classList.add("qt-on");
+    }
+
+    function showToast(text, cls) {
+      build();
+      toast.textContent = text;
+      toast.className = cls || "";
+
+      const r = playerRect();
+      toast.style.left = r ? Math.round(r.left + r.width / 2) + "px" : "50%";
+      toast.style.top  = r ? Math.round(r.top + r.height / 2) + "px" : "50%";
+
+      // Reflow so a repeat press restarts the transition instead of ignoring it.
+      void toast.offsetWidth;
+      toast.classList.add("qt-on");
+
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(
+        () => toast.classList.remove("qt-on"),
+        cls === "qt-err" ? 2600 : TOAST_MS
+      );
+    }
+
+    function reposition() {
+      if (!marked || rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => { rafPending = false; renderBadge(); });
+    }
+
+    // ── Start ────────────────────────────────────────────────────────────────
+
+    function start() {
+      let lastScene = null;
+      setInterval(() => {
+        const id = currentSceneId();
+        if (id !== lastScene) { lastScene = id; refresh(); return; }
+        if (marked) renderBadge();     // player resized, theatre mode toggled, etc
+      }, POLL_MS);
+
+      window.addEventListener("resize", reposition);
+      window.addEventListener("scroll", reposition, true);
+      document.addEventListener("fullscreenchange", () => {
+        if (!marked) return;
+        build();          // reparents into or out of the fullscreen element
+        renderBadge();
+      });
+    }
+
+    return { start, toggle, isMarked: () => marked };
+  })();
+
   // ═══ Keyboard router ═══════════════════════════════════════════════════════
   // One capture-phase listener. Previously each plugin installed its own and
   // both ran on every keystroke, which made behaviour depend on load order.
@@ -1025,7 +1318,15 @@
     // An open panel owns the keyboard.
     if (Rate.isOpen()) {
       if (typingInAField(document.activeElement)) return;
-      Rate.onKey(ev);
+      if (Rate.onKey(ev)) return;
+      // D is the one key the rating panel lets through: R then D saves the
+      // rating and marks the scene, which is the sequence people reach for.
+      if (!settings.disableDelete && (ev.key === "d" || ev.key === "D")) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        Rate.closePanel(true);
+        Del.toggle();
+      }
       return;
     }
     if (Mark.isOpen()) {
@@ -1049,6 +1350,12 @@
       Mark.openPanel();
       return;
     }
+    if (!settings.disableDelete && (ev.key === "d" || ev.key === "D")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      Del.toggle();
+      return;
+    }
   }, true);
 
   document.addEventListener("dblclick", (ev) => Nav.onDblClick(ev), true);
@@ -1064,6 +1371,7 @@
     const on = [];
     if (!settings.disableRating)  on.push("R rate");
     if (!settings.disableMarkers) on.push("M mark");
+    if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
     if (settings.enableNav)       on.push("double-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);
   });
