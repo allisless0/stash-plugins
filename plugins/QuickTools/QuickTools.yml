@@ -1,6 +1,6 @@
 name: QuickTools
 description: "Keyboard and mouse shortcuts for the scene player. R rates, M adds a marker, D marks the scene for delete, double-click jumps through the scene queue. Each feature can be turned off."
-version: 1.1.0
+version: 1.2.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:

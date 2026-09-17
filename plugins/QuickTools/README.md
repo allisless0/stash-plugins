@@ -1,16 +1,17 @@
 # QuickTools
 
-Three shortcuts for the Stash scene player. Each can be turned off in
+Four shortcuts for the Stash scene player. Each can be turned off in
 **Settings > Plugins > QuickTools**.
 
 | Shortcut | Default | What it does |
 |---|---|---|
 | `R` | on | Rating panel, 0.0 – 10.0 |
 | `M` | on | Add a marker at the current position |
+| `D` | on | Toggle the "Marked for Delete" tag |
 | double-click | **off** | Jump through the scene queue |
 
-All three only act on `/scenes/<id>` pages and never fire while you are typing
-in a field.
+All of them only act on `/scenes/<id>` pages and never fire while you are
+typing in a field.
 
 ## Rating — `R`
 
@@ -55,6 +56,33 @@ while you pick a tag does not move it.
 If no tag matches what you typed, the last row offers to create it. Nothing is
 saved until you press `Enter` — unlike the rating panel, clicking away cancels.
 
+## Mark for delete — `D`
+
+Toggles a tag on the current scene. A red pill flashes over the player to
+confirm. While the scene carries the tag the picture sits under a red tint with
+a label in the top-right corner, so the state of a scene is obvious the moment
+you open it.
+
+The tint stops above the control bar, so the timeline, the scrubber and the
+play button are neither covered nor coloured. It is click-through throughout.
+
+Press `D` again to unmark. `R` then `D` also works: the rating is saved on the
+way out and the scene is marked.
+
+**The plugin never deletes anything.** It only puts the tag on. To actually
+clear scenes out, go to the scene list, filter by the tag, select all, and use
+Stash's own delete — which is where the "also delete the file" checkbox lives.
+Worth saving that filter.
+
+The tag is named **Marked for Delete** unless you change it in the plugin
+settings. It is created the first time you press `D`, not on install, so
+nothing appears in your tag list until you use the feature. Rename it in the
+settings and the plugin finds or creates the new one; the old tag and whatever
+is on it are left alone.
+
+A tag rather than a custom field or a reserved rating, because the tag is what
+the scene list can already filter, bulk-select and delete by.
+
 ## Queue navigation — double-click
 
 **Off by default**, because it replaces double-click-to-fullscreen. Turn it on
@@ -74,6 +102,8 @@ continue-play and history behave exactly as they do with the queue buttons.
   keys. Your recent marker tags carry over.
 - Only one panel is open at a time. Pressing `M` while the rating panel is up
   saves the rating and switches.
+- `D` is not a panel. It does not take the keyboard and does not close on the
+  next click, so it does not interfere with the other two.
 - Debug logging: `localStorage.quickToolsDebug = "1"` in the browser console.
 
 ## Troubleshooting
@@ -87,3 +117,16 @@ reload the page.
 **The rating saves but the stars do not change.** Stash renders from a cache
 that the plugin updates through `PluginApi`. On builds that do not expose it,
 the value is in the database and appears after a reload.
+
+**`D` says it could not tag.** Usually the tag was renamed or deleted in Stash
+while the plugin had its id cached. Press `D` again — the first failure clears
+the cache and the second press re-resolves it. If it persists, clear
+`quickToolsDeleteTag` from localStorage.
+
+**The delete tint is the wrong size.** It is positioned from the video
+element's box and follows resizes, scrolling and fullscreen. If a custom theme
+moves the player after paint, it catches up within half a second.
+
+**The tint covers the timeline.** The control bar height is measured from
+`.vjs-control-bar`. A theme that renames or removes that class falls back to a
+fixed 80 px.

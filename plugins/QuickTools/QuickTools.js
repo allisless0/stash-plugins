@@ -238,21 +238,34 @@
 }
 #qt-flash.qt-on { opacity: 1; transform: scale(1); }
 
-/* marked for delete: persistent badge, pinned to the player's top-right */
-#qt-del-badge {
+/* marked for delete: a tint over the picture, stopping short of the control bar */
+#qt-del-overlay {
   position: fixed; z-index: 10002; pointer-events: none;
-  display: flex; align-items: center; gap: 7px;
-  padding: 5px 10px; border-radius: 5px; white-space: nowrap;
-  background: rgba(26,15,15,.82); border: 1px solid #a3403a;
-  color: #f0d3d0; font-size: 12px; font-weight: 600; letter-spacing: .03em;
-  box-shadow: 0 4px 16px rgba(0,0,0,.5);
-  opacity: 0; transform: translateY(-4px);
-  transition: opacity .14s ease, transform .14s ease;
+  background: rgba(226,87,76,.13);
+  box-shadow: inset 0 0 0 2px rgba(226,87,76,.55);
+  opacity: 0; transition: opacity .16s ease;
 }
-#qt-del-badge.qt-on { opacity: 1; transform: translateY(0); }
-#qt-del-badge .qt-del-dot {
+#qt-del-overlay.qt-on { opacity: 1; }
+#qt-del-overlay .qt-del-label {
+  position: absolute; top: 10px; right: 10px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+  padding: 6px 10px; border-radius: 5px;
+  background: rgba(26,15,15,.82); border: 1px solid #a3403a;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+}
+#qt-del-overlay .qt-del-head { display: flex; align-items: center; gap: 7px; }
+#qt-del-overlay .qt-del-name {
+  color: #f0d3d0; font-size: 12px; font-weight: 600;
+  letter-spacing: .03em; white-space: nowrap;
+}
+#qt-del-overlay .qt-del-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: #e2574c; box-shadow: 0 0 6px #e2574c;
+}
+.qt-del-tip { font-size: 10px; color: #c39a96; white-space: nowrap; }
+.qt-del-tip kbd {
+  background: #2e3944; border: 1px solid #5a4444; border-radius: 3px;
+  padding: 0 3px; font-size: 9px; font-family: inherit; color: #e8cbc8;
 }
 
 /* marked for delete: the brief confirmation over the player */
@@ -268,9 +281,10 @@
 #qt-del-toast.qt-on  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
 #qt-del-toast.qt-off { border-color: #4a5560; }
 #qt-del-toast.qt-err { border-color: #f5a623; color: #f5d8a0; font-size: 13px; }
+#qt-del-toast .qt-del-tip { display: block; margin-top: 4px; font-weight: 400; }
 
 @media (prefers-reduced-motion: reduce) {
-  .qt-panel, #qt-flash, #qt-del-badge, #qt-del-toast { transition: none; }
+  .qt-panel, #qt-flash, #qt-del-overlay, #qt-del-toast { transition: none; }
 }
 `;
     document.head.appendChild(s);
@@ -1078,7 +1092,7 @@
     let sceneId    = null;
     let marked     = false;
     let busy       = false;
-    let badge      = null;
+    let overlay    = null;
     let toast      = null;
     let toastTimer = null;
     let rafPending = false;
@@ -1185,8 +1199,8 @@
 
         sceneId = id;
         marked  = now;
-        renderBadge();
-        showToast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off");
+        renderOverlay();
+        showToast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off", now);
         refetch(["FindScene", "FindScenes"]);
       } catch (e) {
         log(`Delete mark failed: ${e.message}`, "error");
@@ -1200,7 +1214,7 @@
       const id = currentSceneId();
       sceneId = id;
       marked  = false;
-      renderBadge();
+      renderOverlay();
       if (!id) return;
 
       const tid = await ensureTag(false);
@@ -1209,13 +1223,13 @@
         const tags = await sceneTags(id);
         if (currentSceneId() !== id) return;   // navigated away mid-flight
         marked = tags.includes(tid);
-        renderBadge();
+        renderOverlay();
       } catch (e) {
         log(`Delete tag check failed: ${e.message}`);
       }
     }
 
-    // ── Badge and toast ──────────────────────────────────────────────────────
+    // ── Overlay and toast ────────────────────────────────────────────────────
     // Both live in the body and are placed from the video's bounding rect, the
     // same trick positionPanel uses. Appending into the player's own DOM would
     // be tidier to write and would last until React's next render.
@@ -1227,17 +1241,31 @@
 
     function build() {
       injectStyles();
-      if (!badge) {
-        badge = document.createElement("div");
-        badge.id = "qt-del-badge";
-        badge.innerHTML = `<span class="qt-del-dot"></span><span>${escapeHtml(tagName())}</span>`;
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "qt-del-overlay";
       }
       if (!toast) {
         toast = document.createElement("div");
         toast.id = "qt-del-toast";
       }
+      // Only rebuilt when the name actually changes. build() runs on every
+      // reposition, and re-writing innerHTML each time would restart the fade
+      // and churn the DOM at 2 Hz for nothing.
+      if (overlay.dataset.qtName !== tagName()) {
+        overlay.dataset.qtName = tagName();
+        overlay.innerHTML =
+          `<div class="qt-del-label">` +
+            `<div class="qt-del-head">` +
+              `<span class="qt-del-dot"></span>` +
+              `<span class="qt-del-name">${escapeHtml(tagName())}</span>` +
+            `</div>` +
+            `<span class="qt-del-tip">Press <kbd>D</kbd> to unmark</span>` +
+          `</div>`;
+      }
+
       const h = host();
-      if (badge.parentNode !== h) h.appendChild(badge);
+      if (overlay.parentNode !== h) h.appendChild(overlay);
       if (toast.parentNode !== h) h.appendChild(toast);
     }
 
@@ -1248,23 +1276,42 @@
       return (r.width > 40 && r.height > 40) ? r : null;
     }
 
-    function renderBadge() {
+    // The tint stops above the control bar so the timeline stays readable and
+    // is not tinted along with the picture. video.js keeps the bar in layout
+    // when it auto-hides, so the measured height is stable and the overlay does
+    // not resize every time the controls fade. BAR_H is only the fallback for
+    // a skin that does not use .vjs-control-bar.
+    function controlBarH() {
+      const v = videoEl();
+      const root = v ? v.closest(".video-js, .VideoPlayer") : null;
+      const bar = (root || document).querySelector(".vjs-control-bar");
+      const h = bar ? bar.getBoundingClientRect().height : 0;
+      return h > 0 ? h : BAR_H;
+    }
+
+    function renderOverlay() {
       if (!marked || !onScenePage()) {
-        if (badge) badge.classList.remove("qt-on");
+        if (overlay) overlay.classList.remove("qt-on");
         return;
       }
       const r = playerRect();
-      if (!r) { if (badge) badge.classList.remove("qt-on"); return; }
+      if (!r) { if (overlay) overlay.classList.remove("qt-on"); return; }
 
       build();
-      badge.style.top   = Math.round(r.top + 10) + "px";
-      badge.style.right = Math.round(window.innerWidth - r.right + 10) + "px";
-      badge.classList.add("qt-on");
+      const h = Math.max(0, r.height - controlBarH());
+      if (h < 40) { overlay.classList.remove("qt-on"); return; }
+
+      overlay.style.left   = Math.round(r.left) + "px";
+      overlay.style.top    = Math.round(r.top) + "px";
+      overlay.style.width  = Math.round(r.width) + "px";
+      overlay.style.height = Math.round(h) + "px";
+      overlay.classList.add("qt-on");
     }
 
-    function showToast(text, cls) {
+    function showToast(text, cls, tip) {
       build();
-      toast.textContent = text;
+      toast.innerHTML = escapeHtml(text) +
+        (tip ? `<span class="qt-del-tip">Press <kbd>D</kbd> to unmark</span>` : "");
       toast.className = cls || "";
 
       const r = playerRect();
@@ -1285,7 +1332,7 @@
     function reposition() {
       if (!marked || rafPending) return;
       rafPending = true;
-      requestAnimationFrame(() => { rafPending = false; renderBadge(); });
+      requestAnimationFrame(() => { rafPending = false; renderOverlay(); });
     }
 
     // ── Start ────────────────────────────────────────────────────────────────
@@ -1295,7 +1342,7 @@
       setInterval(() => {
         const id = currentSceneId();
         if (id !== lastScene) { lastScene = id; refresh(); return; }
-        if (marked) renderBadge();     // player resized, theatre mode toggled, etc
+        if (marked) renderOverlay();     // player resized, theatre mode toggled, etc
       }, POLL_MS);
 
       window.addEventListener("resize", reposition);
@@ -1303,7 +1350,7 @@
       document.addEventListener("fullscreenchange", () => {
         if (!marked) return;
         build();          // reparents into or out of the fullscreen element
-        renderBadge();
+        renderOverlay();
       });
     }
 
