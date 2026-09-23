@@ -30,8 +30,9 @@ reaches the toy, script or manual, no exceptions. Use it as a panic button.
 **Manual** drives the toy directly, ignoring the funscript. The slider next to
 it sets intensity, and also scales funscript output when a script is playing.
 
-**The script name** (`♪ …`) opens the script panel: everything about how the
-funscript drives the toy. See [Script playback](#script-playback).
+**The script name** (`♪ …`) shows or hides the script settings under the
+player: everything about how the funscript drives the toy. They stay open
+while you scrub and across scenes. See [Script playback](#script-playback).
 
 **The pattern button** shows the active preset (or the pattern, if no preset is
 active) and opens the pattern panel. A `*` after the name means you have
@@ -96,8 +97,10 @@ pattern panel and give it a name. Click a preset to load it.
 
 ## Script playback
 
-Click the script name to open the script panel. At the top, a strip shows how
-busy each part of the scene is; click it to jump there.
+Click the script name to show the script settings under the player. They
+stay open while you scrub the timeline and when you change scene, until you
+click the name again. At the top, a strip shows how busy each part of the
+scene is; click it to jump there.
 
 **Settings are remembered per script.** The right timing and feel depend on
 the file, so whatever you change while a script is loaded is kept for that
@@ -134,8 +137,10 @@ still follows the main script. You can turn this off under ⚙.
 and so on. **Weakest / Strongest** set the range the script plays in; manual
 mode has its own Power limit.
 
-**Live signal** at the bottom of the panel draws the script, the Flow plan and
-what the toy actually gets, while you tune.
+**Live signal** is a switch in the header of the script settings. When on,
+a wide scope at the bottom draws the script, the Flow plan and what the toy
+actually gets, while you tune. It remembers the switch; the stream only runs
+while the settings are showing.
 
 ## Keyboard shortcuts
 
@@ -182,18 +187,18 @@ then that the toolbar says Device live. Run Stop Backend then Start Backend.
 process. Run Stop Backend, then Start Backend.
 
 **It buzzes constantly instead of following the script.** Set the mode to
-Auto or Flow in the script panel. With Flow, lower Sensitivity or raise
+Auto or Flow in the script settings. With Flow, lower Sensitivity or raise
 Smoothness; with Beat, check Fire on.
 
 **Another tab has the toy.** The status line says which scene is driving;
 click it to take over, or press play in this tab.
 
-**Timing drifts.** Turn on the live signal in the script panel and watch
+**Timing drifts.** Turn on Live signal in the script settings and watch
 `drift`. It should hover near zero. If it climbs steadily, report it.
 
 ## Live signal
 
-At the bottom of the script panel, **Live signal** draws a scope of the last 8
+Switch on **Live signal** in the script settings for a scope of the last 8
 seconds:
 
 - **grey line** — the funscript itself, with a dashed playhead at the current
@@ -206,6 +211,6 @@ seconds:
 
 Use it to check a vibe mode is reading a script sensibly: the green fill should
 follow the shape of the grey line in a way that makes sense for the mode. It
-turns off when the panel closes because it streams continuously.
+streams continuously, so it pauses whenever the script settings are hidden.
 
 Debug logging: `localStorage.intifaceSyncDebug = "1"` in the browser console.

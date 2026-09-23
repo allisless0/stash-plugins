@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.26-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.27-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -607,7 +607,34 @@ die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
 
-**Script panel and per-script memory (1.26, frontend only).** The ⚙ row had
+**Script dock (1.27): not a popover.** 1.26 put script settings in a floating
+popover, which closed on any outside click, and the user tunes while scrubbing
+the timeline. Now `#IntifaceSync-dock` sits directly after the toolbar in the
+player container, full width, laid out as a header (script name, memory note,
+**Live signal** switch, close), the whole-scene strip, then a
+`repeat(auto-fit, minmax(250px, 1fr))` grid of three columns (script file,
+vibe track and mode cards / Feel / Timing and range), then the scope at 130 px.
+Capped at 55vh and scrolls inside.
+
+- It keeps the `.IntifaceSync-pop` class for content styling; the
+  `#IntifaceSync-dock.IntifaceSync-pop` rule undoes the floating-window parts
+  (fixed position, opacity 0, pointer-events none). It is **outside** the
+  toolbar element on purpose: inside it, the toolbar's `#IntifaceSync-toolbar
+  button` and `input[type=range]` rules outrank the panel's and flatten the
+  cards and slider tracks.
+- Built once, moved with `placeDock()` after each new toolbar, so it survives
+  scene changes. Only the ♪ button and its own close button hide it; it is not
+  in the dismiss handler. `dockOpen` and `previewWanted` are UI preferences in
+  the settings blob.
+- The scope streams only while the switch is on **and** the dock is showing:
+  closing the dock stops the stream and keeps the switch, opening resumes it,
+  and `becomeOwner()` resumes it for a tab that takes over.
+- Pointer-down in the dock counts as toolbar interaction (soft takeover), like
+  the toolbar itself.
+- Opening the pattern popover no longer closes script settings.
+
+**Script panel and per-script memory (1.26, frontend only).** (Panel layout
+superseded by the dock above; memory unchanged.) The ⚙ row had
 grown into script tuning, app settings and a debug scope in one wrapping
 line. Now:
 
@@ -947,7 +974,8 @@ under new labels that mean something different. Recalculate makes ratings
 |---|---|
 | IntifaceSync | **Untested on live hardware since v1.10.** Do the dry run: tease on, kill the browser, confirm stop within ~15s. Then: two tabs, confirm spectator text appears and takeover works. |
 | IntifaceSync | Backend does not reliably stay up; auto-start is throttled but the root cause (task failing vs port 7880 unreachable from browser) is unconfirmed. Check `docker exec Stash ps aux \| grep -i intiface`. The 2026-09-14 log shows 40 minutes of `Failed to connect to Intiface` timeouts before a successful connect: that was Intiface Central not running yet, not a plugin fault. |
-| IntifaceSync | Both popovers live on `document.body`; in browser fullscreen they are not painted over the fullscreen player (QuickTools solved the same thing by moving its overlay into `document.fullscreenElement`). Not yet handled. |
+| IntifaceSync | The pattern popover lives on `document.body`; in browser fullscreen it is not painted over the fullscreen player (QuickTools now mounts into `document.fullscreenElement`, §3.6; same fix applies). The toolbar and dock are outside the fullscreen element and not visible in fullscreen at all. |
+| IntifaceSync | Dock height in a real Stash layout unverified: tested in a harness page. If Stash's player column clips it, the 55vh cap and internal scroll are the knobs. |
 | IntifaceSync | Per-script memory is keyed by file path: moving or renaming a script loses its tuning. |
 | IntifaceSync | Signal preview untested against a real device stream; sample timestamps are backend-monotonic, so if the canvas looks frozen check that frames are arriving rather than that the toy is idle. |
 | IntifaceSync | Clock sync untested on hardware. Check `driftMs` in the status payload during a long scene; it should stay under ~150 and never trend. |

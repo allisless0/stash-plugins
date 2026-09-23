@@ -133,6 +133,7 @@
     if (selectedFunscript) loadFunscript(selectedFunscript);
     else if (currentScenePath) sendMsg({ type: "findFunscripts", videoPath: currentScenePath });
     if (videoIsPlaying()) pendingPlay = { time: videoEl.currentTime * 1000, rate: videoEl.playbackRate };
+    if (dockOpen && previewWanted) setPreview(true);
     updateToolbarStatus();
   }
 
@@ -198,7 +199,9 @@
   let beatMs                = 120;       // beat mode burst length
   let beatEdge              = "all";     // "all" | "low" | "high"
   let beatProminence        = 20;        // peak picking swing threshold for dense scripts
-  let previewOn             = false;     // debug scope, never persisted
+  let previewOn             = false;     // scope streaming right now
+  let previewWanted         = false;     // the Live signal switch (persisted)
+  let dockOpen              = false;     // script dock under the player (persisted)
   const PREVIEW_WINDOW_MS   = 8000;      // seconds of history shown
   let previewSamples        = [];        // {t, tg, lv, m, s}
   let previewCanvas         = null;
@@ -260,6 +263,8 @@
       if (typeof s.manualMicroMs === "number") manualMicroMs = s.manualMicroMs;
       if (typeof s.hotkeysOn    === "boolean") hotkeysOn   = s.hotkeysOn;
       if (typeof s.presetBase   === "string")  presetBase  = s.presetBase;
+      if (typeof s.dockOpen     === "boolean") dockOpen    = s.dockOpen;
+      if (typeof s.previewWanted === "boolean") previewWanted = s.previewWanted;
     } catch (e) {
       log(`Failed to load settings: ${e}`, "error");
     }
@@ -278,7 +283,7 @@
         manualLevel, manualShape, manualPeriod,
         manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
         manualBuildAmp, manualAmpFrom,
-        outputOn, hotkeysOn, presetBase,
+        outputOn, hotkeysOn, presetBase, dockOpen, previewWanted,
         ...defaults,
       }));
     } catch (e) {
@@ -1717,6 +1722,45 @@ function injectStyles() {
       color: #7c8593 !important; font-size: 10.5px; max-width: 260px; line-height: 1.3;
     }
 
+    /* ── Script dock (under the toolbar, not floating) ────────── */
+    #${PLUGIN_ID}-dock.${PLUGIN_ID}-pop {
+      position: relative; left: auto; top: auto; z-index: auto;
+      width: auto; max-height: 55vh; overflow-y: auto;
+      opacity: 1; pointer-events: auto; transform: none; transition: none;
+      margin: 0; border-radius: 0 0 8px 8px; box-shadow: none;
+      border-top: 0; padding: 10px 14px 12px;
+      background: linear-gradient(180deg, rgba(14,16,20,0.96), rgba(20,22,28,0.96));
+    }
+    .${PLUGIN_ID}-dock-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+    }
+    .${PLUGIN_ID}-dock-head strong { font-size: 12.5px; white-space: nowrap; }
+    .${PLUGIN_ID}-dock-head .${PLUGIN_ID}-memory {
+      flex: 1 1 auto; margin: 0; padding: 4px 8px; flex-wrap: nowrap;
+    }
+    .${PLUGIN_ID}-dock-head .${PLUGIN_ID}-memory span { flex: 1 1 auto; }
+    .${PLUGIN_ID}-dock-head > button {
+      background: rgba(255,255,255,0.06); color: #e8eaed;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap;
+    }
+    .${PLUGIN_ID}-dock-head > button.is-on {
+      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+    }
+    .${PLUGIN_ID}-dock-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 4px 24px; margin-top: 8px;
+    }
+    .${PLUGIN_ID}-dock-col .${PLUGIN_ID}-sec-title { margin-top: 4px; }
+    .${PLUGIN_ID}-dock .${PLUGIN_ID}-modes .${PLUGIN_ID}-card { padding: 6px 8px; }
+    .${PLUGIN_ID}-dock .${PLUGIN_ID}-modes .${PLUGIN_ID}-card-blurb { font-size: 10px; }
+    #${PLUGIN_ID}-sp-track { margin-bottom: 8px; }
+    #${PLUGIN_ID}-sp-signal { margin-top: 10px; }
+    #${PLUGIN_ID}-dock #${PLUGIN_ID}-preview { height: 130px !important; }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name.is-on {
+      background: rgba(90,169,255,0.18); border-color: rgba(90,169,255,0.55); color: #fff;
+    }
+
     /* ── Script panel ─────────────────────────────────────────── */
     .${PLUGIN_ID}-memory {
       display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
@@ -2626,7 +2670,6 @@ function injectStyles() {
       manualPop = buildManualPopover();
     }
     const show = force !== undefined ? force : !manualPop.classList.contains("is-open");
-    if (show) toggleScriptPanel(false);
     manualPop.classList.toggle("is-open", show);
     manualPop.style.opacity       = show ? "" : "0";
     manualPop.style.pointerEvents = show ? "" : "none";
@@ -2658,7 +2701,6 @@ function injectStyles() {
   document.addEventListener("pointerdown", (ev) => {
     const pops = [
       [manualPop, `${PLUGIN_ID}-pattern-btn`, () => toggleManualPopover(false)],
-      [scriptPop, `${PLUGIN_ID}-script-name`, () => toggleScriptPanel(false)],
     ];
     for (const [pop, anchorId, close] of pops) {
       if (!pop || !pop.classList.contains("is-open")) continue;
@@ -2669,7 +2711,6 @@ function injectStyles() {
   }, true);
   window.addEventListener("resize", () => {
     if (manualPop?.classList.contains("is-open")) positionManualPopover();
-    if (scriptPop?.classList.contains("is-open")) positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
   });
 
   // ── Per-script memory ──────────────────────────────────────────────────────
@@ -2809,10 +2850,12 @@ function injectStyles() {
     }
   });
 
-  // ── Script panel ───────────────────────────────────────────────────────────
-  // Everything about how the funscript drives the toy, in one place, opened
-  // from the script name. It replaced a row of controls under ⚙ that mixed
-  // script tuning with app settings and a debug tool.
+  // ── Script dock ────────────────────────────────────────────────────────────
+  // Everything about how the funscript drives the toy, docked under the
+  // player and toggled from the script name. 1.26 made this a popover, which
+  // closed as soon as you clicked the timeline, and tuning a script means
+  // scrubbing while you change things. So it sits below the toolbar, laid out
+  // horizontally, stays open across scenes, and only the ♪ button closes it.
   const SCRIPT_MODES = [
     ["auto",     "Auto",     "Flow, or Beat for music-synced scripts. Start here."],
     ["flow",     "Flow",     "Follows how busy the scene is. Best for most scripts."],
@@ -2841,39 +2884,46 @@ function injectStyles() {
   function buildScriptPanel() {
     injectStyles();
     const pop = document.createElement("div");
-    pop.id = `${PLUGIN_ID}-script-pop`;
-    pop.className = `${PLUGIN_ID}-pop`;
-    pop.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none;";
-    pop.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    pop.id = `${PLUGIN_ID}-dock`;
+    // .pop supplies the content styling shared with the pattern panel; the
+    // #IntifaceSync-dock rules undo its floating-window parts.
+    pop.className = `${PLUGIN_ID}-pop ${PLUGIN_ID}-dock`;
+    pop.addEventListener("pointerdown", () => tryTakeover("toolbar"), true);
     scriptPop = pop;
 
     pop.innerHTML = `
-      <div class="${PLUGIN_ID}-pop-head">
+      <div class="${PLUGIN_ID}-dock-head">
         <strong id="${PLUGIN_ID}-sp-title">Script</strong>
-        <span class="${PLUGIN_ID}-pop-sub">How the funscript drives the toy</span>
-      </div>
-      <div class="${PLUGIN_ID}-memory" id="${PLUGIN_ID}-sp-memory"></div>
-      <div class="${PLUGIN_ID}-sp-pick" id="${PLUGIN_ID}-script-pick">
-        <label for="${PLUGIN_ID}-select">Script file</label>
+        <div class="${PLUGIN_ID}-memory" id="${PLUGIN_ID}-sp-memory"></div>
+        <button type="button" id="${PLUGIN_ID}-sp-scope-btn"
+                title="Draw what is being sent to the toy, under these settings"></button>
+        <button type="button" id="${PLUGIN_ID}-sp-close" title="Hide script settings">\u2715</button>
       </div>
       <div class="${PLUGIN_ID}-overview" id="${PLUGIN_ID}-sp-overview">
         <canvas id="${PLUGIN_ID}-overview-canvas"></canvas>
         <div class="${PLUGIN_ID}-field-help">Scene intensity as Flow sees it. Click to jump there.</div>
       </div>
-      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-track"></div>
-      <div class="${PLUGIN_ID}-section">
-        <div class="${PLUGIN_ID}-sec-title">Mode</div>
-        <div class="${PLUGIN_ID}-cards" id="${PLUGIN_ID}-sp-modes"></div>
+      <div class="${PLUGIN_ID}-dock-grid">
+        <div class="${PLUGIN_ID}-dock-col">
+          <div class="${PLUGIN_ID}-sp-pick" id="${PLUGIN_ID}-script-pick">
+            <label for="${PLUGIN_ID}-select">Script file</label>
+          </div>
+          <div id="${PLUGIN_ID}-sp-track"></div>
+          <div class="${PLUGIN_ID}-sec-title">Mode</div>
+          <div class="${PLUGIN_ID}-cards ${PLUGIN_ID}-modes" id="${PLUGIN_ID}-sp-modes"></div>
+        </div>
+        <div class="${PLUGIN_ID}-dock-col" id="${PLUGIN_ID}-sp-feel">
+          <div class="${PLUGIN_ID}-sec-title">Feel</div>
+        </div>
+        <div class="${PLUGIN_ID}-dock-col" id="${PLUGIN_ID}-sp-timing">
+          <div class="${PLUGIN_ID}-sec-title">Timing and range</div>
+        </div>
       </div>
-      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-feel">
-        <div class="${PLUGIN_ID}-sec-title">Feel</div>
-      </div>
-      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-timing">
-        <div class="${PLUGIN_ID}-sec-title">Timing and range</div>
-      </div>
-      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-signal">
-        <div class="${PLUGIN_ID}-sec-title">Live signal</div>
+      <div id="${PLUGIN_ID}-sp-signal">
+        <div class="${PLUGIN_ID}-field-help">Grey is the script, dashed purple the Flow plan, green
+          what the toy actually gets, orange each Bluetooth command.</div>
       </div>`;
+    pop.querySelector(`#${PLUGIN_ID}-sp-close`).addEventListener("click", () => toggleScriptPanel(false));
 
     // script picker, for folders with more than one candidate
     const sel = document.createElement("select");
@@ -2989,28 +3039,26 @@ function injectStyles() {
       { min: 5, max: 100, curve: "lin", unit: "%", inputStep: 1 },
       () => strokeMax, (v) => { strokeMax = Math.max(Math.round(v), strokeMin + MIN_STROKE_GAP); }));
 
-    // live signal: the scope, moved here from the advanced row
-    const sig = pop.querySelector(`#${PLUGIN_ID}-sp-signal`);
-    const scopeBtn = document.createElement("button");
-    scopeBtn.type = "button";
-    scopeBtn.id = `${PLUGIN_ID}-sp-scope-btn`;
-    scopeBtn.addEventListener("click", () => { setPreview(!previewOn); updateScriptUI(); });
-    const sigHead = document.createElement("div");
-    sigHead.className = `${PLUGIN_ID}-field-head`;
-    sigHead.innerHTML = `<label>What is being sent to the toy</label>`;
-    sigHead.appendChild(scopeBtn);
-    sig.appendChild(sigHead);
-    const sigHelp = document.createElement("div");
-    sigHelp.className = `${PLUGIN_ID}-field-help`;
-    sigHelp.textContent = "Grey is the script, dashed purple is the Flow plan, green is what the toy " +
-                          "actually gets. Useful while tuning; it turns off when this panel closes.";
-    sig.appendChild(sigHelp);
-    sig.appendChild(buildPreview());
+    // live signal: a switch in the header, a full-width scope at the bottom
+    pop.querySelector(`#${PLUGIN_ID}-sp-scope-btn`).addEventListener("click", () => {
+      previewWanted = !previewWanted;
+      saveSettingsToStorage();
+      setPreview(previewWanted && dockOpen);
+      updateScriptUI();
+    });
+    pop.querySelector(`#${PLUGIN_ID}-sp-signal`).appendChild(buildPreview());
 
-    document.body.appendChild(pop);
-    updateFunscriptSelector();
     updateScriptUI();
     return pop;
+  }
+
+  // The dock sits right after the toolbar. The toolbar is rebuilt on every
+  // scene; the dock is built once and moved, so its state survives.
+  function placeDock() {
+    if (!scriptPop || !dockOpen) return;
+    const bar = byId(`${PLUGIN_ID}-toolbar`);
+    if (bar && bar.isConnected && bar.nextSibling !== scriptPop) bar.after(scriptPop);
+    updateFunscriptSelector();
   }
 
   function updateScriptUI() {
@@ -3079,10 +3127,10 @@ function injectStyles() {
     const edge = $("sp-edge"); if (edge && edge.value !== beatEdge) edge.value = beatEdge;
     scriptKnobs.forEach((k) => k.refresh());
 
-    $("sp-scope-btn").textContent = previewOn ? "Hide" : "Show";
-    $("sp-scope-btn").classList.toggle("is-on", previewOn);
+    $("sp-scope-btn").textContent = previewWanted ? "Live signal on" : "Live signal off";
+    $("sp-scope-btn").classList.toggle("is-on", previewWanted);
+    $("sp-signal").style.display = previewWanted ? "" : "none";
     drawOverview();
-    if (scriptPop.classList.contains("is-open")) positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
   }
 
   function drawOverview() {
@@ -3091,7 +3139,7 @@ function injectStyles() {
     if (!cv || !box) return;
     const lv = flowOverview && flowOverview.levels;
     box.style.display = lv && lv.length && isOwner ? "" : "none";
-    if (!lv || !lv.length || !cv.isConnected || !scriptPop.classList.contains("is-open")) return;
+    if (!lv || !lv.length || !cv.isConnected || !dockOpen) return;
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(1, Math.round(cv.clientWidth * dpr));
     const h = Math.max(1, Math.round(cv.clientHeight * dpr));
@@ -3112,23 +3160,25 @@ function injectStyles() {
   }
 
   function toggleScriptPanel(force) {
+    const show = force !== undefined ? !!force : !dockOpen;
     if (!scriptPop) {
-      if (force === false) return;
+      if (!show) { dockOpen = false; return; }
       buildScriptPanel();
     }
-    const show = force !== undefined ? force : !scriptPop.classList.contains("is-open");
-    if (show) toggleManualPopover(false);
-    scriptPop.classList.toggle("is-open", show);
-    scriptPop.style.opacity       = show ? "" : "0";
-    scriptPop.style.pointerEvents = show ? "" : "none";
+    dockOpen = show;
+    saveSettingsToStorage();
     clearInterval(overviewTimer);
     if (show) {
+      placeDock();
       updateScriptUI();
-      positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
       overviewTimer = setInterval(drawOverview, 500);    // moving playhead
-    } else if (previewOn) {
-      setPreview(false);         // the scope lives in here; stop paying for it
+      if (previewWanted && !previewOn) setPreview(true);
+    } else {
+      scriptPop.remove();
+      // the scope is only visible in the dock; stop the stream, keep the switch
+      if (previewOn) setPreview(false);
     }
+    byId(`${PLUGIN_ID}-script-name`)?.classList.toggle("is-on", show);
   }
 
   // Micro pulsing is one setting shown in two places: the ⚙ row and the
@@ -3291,8 +3341,8 @@ function injectStyles() {
     modeWrap.appendChild(btnHandy);
     row1.appendChild(modeWrap);
 
-    // Row 1 shows the script in use; clicking it opens the script panel with
-    // every setting about how the script drives the toy.
+    // Row 1 shows the script in use; clicking it shows or hides the script
+    // dock with every setting about how the script drives the toy.
     const scriptLabel = document.createElement("button");
     scriptLabel.id = `${PLUGIN_ID}-script-name`;
     scriptLabel.addEventListener("click", (ev) => { ev.stopPropagation(); toggleScriptPanel(); });
@@ -3543,6 +3593,13 @@ function injectStyles() {
     if (!player) return;
     player.appendChild(buildToolbar());
     toolbarInjected = true;
+    if (dockOpen) {
+      if (!scriptPop) buildScriptPanel();
+      placeDock();
+      clearInterval(overviewTimer);
+      overviewTimer = setInterval(drawOverview, 500);
+      byId(`${PLUGIN_ID}-script-name`)?.classList.add("is-on");
+    }
     applyHandyVisibility();
     updateManualUI();
     updateOutputUI();
