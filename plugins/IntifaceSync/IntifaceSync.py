@@ -1864,6 +1864,34 @@ class FunscriptPlayer:
             self._task.cancel()
         asyncio.ensure_future(self.bp.stop_all())
 
+    def unload(self) -> None:
+        """Drop the script because another tab took over and brings its own.
+
+        Not a stop path: the session continues under the new driver, which the
+        deadman now watches. Like pause() it leaves a running manual pattern
+        alone (switching tabs must not end a deliberate session), and like
+        pause() it silences script output, or the toy would hold the last
+        script level while the new tab loads."""
+        self.actions         = []
+        self._beats          = []
+        self._flow           = []
+        self._flow_turns     = []
+        self.vibe_track      = []
+        self._script_is_beat = False
+        self._script_beat_kind = ""
+        self._beats_peak_picked = False
+        self.playing         = False
+        self._last_sent_idx  = -1
+        if self.overview_cb is not None:
+            try:
+                self.overview_cb(self.flow_overview())
+            except Exception:
+                pass
+        if self.manual_enabled:
+            return
+        self._reset_vibe()
+        asyncio.ensure_future(self.bp.stop_all())
+
     def panic(self) -> None:
         """Hard stop: script, manual shape and device output. Loop stays alive."""
         self.playing         = False
@@ -2150,7 +2178,13 @@ class BackendServer:
 
     def __init__(self):
         self.clients          = set()
-        self._last_seen       = time.monotonic()   # deadman: last frontend message
+        # Which tab drives the device. Every tab connects; only the driver's
+        # messages reach the player (plus the safety ones from anyone, see
+        # _route). The browser used to decide this with a localStorage lock,
+        # which each browser keeps separately, so two browsers both drove.
+        self._tabs: dict      = {}                 # ws -> presence dict
+        self._driver          = None               # ws of the driving tab
+        self._last_seen       = time.monotonic()   # deadman: last message from the driver
         self._preview_on      = False              # debug scope, opt-in per session
         self._mode            = "intiface"   # "intiface" | "handy_wifi"
         self._pending_actions = None
@@ -2253,6 +2287,127 @@ class BackendServer:
 
     # ── Status Broadcast ──────────────────────────────────────────────────────
 
+    def _driver_info(self) -> dict | None:
+        if self._driver is None:
+            return None
+        i = self._tabs.get(self._driver, {})
+        return {"tab": i.get("tab"), "scene": i.get("scene"),
+                "title": i.get("title") or "", "playing": bool(i.get("playing"))}
+
+    async def _set_driver(self, ws, reason: str) -> None:
+        if ws is self._driver:
+            await self._broadcast_status()
+            return
+        old = self._driver
+        self._driver    = ws
+        self._last_seen = time.monotonic()
+        if old is not None and self._mode == "intiface" and self.player:
+            # the previous tab's script would otherwise play against this
+            # tab's video until (or unless) it loads its own
+            self.player.unload()
+            self._current_script_path = None
+            self._vibe_track_path     = None
+            self._pending_actions     = None
+        info = self._tabs.get(ws, {})
+        log.info(f"Driving tab is now {info.get('tab') or '?'} "
+                 f"(scene {info.get('scene') or '?'}): {reason}")
+        await self._broadcast_status()
+
+    async def _route(self, ws, msg: dict) -> None:
+        """Decide whether a tab's message may act, then hand it to _handle."""
+        t = msg.get("type", "")
+        info = self._tabs.setdefault(ws, {"tab": None, "scene": None, "title": "",
+                                          "playing": False, "visible": True})
+
+        if t in ("hello", "presence"):
+            for k in ("tab", "scene", "title", "playing", "visible"):
+                if k in msg:
+                    info[k] = msg[k]
+            await self._broadcast_status()
+            return
+
+        if t == "claim":
+            drv = self._tabs.get(self._driver, {}) if self._driver is not None else {}
+            # ifFree: a tab opened in the background only takes an unclaimed device
+            if msg.get("ifFree") and self._driver is not None and ws is not self._driver:
+                await self._broadcast_status()
+                return
+            if (self._driver is None or ws is self._driver or msg.get("force")
+                    or not drv.get("playing")):
+                await self._set_driver(ws, msg.get("reason") or "claimed")
+            else:
+                await self._broadcast_status()      # tells the claimant who drives
+            return
+
+        if t in ("ping", "status"):
+            await self._handle(ws, msg)
+            return
+
+        if t == "findFunscripts":
+            # answer the tab that asked, not everyone: each tab has its own scene
+            files, default = find_funscripts(msg.get("videoPath", ""))
+            try:
+                await ws.send(json.dumps({"type": "funscripts", "files": files, "default": default}))
+            except Exception:
+                pass
+            return
+
+        if ws is not self._driver:
+            if self._driver is None:
+                await self._set_driver(ws, f"first to act ({t})")
+            elif t == "play":
+                await self._set_driver(ws, "pressed play")
+            elif t == "stop" or (t == "output" and msg.get("enabled") is False):
+                # the kill switches work from any tab
+                await self._panic(f"{t} from a tab that is not driving")
+                if t == "output":
+                    await self._handle(ws, {"type": "output", "enabled": False})
+                else:
+                    await self._broadcast_status()
+                return
+            elif t == "manual" and msg.get("enabled") is False:
+                await self._handle(ws, {"type": "manual", "enabled": False})
+                return
+            else:
+                log_debug(f"Ignored {t!r} from a tab that is not driving")
+                return
+        await self._handle(ws, msg)
+
+    async def _client_gone(self, ws) -> None:
+        self.clients.discard(ws)
+        self._tabs.pop(ws, None)
+        log.info(f"Frontend disconnected (remaining clients={len(self.clients)})")
+        was_driver = ws is self._driver
+        if was_driver:
+            self._driver = None
+        if was_driver or not self.clients:
+            try:
+                await self._panic("driving tab disconnected" if was_driver else "no clients left")
+            except Exception as e:
+                log.warning(f"Panic on disconnect failed: {e}")
+            try:
+                await self._broadcast_status()
+            except Exception:
+                pass
+
+        if not self.clients and self._mode == "handy_wifi":
+            # Reset Handy state so a page reload has to reconnect
+            try:
+                await self._tunnel.stop()
+            except Exception as e:
+                log_debug(f"Tunnel stop on disconnect failed (ignored): {e}")
+            self._tunnel_url = None
+            if self._handy:
+                try:
+                    await self._handy.close()
+                except Exception as e:
+                    log_debug(f"Handy close on disconnect failed (ignored): {e}")
+                self._handy = None
+            self._handy_connected   = False
+            self._handy_playing     = False
+            self._last_setup_path   = None
+            self._last_setup_tunnel = None
+
     async def _broadcast_status(self, error: str = "") -> None:
         if not self.clients:
             return
@@ -2297,6 +2452,8 @@ class BackendServer:
                 "beatPicked": bool(self.player and self.player._beats_peak_picked),
                 "vibeEffective": ("track" if self.player and self.player.using_vibe_track()
                                   else self.player.effective_vibe_mode() if self.player else "speed"),
+                "driver":    self._driver_info(),
+                "tabs":      len(self.clients),
                 "vibeTrack": (os.path.basename(self._vibe_track_path)
                               if self._vibe_track_path and self.player and self.player.vibe_track
                               else ""),
@@ -2314,6 +2471,8 @@ class BackendServer:
                 "connected":  self._handy_connected,
                 "playing":    self._handy_playing,
                 "tunnelUrl":  self._tunnel_url,
+                "driver":     self._driver_info(),
+                "tabs":       len(self.clients),
                 "error":      error,
             })
 
@@ -2388,6 +2547,14 @@ class BackendServer:
                 await self._switch_mode("intiface")
 
             url = msg.get("url", self._intiface_url)
+            # Every new driving tab sends connect when it takes over. Rebuilding
+            # the link each time dropped the device for a second and ended any
+            # manual session, so only the Connect button (force) rebuilds a
+            # live connection.
+            if (not msg.get("force") and self.bp and self.bp.connected
+                    and url == self._intiface_url):
+                await self._broadcast_status()
+                return
             self._intiface_url = url
 
             if self.player:
@@ -2841,9 +3008,12 @@ class BackendServer:
             if self._last_overview:
                 await ws.send(json.dumps({"type": "overview", **self._last_overview}))
             async for raw in ws:
-                self._last_seen = time.monotonic()
+                # The deadman watches the driving tab only. A spectator that is
+                # still alive must not keep a frozen driver's device running.
+                if ws is self._driver or self._driver is None:
+                    self._last_seen = time.monotonic()
                 try:
-                    await self._handle(ws, json.loads(raw))
+                    await self._route(ws, json.loads(raw))
                 except json.JSONDecodeError:
                     log.warning(f"Invalid JSON from frontend: {raw[:200]}")
                 except Exception as e:
@@ -2857,31 +3027,7 @@ class BackendServer:
         except Exception as e:
             log.warning(f"WS handler ended unexpectedly: {e}")
         finally:
-            self.clients.discard(ws)
-            log.info(f"Frontend disconnected (remaining clients={len(self.clients)})")
-            if not self.clients:
-                try:
-                    await self._panic("no clients left")
-                except Exception as e:
-                    log.warning(f"Panic on disconnect failed: {e}")
-
-                # Reset Handy-State, damit nach Page-Reload neu verbunden werden muss
-                if self._mode == "handy_wifi":
-                    try:
-                        await self._tunnel.stop()
-                    except Exception as e:
-                        log_debug(f"Tunnel stop on disconnect failed (ignored): {e}")
-                    self._tunnel_url = None
-                    if self._handy:
-                        try:
-                            await self._handy.close()
-                        except Exception as e:
-                            log_debug(f"Handy close on disconnect failed (ignored): {e}")
-                        self._handy = None
-                    self._handy_connected   = False
-                    self._handy_playing     = False
-                    self._last_setup_path   = None
-                    self._last_setup_tunnel = None
+            await self._client_gone(ws)
 
     async def run(self) -> None:
         log.info(f"Backend starting on ws://{BACKEND_HOST}:{BACKEND_PORT}")

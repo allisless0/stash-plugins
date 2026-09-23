@@ -1205,3 +1205,142 @@ asyncio.run(_flow_plumb())
 print("   overview on load and on tuning, flow points in the preview window  OK")
 
 print("\nFORK 1.24 TESTS PASSED")
+
+
+# ── 48-51. 1.25 the backend decides which tab drives ─────────────────────────
+class FakeTab:
+    """Stands in for a browser tab's websocket."""
+    def __init__(self, name):
+        self.name = name
+        self.remote_address = (name, 0)
+        self.out = []
+    async def send(self, data):
+        self.out.append(json.loads(data))
+    def last_status(self):
+        return next(m for m in reversed(self.out) if m.get("type") == "status")
+
+async def _two_tabs():
+    srv = isync.BackendServer()
+    srv.bp = FakeBP([GUSH]); srv.player = isync.FunscriptPlayer(srv.bp)
+    a, b = FakeTab("A"), FakeTab("B")
+    srv.clients |= {a, b}
+    await srv._route(a, {"type": "hello", "tab": "A", "scene": "1", "title": "Scene One"})
+    await srv._route(b, {"type": "hello", "tab": "B", "scene": "2", "title": "Scene Two"})
+    return srv, a, b
+
+print("48. one driver at a time; play takes over; other tabs cannot drive but can stop")
+async def _arbitration():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    assert srv._driver is a and b.last_status()["driver"]["tab"] == "A"
+    await srv._route(a, {"type": "presence", "playing": True})
+    # a quiet claim (tab became visible) does not steal from a playing tab
+    await srv._route(b, {"type": "claim"})
+    assert srv._driver is a, "visible-tab claim stole the device from a playing tab"
+    assert b.last_status()["driver"]["title"] == "Scene One", "claimant should learn who drives"
+    # driving messages from B are ignored
+    await srv._route(b, {"type": "manual", "enabled": True, "level": 0.9, "shape": "tease"})
+    assert not srv.player.manual_enabled and srv._manual["shape"] != "tease"
+    # pressing play in B takes over
+    await srv._route(b, {"type": "play", "time": 0})
+    assert srv._driver is b
+    await srv._route(b, {"type": "manual", "enabled": True, "level": 0.5, "shape": "constant"})
+    assert srv.player.manual_enabled
+    # A is no longer driving but its kill switches still work
+    await srv._route(a, {"type": "manual", "enabled": False, "shape": "wave", "level": 1.0})
+    assert not srv.player.manual_enabled, "manual off must work from any tab"
+    assert srv._manual["shape"] == "constant", "a non-driver must not change the pattern"
+    await srv._route(a, {"type": "output", "enabled": False})
+    assert srv._output is False and not srv.player.output_enabled
+    await srv._route(a, {"type": "output", "enabled": True})
+    assert srv._output is False, "only the driver may turn output back on"
+    # the funscript list goes to the tab that asked, nobody else
+    b.out.clear(); a.out.clear()
+    await srv._route(a, {"type": "findFunscripts", "videoPath": ""})
+    assert any(m["type"] == "funscripts" for m in a.out) and not b.out
+asyncio.run(_arbitration())
+print("   quiet claims respect a playing tab, play wins, stop/mute work from anywhere  OK")
+
+print("49. the driving tab leaving stops the device even with other tabs open")
+async def _driver_leaves():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    await srv._route(a, {"type": "manual", "enabled": True, "level": 0.5, "shape": "tease"})
+    srv.bp.sent.clear()
+    # a spectator leaving changes nothing
+    await srv._client_gone(b)
+    assert srv.player.manual_enabled, "a spectator closing must not stop the driver's session"
+    c = FakeTab("C"); srv.clients.add(c)
+    await srv._route(c, {"type": "hello", "tab": "C"})
+    await srv._client_gone(a)
+    await asyncio.sleep(0.05)
+    assert srv._driver is None and not srv.player.manual_enabled
+    assert ("StopAllDevices", {}) in srv.bp.sent
+    assert c.last_status()["driver"] is None, "remaining tabs must learn nobody drives"
+asyncio.run(_driver_leaves())
+print("   spectator leaves: runs on; driver leaves: panic, others told  OK")
+
+print("50. the deadman follows the driver, not whichever tab is still talking")
+async def _deadman_driver():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    await srv._route(a, {"type": "manual", "enabled": True, "level": 0.5, "shape": "constant"})
+    old = (isync.DEADMAN_S, isync.DEADMAN_TICK_S)
+    isync.DEADMAN_S, isync.DEADMAN_TICK_S = 0.3, 0.05
+    try:
+        task = asyncio.create_task(srv._watchdog())
+        # replicate _ws_handler's rule: only the driver refreshes _last_seen
+        for _ in range(14):
+            await asyncio.sleep(0.05)
+            ws = b
+            if ws is srv._driver or srv._driver is None:
+                srv._last_seen = time.monotonic()
+            await srv._route(b, {"type": "ping"})
+        assert not srv.player.manual_enabled, "a live spectator kept a silent driver's toy running"
+        task.cancel()
+    finally:
+        isync.DEADMAN_S, isync.DEADMAN_TICK_S = old
+    src = open(os.path.join(_HERE, "IntifaceSync.py"), encoding="utf-8").read()
+    assert "if ws is self._driver or self._driver is None:\n                    self._last_seen" in src, \
+        "_ws_handler no longer restricts the deadman to the driver"
+asyncio.run(_deadman_driver())
+print("   spectator pings do not feed the deadman  OK")
+
+print("51. a takeover swaps the script but keeps manual; connect does not rebuild a live link")
+async def _handoff():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    srv.player.load([{"at": i * 300, "pos": i % 2 * 100} for i in range(60)])
+    await srv._route(a, {"type": "play", "time": 0})
+    await srv._route(a, {"type": "manual", "enabled": True, "level": 0.4, "shape": "wave"})
+    srv.bp.sent.clear()
+    await srv._route(b, {"type": "claim", "force": True})
+    assert srv._driver is b and srv.player.actions == [] and not srv.player.playing
+    assert srv.player.manual_enabled, "switching tabs must not end a manual session"
+    # without manual running, a takeover silences the old script's level
+    srv.player.set_manual(enabled=False); srv.bp.sent.clear()
+    srv.player.load([{"at": 0, "pos": 0}, {"at": 500, "pos": 100}])
+    await srv._route(a, {"type": "claim", "force": True})
+    await asyncio.sleep(0.05)
+    assert ("StopAllDevices", {}) in srv.bp.sent
+    # connect while connected: no rebuild unless forced
+    bp_before = srv.bp
+    srv.bp._ws = object(); srv.bp.__class__ = type("Up", (FakeBP,), {"connected": property(lambda self: True)})
+    await srv._route(a, {"type": "connect", "url": srv._intiface_url})
+    assert srv.bp is bp_before, "a takeover's connect rebuilt a live device link"
+asyncio.run(_handoff())
+print("   script unloaded, manual kept, idle output silenced, live link kept  OK")
+
+print("\nFORK 1.25 TESTS PASSED")
+
+print("52. a tab opened in the background only takes a device nobody drives")
+async def _bg_claim():
+    srv, a, b = await _two_tabs()
+    await srv._route(b, {"type": "claim", "ifFree": True})
+    assert srv._driver is b, "nobody drove, so a background tab may take it"
+    await srv._route(a, {"type": "claim", "ifFree": True})
+    assert srv._driver is b, "a background tab took an idle driver's device"
+    await srv._route(a, {"type": "claim"})
+    assert srv._driver is a, "a visible tab still takes an idle (not playing) device"
+asyncio.run(_bg_claim())
+print("   background claims wait, visible ones take an idle device  OK")

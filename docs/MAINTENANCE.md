@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
-| IntifaceSync (vibe fork) | 1.24-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.25-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -571,6 +571,67 @@ die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
 
+**The backend decides which tab drives (1.25). This replaces the two
+sections below, kept for history.** The localStorage lock was per browser:
+Stash open on a PC and a phone gave two "owners" sending conflicting play,
+pause and loadFile to one player. It also needed a 90 s TTL, a
+BroadcastChannel and heuristics, and a spectator could not say which scene
+was driving.
+
+Now every tab opens the socket and `BackendServer._route()` arbitrates:
+
+- `hello` / `presence` {tab, scene, title, playing, visible}: any tab.
+- `claim` {force, ifFree}: granted if nobody drives, the claimant already
+  drives, `force` (play, Take over, Connect), or the driver is not playing.
+  `ifFree` (a tab opened in the background) is granted only when nobody
+  drives, so a middle-click does not steal from a paused tab.
+- `play` from a non-driver is itself a forced claim.
+- Everything else from a non-driver is ignored, **except the kill
+  switches**, which work from any tab: `stop` and `output:false` panic;
+  `manual` with `enabled:false` turns manual off and nothing else (a
+  spectator's stale pattern values are not applied).
+- `findFunscripts` is answered to the asking tab only (it used to be
+  broadcast, which was fine only while one tab was connected).
+
+**Safety changes, load-bearing:**
+
+- **The deadman follows the driver.** `_ws_handler` refreshes `_last_seen`
+  only for the driver's messages (or anyone's while nobody drives, when the
+  device cannot be active). Otherwise a live spectator would keep a frozen
+  driver's toy running. Test 50; `validate.sh` greps for it.
+- **The driver disconnecting panics even with other tabs open**
+  (`_client_gone`: `if was_driver or not self.clients`). Previously panic
+  needed the last client to leave; with every tab connected that could
+  never happen while a second tab was open. Test 49; grepped.
+- A takeover calls `player.unload()`: script, beats, flow and vibe track
+  dropped, script output silenced, **manual left running** (same reasoning as
+  `pause()`: switching tabs must not end a deliberate session). It is not a
+  stop path; the session continues under a driver the deadman watches.
+  Without it the old tab's script played against the new tab's video, and
+  kept playing if the new scene had no script. Test 51.
+- `connect` is idempotent unless `force`: every new driver sends it, and
+  rebuilding a live link dropped the device and ended manual mode. Only the
+  Connect button forces it. Test 51.
+- JS `pagehide` no longer sends `stop` (that also disconnected Intiface for
+  the next tab); closing the socket makes the backend panic.
+- The driver's heartbeat runs from a blob-URL Worker (`startTicker`), since
+  Chrome throttles hidden-tab timers to 1/min after 5 min and a muted video
+  counts as silent: a background driver would have hit the 15 s deadman.
+  Falls back to `setInterval` if workers are blocked.
+
+JS side: `applyDriver()` on every status; `becomeOwner()` sends mode,
+settings, output, connect and the script. A spectator knows its script (the
+label shows it) but only loads it when it drives. The status line in a
+spectator names the driving scene and is a Take over button. A status
+without a `driver` key means a pre-1.25 backend: the tab acts as a single
+owner and logs that the backend needs a restart.
+
+End-to-end tested against the real backend in a local runner with two
+browser tabs (no Intiface): open, second tab waits with the banner, Take
+over loads the new scene's script, closing tabs hands back. Two separate
+browsers not tested, but nothing in the path is per-browser any more.
+Tests 48-52.
+
 **Single-owner tab lock (JS, v1.10).** The backend is one global player, so
 only one tab may drive it. `IntifaceSync.owner` in localStorage holds
 `{id, ts}`, refreshed every 1.5s by the owner; TTL 90s (long because Chrome
@@ -724,7 +785,7 @@ semantics, fake backend socket): save, edit, update, revert, reload, fresh
 browser, two tabs, and a stale-settings-page overwrite. Not tested in a real
 Stash.
 
-**Tests:** `test_vibe.py`, 47 checks, run from the plugin's parent directory:
+**Tests:** `test_vibe.py`, 52 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -807,7 +868,8 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools / IntifaceSync | Key-clash fix (QuickTools on `window`) follows from DOM event order but is untested in a live Stash. Check: IntifaceSync manual on, press `R`, type `10`, manual stays on. |
 | IntifaceSync | Funscript discovery uses `files[0].path`; multi-file scenes may resolve the wrong directory. |
-| IntifaceSync | Spectator tabs show a greyed toolbar but their manual/hotkey controls silently do nothing. Could disable the controls visually. |
+| IntifaceSync | Spectator tabs (1.25) show who drives and a Take over button, but their toolbar controls still look live and silently do nothing except the kill switches. Could disable them visually. |
+| IntifaceSync | 1.25 arbitration untested across two real browsers/devices and in a real Stash (only two tabs of one browser against a local backend). Check: PC plays, phone opens a scene, phone shows the banner; phone presses play, PC shows it. Also check the Worker heartbeat is not blocked by Stash's CSP (console would show the fallback silently; a background muted driver stopping after ~5 min would mean it failed). |
 | QuickRate / QuickMark | `isVideoSurface()` selector list is a guess at Stash's video.js DOM. If a video click still pauses, inspect `ev.target` and extend the selector. |
 | QuickNav | `isBound()` inspects Mousetrap internals (`_callbacks`/`_directMap`); on builds where they are closure-private it returns `null` and behaves as before (trust `trigger`). |
 | QuickNav | Silent no-op when there is no scene queue. |

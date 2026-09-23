@@ -40,6 +40,14 @@ done
 if grep -q 'await self._handle(ws, {"type": "pause"})' plugins/IntifaceSync/IntifaceSync.py; then
   note "  FAIL disconnect uses pause instead of _panic"; fail=1
 fi
+# 1.25: the driving tab leaving must panic even while other tabs stay open,
+# and only the driver may feed the deadman.
+if grep -q 'if was_driver or not self.clients:' plugins/IntifaceSync/IntifaceSync.py; then
+  note "  ok   driver disconnect panics"
+else note "  FAIL driver disconnect no longer panics"; fail=1; fi
+if grep -q 'if ws is self._driver or self._driver is None:' plugins/IntifaceSync/IntifaceSync.py; then
+  note "  ok   deadman follows the driver"
+else note "  FAIL deadman no longer restricted to the driving tab"; fail=1; fi
 
 note "== IntifaceSync test suite =="
 if timeout 300 python3 plugins/IntifaceSync/test_vibe.py >/tmp/test_vibe.out 2>&1; then

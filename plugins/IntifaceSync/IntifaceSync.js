@@ -58,118 +58,111 @@
     try { localStorage.setItem(START_LS_KEY, String(t)); } catch (_) {}
   }
 
-  // ── Single-owner tab lock ──────────────────────────────────────────────────
-  // The backend is one global player. Only ONE tab may talk to it, otherwise
-  // tabs overwrite each other's script, and closing one tab stops the other.
-  // Ownership lives in localStorage with a heartbeat; a BroadcastChannel gives
-  // instant handoff when the owner closes so nobody waits for the TTL.
+  // ── Which tab drives the device ────────────────────────────────────────────
+  // The backend is one global player, so one tab drives it at a time. Up to
+  // 1.24 the tabs agreed among themselves through a localStorage lock, which
+  // each browser keeps separately: two browsers (PC and phone) both drove. Now
+  // every tab connects and the backend picks the driver (see _route() in the
+  // Python). This tab only asks: "claim" when it wants the device, "presence"
+  // so the backend and other tabs know what it is showing.
   const TAB_ID       = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  const OWNER_KEY    = "IntifaceSync.owner";
-  const OWNER_TTL    = 90000;   // long: background tabs get throttled to ~1 timer/min
-  const OWNER_BEAT   = 1500;
-  let   isOwner      = false;
+  let   isOwner      = false;     // this tab is the driver, per the last status
   let   initDone     = false;
-  let   ownerChannel = null;
-  try { ownerChannel = new BroadcastChannel("IntifaceSync.owner"); } catch (_) {}
+  let   driverInfo   = null;      // {tab, scene, title, playing} or null
+  let   legacyBackend = false;    // backend older than 1.25: no arbitration
+  let   currentSceneId    = null;
+  let   currentSceneTitle = "";
 
-  function readOwner() {
-    try { return JSON.parse(localStorage.getItem(OWNER_KEY) || "null"); } catch (_) { return null; }
-  }
   function videoIsPlaying() {
     return !!(videoEl && !videoEl.paused && !videoEl.ended);
   }
-  function writeOwner() {
-    try {
-      localStorage.setItem(OWNER_KEY, JSON.stringify({
-        id: TAB_ID, ts: Date.now(), playing: videoIsPlaying(),
-      }));
-    } catch (_) {}
+
+  function presence() {
+    return { tab: TAB_ID, scene: currentSceneId, title: currentSceneTitle,
+             playing: videoIsPlaying(), visible: document.visibilityState === "visible" };
   }
-  function releaseOwner() {
-    const o = readOwner();
-    if (o && o.id === TAB_ID) {
-      try { localStorage.removeItem(OWNER_KEY); } catch (_) {}
-    }
-    if (isOwner && ownerChannel) {
-      try { ownerChannel.postMessage({ type: "released", id: TAB_ID }); } catch (_) {}
-    }
-    isOwner = false;
+  function sendPresence() { sendMsg({ type: "presence", ...presence() }); }
+
+  // Pressing play or the Take over button forces it; anything softer (tab
+  // became visible, toolbar clicked) only wins when the driver is not playing.
+  function tryTakeover(reason) {
+    if (isOwner || !initDone || !wsReady) return;
+    const force = reason === "play" || reason === "button";
+    // A tab opened in the background (middle-click) must not take the device
+    // from one that is merely paused; it only takes a device nobody drives.
+    const ifFree = reason === "open" && document.visibilityState !== "visible";
+    log(`Asking to drive the device (${reason}${force ? ", forced" : ""})`, "debug");
+    sendMsg({ type: "claim", force, ifFree, reason });
   }
-  function claimOwner(force = false) {
-    const o   = readOwner();
-    const now = Date.now();
-    const free = !o || o.id === TAB_ID || (now - o.ts) > OWNER_TTL;
-    if (free || force) {
-      writeOwner();
-      if (force && ownerChannel) {
-        try { ownerChannel.postMessage({ type: "takeover", id: TAB_ID }); } catch (_) {}
-      }
-      return true;
+
+  // Called with every status. The backend is the only authority.
+  function applyDriver(msg) {
+    if (!("driver" in msg)) {
+      // Old backend still running after a plugin update: it cannot arbitrate,
+      // so behave like a single tab and say how to fix it.
+      if (!legacyBackend) log("Backend is older than this page; run Stop Backend and Start Backend", "error");
+      legacyBackend = true;
+      if (!isOwner) { isOwner = true; becomeOwner(); }
+      return;
     }
-    return false;
-  }
-  function refreshOwnership() {
-    if (!initDone) return;
-    const was = isOwner;
-    isOwner = claimOwner();
-    if (was && !isOwner) {
-      log("Lost tab ownership to another tab", "warn");
-      if (ws) { try { ws.close(); } catch (_) {} }
-      ws = null; wsReady = false; intifaceReady = false;
-      clearTimeout(reconnectTimer);
-      updateToolbarStatus();
-    } else if (!was && isOwner) {
-      log("This tab now owns the device");
+    legacyBackend = false;
+    driverInfo = msg.driver;
+    const mine = !!driverInfo && driverInfo.tab === TAB_ID;
+    if (mine && !isOwner) {
+      isOwner = true;
+      log("This tab now drives the device");
       becomeOwner();
+    } else if (!mine && isOwner) {
+      isOwner = false;
+      intifaceReady = false;
+      pendingPlay = null;
+      log("Another tab took the device", "warn");
     }
   }
 
-  // Fresh ownership means the backend still holds the OTHER tab's script and
-  // play state. Re-ask for this scene's funscript and resume if we are playing.
+  // Fresh driver: the backend dropped the previous tab's script, so send this
+  // tab's settings, script and play state.
   function becomeOwner() {
     intifaceReady   = false;
     funscriptLoaded = false;
-    if (currentScenePath) pendingFindFunscripts = { videoPath: currentScenePath };
-    if (videoIsPlaying())  pendingPlay = { time: videoEl.currentTime * 1000, rate: videoEl.playbackRate };
-    writeOwner();
-    connectBackend();
+    sendMsg({ type: "setMode", mode });
+    sendSettings();
+    sendOutput();
+    connectingToIntiface = false;
+    autoConnectIntiface();
+    if (selectedFunscript) loadFunscript(selectedFunscript);
+    else if (currentScenePath) sendMsg({ type: "findFunscripts", videoPath: currentScenePath });
+    if (videoIsPlaying()) pendingPlay = { time: videoEl.currentTime * 1000, rate: videoEl.playbackRate };
+    updateToolbarStatus();
   }
 
-  // Ownership follows the tab the user is actually using. A spectator takes
-  // over when it becomes visible or is interacted with, unless the current
-  // owner is mid-playback; pressing play here always wins because that is the
-  // most recent thing the user did.
-  function tryTakeover(reason) {
-    if (isOwner || !initDone) return;
-    const o = readOwner();
-    const ownerAlive = o && o.id !== TAB_ID && (Date.now() - o.ts) <= OWNER_TTL;
-    if (ownerAlive && o.playing && reason !== "play") return;
-    log(`Taking over the device (${reason})`, "debug");
-    claimOwner(true);
-    refreshOwnership();
-  }
   document.addEventListener("visibilitychange", () => {
+    sendPresence();
     if (document.visibilityState === "visible") tryTakeover("visible");
   });
   window.addEventListener("focus", () => tryTakeover("focus"));
-  if (ownerChannel) {
-    ownerChannel.addEventListener("message", (ev) => {
-      const m = ev.data || {};
-      if (m.id === TAB_ID) return;
-      if (m.type === "released") {
-        // previous owner left: try to take over right away
-        setTimeout(refreshOwnership, 50);
-      } else if (m.type === "takeover") {
-        // another tab took the device with the button, back off immediately
-        if (isOwner) refreshOwnership();
-      }
-    });
-  }
-  setInterval(refreshOwnership, OWNER_BEAT);
   window.addEventListener("pagehide", () => {
     if (previewOn) { previewOn = false; previewSamples = []; }
-    releaseOwner();
   });
+
+  // Heartbeat timer that survives background-tab throttling. Chrome slows
+  // timers in hidden tabs to once a minute after five minutes, and a muted
+  // video counts as silent, so a driver playing in the background could miss
+  // the 15 s deadman and stop mid-scene. Worker timers are not throttled that
+  // way. Falls back to setInterval if workers are blocked.
+  function startTicker(ms, fn) {
+    try {
+      const src = `setInterval(() => postMessage(0), ${ms});`;
+      const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+      const w = new Worker(url);
+      URL.revokeObjectURL(url);
+      w.onmessage = fn;
+      return { stop: () => w.terminate() };
+    } catch (_) {
+      const id = setInterval(fn, ms);
+      return { stop: () => clearInterval(id) };
+    }
+  }
 
   function byId(id) {
     return document.getElementById(id) ||
@@ -764,6 +757,7 @@
       query ($id: ID!) {
         findScene(id: $id) {
           id
+          title
           files { path }
         }
       }`;
@@ -779,27 +773,30 @@
   }
 
   // ── WebSocket ──────────────────────────────────────────────────────────────
+  // Messages any tab may send. Everything else only goes out from the driver;
+  // the backend enforces the same rule, this just avoids the noise.
+  const ANY_TAB = new Set(["hello", "presence", "claim", "ping", "status", "findFunscripts"]);
+  const isKillSwitch = (o) => o.type === "stop" ||
+    ((o.type === "output" || o.type === "manual") && o.enabled === false);
+
   function sendMsg(obj) {
-    if (!isOwner) return;
-    if (ws && wsReady) {
-      try { ws.send(JSON.stringify(obj)); } catch (_) {}
-    }
+    if (!ws || !wsReady) return;
+    if (!isOwner && !ANY_TAB.has(obj.type) && !isKillSwitch(obj)) return;
+    try { ws.send(JSON.stringify(obj)); } catch (_) {}
   }
 
-  // Tab close: best-effort hard stop. The socket may already be torn down, so
-  // this is NOT what keeps you safe; the backend deadman (15 s without a
-  // heartbeat) is. pagehide fires more reliably than beforeunload, incl. mobile.
+  // Tab close. Closing the socket is enough: the backend panics when the
+  // driving tab disconnects, and the deadman covers the cases where no close
+  // frame ever arrives. No "stop" here any more: that also disconnected
+  // Intiface, which the next tab to drive would then have to redo.
   window.addEventListener("pagehide", () => {
-    // isOwner may already be false here (releaseOwner runs first); ws only
-    // exists in the owning tab, so that is the real test.
-    if (ws && wsReady) {
-      try { ws.send(JSON.stringify({ type: "stop" })); } catch (_) {}
-      try { ws.close(); } catch (_) {}
-    }
+    if (ws) { try { ws.close(); } catch (_) {} }
   });
 
-  function autoConnectIntiface() {
-    if (mode !== "intiface" || intifaceReady || connectingToIntiface) return;
+  // force: the Connect button. A plain connect is ignored by the backend when
+  // the device link is already up, so taking over a tab does not drop it.
+  function autoConnectIntiface(force = false) {
+    if (mode !== "intiface" || (!force && (intifaceReady || connectingToIntiface))) return;
     connectingToIntiface = true;
     loadPluginConfig().then((cfg) => {
       if (typeof cfg?.enableHandy === "boolean" && cfg.enableHandy !== handyEnabled) {
@@ -812,7 +809,7 @@
       }
       const url = cfg?.intifaceUrl || "ws://localhost:12345";
       log(`Auto-connecting to Intiface: ${url}`);
-      sendMsg({ type: "connect", url });
+      sendMsg({ type: "connect", url, force });
       if (currentScenePath) pendingFindFunscripts = { videoPath: currentScenePath };
     }).catch(() => { connectingToIntiface = false; });
   }
@@ -825,7 +822,8 @@
     connectingToIntiface = false;
 
     if (wsReady) {
-      autoConnectIntiface();
+      if (!isOwner) tryTakeover("button");     // Connect is an explicit request
+      autoConnectIntiface(true);
       return;
     }
 
@@ -912,7 +910,6 @@
   }).catch(() => {});
 
   function connectBackend() {
-    if (!isOwner) { updateToolbarStatus(); return; }   // spectator tab
     if (ws) { try { ws.close(); } catch (_) {} }
     ws = new WebSocket(BACKEND_URL);
 
@@ -925,33 +922,33 @@
       reconnectDelay       = 3000;
       clearTimeout(reconnectTimer);
       log(`Connected to backend (${BACKEND_URL})`);
-
-      sendMsg({ type: "setMode", mode });
-      sendSettings();
-      sendOutput();
+      isOwner = false;                  // the backend says who drives
+      sendMsg({ type: "hello", ...presence() });
       if (pendingIntifaceConnect) {
         pendingIntifaceConnect = false;
         log("Backend up, resuming the requested Intiface connection");
       }
-      autoConnectIntiface();
-
       if (pendingFindFunscripts !== null) {
         sendMsg({ type: "findFunscripts", videoPath: pendingFindFunscripts.videoPath });
         pendingFindFunscripts = null;
       }
+      // Ask to drive. Granted when nobody else is playing; otherwise this tab
+      // waits as a spectator until play or Take over.
+      tryTakeover("open");
 
-      // Heartbeat feeds the backend deadman. While the video plays it also
-      // carries currentTime, so the backend can correct clock drift instead of
-      // free-running from the last play/seek.
-      statusPollInterval = setInterval(() => {
-        if (!wsReady) return;
+      // Heartbeat feeds the backend deadman, which only listens to the
+      // driver. While the video plays it also carries currentTime, so the
+      // backend can correct clock drift instead of free-running.
+      if (statusPollInterval) statusPollInterval.stop();
+      statusPollInterval = startTicker(2000, () => {
+        if (!wsReady || !isOwner) return;
         if (!intifaceReady) { sendMsg({ type: "status" }); return; }
         if (videoEl && !videoEl.paused && !videoEl.ended) {
           sendMsg({ type: "sync", time: videoEl.currentTime * 1000, rate: videoEl.playbackRate });
         } else {
           sendMsg({ type: "ping" });
         }
-      }, 2000);
+      });
     });
 
     ws.addEventListener("message", (ev) => {
@@ -963,9 +960,9 @@
     ws.addEventListener("close", () => {
       wsReady       = false;
       intifaceReady = false;
-      clearInterval(statusPollInterval);
+      isOwner       = false;
+      if (statusPollInterval) { statusPollInterval.stop(); statusPollInterval = null; }
       updateToolbarStatus();
-      if (!isOwner) return;   // lost the lock, another tab drives now
 
       // Never reached the backend: it is probably not running. Start it.
       if ((!backendEverConnected || pendingIntifaceConnect) && !backendStartGaveUp) {
@@ -1041,6 +1038,7 @@
 
     if (msg.type === "status") {
       statusData = msg;
+      applyDriver(msg);
       if (typeof msg.outputEnabled === "boolean" && msg.outputEnabled !== outputOn) {
         outputOn = msg.outputEnabled;
         updateOutputUI();
@@ -1061,7 +1059,7 @@
       updateFunscriptSelector();
       if (msg.error) log(`Backend error: ${msg.error}`, "error");
 
-      if (mode === "intiface") {
+      if (mode === "intiface" && isOwner) {
         if (msg.connected && !intifaceReady) {
           intifaceReady        = true;
           connectingToIntiface = false;
@@ -1073,7 +1071,7 @@
             sendMsg({ type: "findFunscripts", videoPath: path });
           }
         }
-      } else {
+      } else if (isOwner) {
         if (msg.connected && !intifaceReady) {
           intifaceReady = true;
           if (pendingFindFunscripts !== null) {
@@ -1106,7 +1104,9 @@
       } else {
         selectedFunscript = defaultScript || funscripts[0];
         updateFunscriptSelector();
-        loadFunscript(selectedFunscript);
+        // A spectator knows its script (the label shows it) but only loads it
+        // once it drives; becomeOwner() does that.
+        if (isOwner) loadFunscript(selectedFunscript);
       }
       return;
     }
@@ -1136,8 +1136,8 @@
     video.addEventListener("play", () => {
       const t = video.currentTime * 1000;
       log(`Video play @ ${t.toFixed(0)}ms`, "debug");
+      sendPresence();
       if (!isOwner) { tryTakeover("play"); return; }   // becomeOwner() queues the play
-      writeOwner();
       if (!funscriptLoaded) pendingPlay = { time: t, rate: video.playbackRate };
       else                  sendMsg({ type: "play", time: t, rate: video.playbackRate });
     });
@@ -1160,7 +1160,7 @@
     video.addEventListener("pause", () => {
       log("Video pause", "debug");
       pendingPlay = null;
-      if (isOwner) writeOwner();          // let other tabs see we are idle right away
+      sendPresence();                     // let other tabs see we are idle right away
       sendMsg({ type: "pause" });
     });
 
@@ -3260,21 +3260,17 @@ function injectStyles() {
     const statusEl = byId(`${PLUGIN_ID}-status`);
     if (!statusEl) return;
 
-    if (!isOwner) {
-      const o = readOwner();
-      statusEl.textContent = (o && o.playing)
-        ? "◌ Another tab is playing to the device"
-        : "◌ Another tab controls the device";
-      statusEl.style.color = "#888";
-      statusEl.title = "One tab drives the toy at a time. Press play here, use a hotkey, " +
-                       "or click this text to take over.";
+    if (!isOwner && wsReady) {
+      const d = driverInfo;
+      const where = d ? (d.title ? `\u201C${d.title}\u201D` : `scene ${d.scene || "?"}`) : "";
+      statusEl.textContent = d
+        ? `\u25CC Toy follows ${where} in another tab${d.playing ? " (playing)" : ""} \u00b7 Take over`
+        : "\u25CC No tab is driving the toy \u00b7 Take over";
+      statusEl.style.color = "#9ecbff";
+      statusEl.title = "One tab drives the toy at a time, across all browsers. Pressing play " +
+                       "here takes over too. Stop, mute and Manual off work from any tab.";
       statusEl.style.cursor = "pointer";
-      statusEl.onclick = () => {
-        claimOwner(true);
-        refreshOwnership();
-        statusEl.onclick = null;
-        statusEl.style.cursor = "";
-      };
+      statusEl.onclick = () => tryTakeover("button");
       return;
     }
     statusEl.onclick = null;
@@ -3336,7 +3332,8 @@ function injectStyles() {
       } else {
         const name    = baseName(selectedFunscript);
         const pending = funscriptLoaded === "pending";
-        const track   = statusData && statusData.vibeTrack;
+        // status describes the driver's script; a spectator's own may differ
+        const track   = isOwner && statusData && statusData.vibeTrack;
         label.textContent   = (pending ? `♪ ${name} …` : `♪ ${name}`) +
                               (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "");
         label.style.opacity = pending ? "0.6" : "0.85";
@@ -3419,6 +3416,9 @@ function injectStyles() {
 
     const videoPath  = scene.files?.[0]?.path ?? null;
     currentScenePath = videoPath;
+    currentSceneId    = sceneId;
+    currentSceneTitle = scene.title || (videoPath ? baseName(videoPath) : "");
+    sendPresence();
 
     if (videoPath) {
       if (wsReady) sendMsg({ type: "findFunscripts", videoPath });
@@ -3502,9 +3502,7 @@ function injectStyles() {
   }
 
   function init() {
-    isOwner  = claimOwner();
     initDone = true;
-    if (!isOwner) log("Another tab owns the device, this tab is a spectator");
     installHotkeys();
     log(`Plugin initialized (backend: ${BACKEND_URL})`);
     loadSettingsFromStorage();

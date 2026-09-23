@@ -134,9 +134,16 @@ available in the toolbar.
 
 ## Multiple tabs
 
-Only one tab drives the toy at a time. Switching to another Stash tab hands
-control over automatically; pressing play always wins. A tab that is not in
-control says so in the status line.
+One tab drives the toy at a time, across every browser and device that has
+Stash open.
+
+- Pressing play in a tab makes it the one driving, and it loads that tab's
+  script.
+- A tab you switch to takes over by itself only when the one driving is not
+  playing.
+- Every other tab says which scene is driving and offers **Take over**.
+- **Device muted**, **Manual off** (`0`) and **Stop** work from any tab.
+- Closing the tab that is driving stops the toy.
 
 ## Safety
 
