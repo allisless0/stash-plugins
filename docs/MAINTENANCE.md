@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
-| IntifaceSync (vibe fork) | 1.25-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.26-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -571,6 +571,62 @@ die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
 
+**Script panel and per-script memory (1.26, frontend only).** The ⚙ row had
+grown into script tuning, app settings and a debug scope in one wrapping
+line. Now:
+
+- **Script panel** (`#IntifaceSync-script-pop`, opened from the `♪` script
+  button in row 1): memory bar, script picker (only with >1 candidate),
+  whole-scene intensity strip from the Flow overview (click seeks the video,
+  playhead redrawn every 500 ms while open), vibrator-track switch, mode
+  cards, mode-specific Feel knobs, Timing (offset) and Weakest/Strongest
+  (the old script range), and the live signal scope. Closing the panel
+  turns the scope off. Beat Sensitivity is hidden for graded beat scripts,
+  whose level comes from swing height.
+- **⚙ row**: Handy mode switch (when enabled), Micro pulsing, Shortcuts, a
+  pointer to the two panels. Micro pulsing also sits in the pattern panel
+  next to the setting that needs it; `toggleMicro()` / `updateMicroButtons()`
+  keep both in step via the `IntifaceSync-micro-btn` class.
+- Both popovers share the `.IntifaceSync-pop` class (the CSS that was keyed
+  on `#IntifaceSync-pattern-pop`), `positionPopover()`, and **one**
+  document `pointerdown` dismiss handler. Opening one closes the other.
+- `knobRow()` takes `o.prefix`, `o.registry`, `o.onCommit` and `o.words`
+  so the script panel reuses it. `buildVibeControls`, `buildOffsetInput`,
+  `buildStrokeRange` and `refreshVibeControls` are gone.
+- "Stop" is now "Disconnect", which is what it does.
+- **Shortcuts button blank (older bug, fixed here).** `updateHotkeyBtn()`
+  ran before row 2 was attached to the bar, so `byId()` could not reach it;
+  the later refresh from plugin config only runs when `disableHotkeys` has
+  been saved at least once. It now runs after `bar.appendChild(row2)` and
+  again in `injectToolbar()`. This is the 1.19 lesson again: mount first.
+
+**Per-script memory.** Offset and feel depend on the file, not the user.
+While a script is loaded, every script-panel change goes through
+`scriptSettingChanged()` and is stored for that script
+(`SCRIPT_KEYS`: mode, flow smooth/rhythm/gain, max speed, beat ms/edge/
+prominence, offset, range, vibe-track switch). Scripts without memory use
+`scriptDefaults`. **The settings blob in localStorage holds the defaults,
+not the current values** (`saveSettingsToStorage` spreads
+`scriptDefaults` over them), otherwise tuning one script would silently
+change the default for every other. With no script loaded, changes set the
+defaults. "Use defaults" forgets a script; "Make these my defaults" copies
+the current tuning into the defaults.
+
+Storage mirrors presets: Stash plugin config key `scriptSettings`
+(`{v, rev, scripts: {fnv1a(path): {path, ...values, ts}}}`) plus
+localStorage `IntifaceSync.scriptSettings`, newer `rev` wins, capped at
+`SCRIPT_MAX` (200) by oldest `ts`, writes debounced 800 ms. The full path
+is stored to reject hash collisions. Memory is applied when the funscript
+list arrives (before `loadFile`, so the backend renders Flow with the
+right settings) and when the picker changes. `writeStashKey()` now chains
+all Stash config writes, because a preset save and a script save in flight
+together would each write back the map they had read.
+
+Browser-tested end to end against the real backend: tune timing on one
+script, switch to another (defaults), switch back (tuning restored, stored
+in the fake Stash config, defaults untouched); Flow knobs and live signal
+with a playing video (8.4 cmd/s at rhythm 30%).
+
 **The backend decides which tab drives (1.25). This replaces the two
 sections below, kept for history.** The localStorage lock was per browser:
 Stash open on a PC and a phone gave two "owners" sending conflicting play,
@@ -853,7 +909,8 @@ under new labels that mean something different. Recalculate makes ratings
 |---|---|
 | IntifaceSync | **Untested on live hardware since v1.10.** Do the dry run: tease on, kill the browser, confirm stop within ~15s. Then: two tabs, confirm spectator text appears and takeover works. |
 | IntifaceSync | Backend does not reliably stay up; auto-start is throttled but the root cause (task failing vs port 7880 unreachable from browser) is unconfirmed. Check `docker exec Stash ps aux \| grep -i intiface`. The 2026-09-14 log shows 40 minutes of `Failed to connect to Intiface` timeouts before a successful connect: that was Intiface Central not running yet, not a plugin fault. |
-| IntifaceSync | v1.17 UI is untested in a browser. It parses and the IIFE executes against stubbed globals, nothing more. Check the popover positions correctly when the player is fullscreen, and that it is not clipped by the player container. |
+| IntifaceSync | Both popovers live on `document.body`; in browser fullscreen they are not painted over the fullscreen player (QuickTools solved the same thing by moving its overlay into `document.fullscreenElement`). Not yet handled. |
+| IntifaceSync | Per-script memory is keyed by file path: moving or renaming a script loses its tuning. |
 | IntifaceSync | Signal preview untested against a real device stream; sample timestamps are backend-monotonic, so if the canvas looks frozen check that frames are arriving rather than that the toy is idle. |
 | IntifaceSync | Clock sync untested on hardware. Check `driftMs` in the status payload during a long scene; it should stay under ~150 and never trend. |
 | IntifaceSync | `SYNC_GAIN` 0.25 at a 2 s heartbeat means a 100 ms drift takes ~8 s to ease out. Fine for vibrators, possibly too slow for a stroker. |
@@ -1018,7 +1075,9 @@ documentation at all.
 **IntifaceSync 1.15 → 1.16.** Funscript dropdown replaced by a plain label;
 picker demoted to the advanced row and only shown when there is a real choice.
 
-**Not done / next session:** live hardware verification of 1.10; verify the
+**Not done / next session:** hardware and real-Stash verification of
+1.22-1.26 (see §6), popovers in fullscreen;
+live hardware verification of 1.10; verify the
 `isVideoSurface` selectors against the real Stash DOM; consider a "Stop
 everything" hotkey in IntifaceSync that calls `_panic` directly (currently `E`
 is the kill switch but it is a toggle, not a panic).

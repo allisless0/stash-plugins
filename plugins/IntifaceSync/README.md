@@ -30,13 +30,17 @@ reaches the toy, script or manual, no exceptions. Use it as a panic button.
 **Manual** drives the toy directly, ignoring the funscript. The slider next to
 it sets intensity, and also scales funscript output when a script is playing.
 
+**The script name** (`♪ …`) opens the script panel: everything about how the
+funscript drives the toy. See [Script playback](#script-playback).
+
 **The pattern button** shows the active preset (or the pattern, if no preset is
 active) and opens the pattern panel. A `*` after the name means you have
 changed something since loading it.
 
-**⚙** opens the advanced row: script vibe mode, sensitivity, timing, script
-range, micro pulsing and the signal preview. Each control says in words what
-its current setting does.
+**⚙** holds device and app settings: micro pulsing and keyboard shortcuts.
+
+**Disconnect** stops the toy and drops the Intiface connection; **Connect**
+brings it back.
 
 ## Manual patterns
 
@@ -92,7 +96,16 @@ pattern panel and give it a name. Click a preset to load it.
 
 ## Script playback
 
-**Vibe mode** decides how a stroking script becomes vibration:
+Click the script name to open the script panel. At the top, a strip shows how
+busy each part of the scene is; click it to jump there.
+
+**Settings are remembered per script.** The right timing and feel depend on
+the file, so whatever you change while a script is loaded is kept for that
+script and comes back next time. Scripts you have not tuned use your defaults.
+The panel says which applies, with **Use defaults** to forget a script's tuning
+and **Make these my defaults** to copy it.
+
+**Mode** decides how a stroking script becomes vibration:
 
 - **Auto**: picks for you (Beat for Cock Hero style scripts, Flow for the
   rest). Start here.
@@ -117,7 +130,12 @@ the vibrator plays it as written, which is almost always better than anything
 worked out from stroke motion; the toolbar shows `+ vibe track`. A stroker
 still follows the main script. You can turn this off under ⚙.
 
-**Offset** shifts device timing against the video. Positive fires earlier.
+**Timing** shifts the toy against the video; the panel says "120 ms earlier"
+and so on. **Weakest / Strongest** set the range the script plays in; manual
+mode has its own Power limit.
+
+**Live signal** at the bottom of the panel draws the script, the Flow plan and
+what the toy actually gets, while you tune.
 
 ## Keyboard shortcuts
 
@@ -163,25 +181,31 @@ then that the toolbar says Device live. Run Stop Backend then Start Backend.
 **Backend changes did nothing.** Reloading plugins does not restart the Python
 process. Run Stop Backend, then Start Backend.
 
-**It buzzes constantly instead of following the script.** Switch vibe mode to
-Auto. Some scripts are square waves that Speed mode flattens into one level.
+**It buzzes constantly instead of following the script.** Set the mode to
+Auto or Flow in the script panel. With Flow, lower Sensitivity or raise
+Smoothness; with Beat, check Fire on.
 
-**Timing drifts.** Turn on the signal preview under ⚙ and watch `drift`. It
-should hover near zero. If it climbs steadily, report it.
+**Another tab has the toy.** The status line says which scene is driving;
+click it to take over, or press play in this tab.
 
-## Signal preview
+**Timing drifts.** Turn on the live signal in the script panel and watch
+`drift`. It should hover near zero. If it climbs steadily, report it.
 
-Under ⚙, **Signal preview** draws a live scope of the last 8 seconds:
+## Live signal
+
+At the bottom of the script panel, **Live signal** draws a scope of the last 8
+seconds:
 
 - **grey line** — the funscript itself, with a dashed playhead at the current
   position and faint verticals marking where beat mode will fire
+- **dashed purple** — the Flow plan, including what is coming next
 - **blue line** — the intensity the plugin wants
 - **green fill** — the level actually sent to the toy
 - **orange ticks** — each command over Bluetooth
 - **dashed yellow** — your motor's floor
 
 Use it to check a vibe mode is reading a script sensibly: the green fill should
-follow the shape of the grey line in a way that makes sense for the mode. It is
-off by default because it streams continuously; leave it off for normal use.
+follow the shape of the grey line in a way that makes sense for the mode. It
+turns off when the panel closes because it streams continuously.
 
 Debug logging: `localStorage.intifaceSyncDebug = "1"` in the browser console.

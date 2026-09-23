@@ -266,6 +266,10 @@
   }
 
   function saveSettingsToStorage() {
+    // Script settings are saved as the defaults, not as whatever the current
+    // script was tuned to; see "Per-script memory".
+    let defaults = {};
+    try { if (scriptDefaults) defaults = scriptDefaults; } catch (_) {}   // not declared yet during startup
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
         offsetMs, strokeMin, strokeMax, invert, mode, handyKey,
@@ -275,6 +279,7 @@
         manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
         manualBuildAmp, manualAmpFrom,
         outputOn, hotkeysOn, presetBase,
+        ...defaults,
       }));
     } catch (e) {
       log(`Failed to save settings: ${e}`, "error");
@@ -488,7 +493,17 @@
   // Read-merge-write. configurePlugin replaces the plugin's whole config, so
   // the URL and other settings have to be carried through untouched. A read
   // that fails must abort the write: writing a blank map would wipe them.
-  async function writeStashStore(store) {
+  // Writes are chained: two read-merge-writes in flight at once (a preset and
+  // a script's settings) would each write back the map they read, and the
+  // second would undo the first.
+  let stashWriteChain = Promise.resolve();
+  function writeStashKey(key, value) {
+    const run = stashWriteChain.then(() => writeStashNow(key, value));
+    stashWriteChain = run.catch(() => {});
+    return run;
+  }
+
+  async function writeStashNow(key, store) {
     const resp = await fetch("/graphql", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -499,7 +514,7 @@
     if (json?.errors?.length || !plugins || typeof plugins !== "object") {
       throw new Error(json?.errors?.[0]?.message || "could not read the plugin config");
     }
-    const input = { ...(plugins[PLUGIN_ID] || {}), [PRESET_CFG_KEY]: JSON.stringify(store) };
+    const input = { ...(plugins[PLUGIN_ID] || {}), [key]: JSON.stringify(store) };
     const w = await fetch("/graphql", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -516,7 +531,7 @@
   function persistPresets() {
     presetStore.rev = Date.now();
     writeBrowserStore();
-    writeStashStore(presetStore).then(() => {
+    writeStashKey(PRESET_CFG_KEY, presetStore).then(() => {
       presetSyncNote = "";
       updatePresetUI();
     }).catch((e) => {
@@ -549,7 +564,7 @@
     if (best) presetStore = best;
     if (local && (!remote || local.rev > remote.rev)) {
       // Stash lost it (see the header comment) or never had it: put it back.
-      writeStashStore(presetStore).catch((e) => log(`Preset sync to Stash failed: ${e.message}`));
+      writeStashKey(PRESET_CFG_KEY, presetStore).catch((e) => log(`Preset sync to Stash failed: ${e.message}`));
     }
     if (best && best !== local) writeBrowserStore();
     adoptActivePreset();
@@ -1053,9 +1068,10 @@
           msg.scalarStep !== scalarStep) {
         scalarStep = msg.scalarStep;
         updateManualUI();
+        updateMicroButtons();
       }
       updateToolbarStatus();
-      refreshVibeControls();
+      updateScriptUI();
       updateFunscriptSelector();
       if (msg.error) log(`Backend error: ${msg.error}`, "error");
 
@@ -1100,9 +1116,12 @@
 
       if (funscripts.length === 0) {
         pendingPlay = null;
+        applyScriptSettingsFor(null);
         updateFunscriptSelector();
       } else {
         selectedFunscript = defaultScript || funscripts[0];
+        // this script's remembered tuning, before the script itself loads
+        applyScriptSettingsFor(selectedFunscript);
         updateFunscriptSelector();
         // A spectator knows its script (the label shows it) but only loads it
         // once it drives; becomeOwner() does that.
@@ -1499,7 +1518,7 @@ function injectStyles() {
     #${PLUGIN_ID}-pattern-btn { min-width: 92px; }
 
     /* ── Pattern popover ────────────────────────────────────── */
-    #${PLUGIN_ID}-pattern-pop {
+    .${PLUGIN_ID}-pop {
       position: fixed; left: 0; top: 0; z-index: 10050;
       width: 360px; max-height: 70vh; overflow-y: auto;
       background: rgba(22,25,31,0.98);
@@ -1513,7 +1532,7 @@ function injectStyles() {
       opacity: 0; pointer-events: none; transform: translateY(4px);
       transition: opacity .12s ease, transform .12s ease;
     }
-    #${PLUGIN_ID}-pattern-pop.is-open {
+    .${PLUGIN_ID}-pop.is-open {
       opacity: 1; pointer-events: auto; transform: translateY(0);
     }
     .${PLUGIN_ID}-pop-head { margin-bottom: 10px; }
@@ -1525,7 +1544,7 @@ function injectStyles() {
     .${PLUGIN_ID}-cards {
       display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card {
       display: flex; flex-direction: column; gap: 2px;
       text-align: left; padding: 8px 10px;
       background: rgba(255,255,255,0.04);
@@ -1533,11 +1552,11 @@ function injectStyles() {
       border-radius: 7px; cursor: pointer; color: inherit;
       font-family: inherit; transition: all .12s ease;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card:hover {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card:hover {
       background: rgba(90,169,255,0.10);
       border-color: rgba(90,169,255,0.35);
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card.is-sel {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel {
       background: rgba(90,169,255,0.18);
       border-color: rgba(90,169,255,0.65);
     }
@@ -1561,13 +1580,13 @@ function injectStyles() {
     }
     .${PLUGIN_ID}-field-head label { font-size: 12px; color: #d3d8de; }
     .${PLUGIN_ID}-field-ctl { display: inline-flex; align-items: center; gap: 5px; }
-    #${PLUGIN_ID}-pattern-pop input[type=number] {
+    .${PLUGIN_ID}-pop input[type=number] {
       width: 66px; background: rgba(0,0,0,0.35); color: #e8eaed;
       border: 1px solid rgba(255,255,255,0.14); border-radius: 5px;
       padding: 4px 6px; font-size: 12px; font-family: inherit;
       text-align: right; outline: none;
     }
-    #${PLUGIN_ID}-pattern-pop input[type=number]:focus {
+    .${PLUGIN_ID}-pop input[type=number]:focus {
       border-color: rgba(90,169,255,0.6);
     }
     .${PLUGIN_ID}-unit { font-size: 11px; color: #737d8a; min-width: 34px; }
@@ -1581,13 +1600,13 @@ function injectStyles() {
     }
 
     /* ── Pattern popover: pictures, knobs, presets ───────────── */
-    #${PLUGIN_ID}-pattern-pop { width: 380px; max-height: 80vh; }
+    .${PLUGIN_ID}-pop { width: 380px; max-height: 80vh; }
     .${PLUGIN_ID}-icon { flex: none; opacity: .85; }
     .${PLUGIN_ID}-card-top {
       display: flex; align-items: center; justify-content: space-between; gap: 6px;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card .${PLUGIN_ID}-icon { color: #7f8b99; }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-icon { color: #9ecbff; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card .${PLUGIN_ID}-icon { color: #7f8b99; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-icon { color: #9ecbff; }
 
     .${PLUGIN_ID}-pattern-view {
       margin-top: 10px; padding: 8px 8px 6px;
@@ -1599,55 +1618,55 @@ function injectStyles() {
       margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: #cfd6de;
     }
 
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob {
       -webkit-appearance: none; appearance: none;
       display: block; width: 100%; height: 18px; margin: 4px 0 0; padding: 0;
       background: transparent; cursor: pointer;
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-runnable-track {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-runnable-track {
       height: 4px; border-radius: 2px;
       background: linear-gradient(90deg, #5aa9ff var(--fill, 0%), rgba(255,255,255,0.12) var(--fill, 0%));
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-track {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-track {
       height: 4px; border-radius: 2px; background: rgba(255,255,255,0.12);
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-progress {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-progress {
       height: 4px; border-radius: 2px; background: #5aa9ff;
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-thumb {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
       background: #fff; border: 2px solid #5aa9ff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-thumb {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-thumb {
       width: 12px; height: 12px; border-radius: 50%;
       background: #fff; border: 2px solid #5aa9ff;
     }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob:focus-visible { outline: none; }
-    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob:focus-visible::-webkit-slider-thumb {
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob:focus-visible { outline: none; }
+    .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob:focus-visible::-webkit-slider-thumb {
       box-shadow: 0 0 0 3px rgba(90,169,255,.35);
     }
 
     .${PLUGIN_ID}-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip {
       display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
       padding: 5px 10px; border-radius: 999px; cursor: pointer;
       background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
       color: #dfe4ea; font: inherit; font-size: 11.5px;
       transition: background .12s ease, border-color .12s ease;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip:hover {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip:hover {
       background: rgba(90,169,255,0.12); border-color: rgba(90,169,255,0.4);
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip.is-sel {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip.is-sel {
       background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.75); color: #fff;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip .${PLUGIN_ID}-icon { color: #9ecbff; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip .${PLUGIN_ID}-icon { color: #9ecbff; }
     .${PLUGIN_ID}-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
     .${PLUGIN_ID}-chip-dot {
       width: 6px; height: 6px; border-radius: 50%; background: #f5b342; flex: none;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip-add {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip-add {
       border-style: dashed; color: #9aa6b4; background: transparent;
     }
     .${PLUGIN_ID}-preset-edit { display: none; gap: 6px; margin-top: 8px; align-items: center; }
@@ -1661,21 +1680,21 @@ function injectStyles() {
     }
     .${PLUGIN_ID}-preset-bar:empty { display: none; }
     .${PLUGIN_ID}-preset-state { font-size: 11px; color: #8e97a3; margin-right: auto; }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-edit button,
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-edit button,
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button {
       background: rgba(255,255,255,0.06); color: #e8eaed;
       border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
       padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet {
       background: transparent; border-color: transparent; color: #8e97a3; padding: 4px 6px;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet:hover { color: #e8eaed; }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.is-on,
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-edit button[data-act=save] {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet:hover { color: #e8eaed; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.is-on,
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-edit button[data-act=save] {
       background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
     }
-    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.is-danger {
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.is-danger {
       background: rgba(235,80,80,0.2); border-color: rgba(235,80,80,0.6); color: #ffb3b3;
     }
     .${PLUGIN_ID}-field-help.is-warn { color: #f5b342; }
@@ -1698,11 +1717,54 @@ function injectStyles() {
       color: #7c8593 !important; font-size: 10.5px; max-width: 260px; line-height: 1.3;
     }
 
+    /* ── Script panel ─────────────────────────────────────────── */
+    .${PLUGIN_ID}-memory {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      margin-bottom: 10px; padding: 7px 9px; border-radius: 7px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      font-size: 11px; color: #9aa3b0; line-height: 1.4;
+    }
+    .${PLUGIN_ID}-memory span { flex: 1 1 100%; }
+    .${PLUGIN_ID}-memory.is-tuned { border-color: rgba(90,169,255,0.45); color: #cfe3ff; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-memory button,
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-field-head > button {
+      background: rgba(255,255,255,0.06); color: #e8eaed;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+    }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-field-head > button.is-on {
+      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+    }
+    .${PLUGIN_ID}-sp-pick { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .${PLUGIN_ID}-sp-pick label { font-size: 12px; color: #d3d8de; }
+    .${PLUGIN_ID}-pop select {
+      background: rgba(0,0,0,0.35); color: #e8eaed; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 11.5px; max-width: 230px;
+    }
+    .${PLUGIN_ID}-overview { margin-bottom: 4px; }
+    #${PLUGIN_ID}-overview-canvas {
+      display: block; width: 100%; height: 44px; cursor: pointer;
+      background: rgba(0,0,0,0.3); border-radius: 5px;
+    }
+    .${PLUGIN_ID}-field-words { font-size: 11px; color: #9ecbff; margin-right: auto; margin-left: 8px; }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name {
+      max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name.is-tuned { border-color: rgba(90,169,255,0.45); }
+    .${PLUGIN_ID}-micro-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-micro-row button {
+      background: rgba(255,255,255,0.06); color: #e8eaed; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+    }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-micro-row button.is-on {
+      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+    }
+
     @media (prefers-reduced-motion: reduce) {
-      #${PLUGIN_ID}-pattern-pop { transition: none; }
+      .${PLUGIN_ID}-pop { transition: none; }
     }
     @media (max-width: 520px) {
-      #${PLUGIN_ID}-pattern-pop { width: calc(100vw - 24px); }
+      .${PLUGIN_ID}-pop { width: calc(100vw - 24px); }
       .${PLUGIN_ID}-cards { grid-template-columns: 1fr; }
     }
   `;
@@ -1887,138 +1949,6 @@ function injectStyles() {
       cancelAnimationFrame(previewRaf); previewRaf = null;
     }
     log(`Signal preview: ${previewOn ? "on" : "off"}`);
-  }
-
-  function buildOffsetInput() {
-    const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:3px;margin-left:6px;";
-
-    wrap.className = `${PLUGIN_ID}-adv`;
-    wrap.title = "Shifts the toy against the video. If the toy reacts after the action, " +
-                 "make it fire earlier. Range 2 s either way.";
-    const label = document.createElement("span");
-    label.className = `${PLUGIN_ID}-adv-label`;
-    label.textContent = "Timing";
-    wrap.appendChild(label);
-
-    const minus = document.createElement("button");
-    minus.textContent   = "−";
-    minus.title = "Toy fires later";
-    minus.style.cssText = "min-width:26px;padding:4px 8px;font-weight:bold;";
-    wrap.appendChild(minus);
-
-    const input = document.createElement("input");
-    input.id    = `${PLUGIN_ID}-offset`;
-    input.type  = "number";
-    input.value = String(offsetMs);
-    input.min = -2000;
-    input.max = 2000;
-    input.step = 10;
-    input.title = "Positive = device fires earlier (use when it reacts too late).\n" +
-                  "Negative = device fires later.\nRange: -2000 to 2000 ms";
-    input.style.cssText = "width:64px;";
-    wrap.appendChild(input);
-
-    const plus = document.createElement("button");
-    plus.textContent   = "+";
-    plus.title = "Toy fires earlier";
-    plus.style.cssText = "min-width:26px;padding:4px 8px;font-weight:bold;";
-    wrap.appendChild(plus);
-
-    const unit = document.createElement("span");
-    unit.textContent  = "ms";
-    unit.style.opacity = "0.7";
-    wrap.appendChild(unit);
-
-    const read = document.createElement("span");
-    read.className = `${PLUGIN_ID}-adv-read`;
-    wrap.appendChild(read);
-    const showOffset = () => {
-      read.textContent = offsetMs === 0 ? "in sync with video"
-        : offsetMs > 0 ? `toy fires ${offsetMs} ms earlier` : `toy fires ${-offsetMs} ms later`;
-    };
-    showOffset();
-
-    function setOffset(v) {
-      let val = parseInt(v, 10) || 0;
-      val = Math.max(-2000, Math.min(2000, val));
-      offsetMs    = val;
-      input.value = String(val);
-      showOffset();
-      sendSettings();
-    }
-    minus.addEventListener("click", () => setOffset(offsetMs - 10));
-    plus .addEventListener("click", () => setOffset(offsetMs + 10));
-    input.addEventListener("change", () => setOffset(input.value));
-    return wrap;
-  }
-
-  function buildStrokeRange() {
-    const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-left:6px;";
-
-    wrap.className = `${PLUGIN_ID}-adv`;
-    wrap.title = "The weakest and strongest the script may drive the toy. The script's quietest " +
-                 "moment maps to the left handle, its strongest to the right. Manual mode has its " +
-                 "own Power limit in the pattern panel.";
-    const label = document.createElement("span");
-    label.className = `${PLUGIN_ID}-adv-label`;
-    label.textContent = "Script range";
-    wrap.appendChild(label);
-
-    const track = document.createElement("span");
-    track.style.cssText = "position:relative;width:140px;height:18px;display:inline-block;z-index:0;";
-
-    const trackBg = document.createElement("span");
-    trackBg.style.cssText = "position:absolute;top:7px;left:0;right:0;height:4px;" +
-                            "background:rgba(255,255,255,0.1);border-radius:2px;z-index:1;pointer-events:none;";
-
-    const trackFill = document.createElement("span");
-    trackFill.style.cssText = "position:absolute;top:7px;height:4px;z-index:2;pointer-events:none;" +
-                              "background:linear-gradient(90deg,#5aa9ff,#7dbcff);" +
-                              "border-radius:2px;box-shadow:0 0 8px rgba(90,169,255,0.4);";
-
-    function mkSlider() {
-      const s = document.createElement("input");
-      s.className = `${PLUGIN_ID}-slider`;
-      s.type = "range"; s.min = "0"; s.max = "100";
-      s.style.cssText = "position:absolute;top:0;left:0;width:100%;height:18px;" +
-                        "background:transparent;pointer-events:none;-webkit-appearance:none;" +
-                        "appearance:none;margin:0;z-index:3;";
-      return s;
-    }
-
-    track.appendChild(trackBg);
-    track.appendChild(trackFill);
-    wrap.appendChild(track);
-
-    const sMin = mkSlider(); sMin.value = String(strokeMin); track.appendChild(sMin);
-    const sMax = mkSlider(); sMax.value = String(strokeMax); track.appendChild(sMax);
-
-    const valLabel = document.createElement("span");
-    valLabel.style.cssText = "min-width:62px;text-align:center;opacity:0.85;";
-    wrap.appendChild(valLabel);
-
-    function updateUI() {
-      trackFill.style.left  = strokeMin + "%";
-      trackFill.style.width = (strokeMax - strokeMin) + "%";
-      valLabel.textContent  = `${strokeMin}–${strokeMax}%`;
-    }
-
-    function onChange(ev) {
-      let mn = parseInt(sMin.value, 10);
-      let mx = parseInt(sMax.value, 10);
-      if (mx - mn < MIN_STROKE_GAP) {
-        if (ev.target === sMin) { mn = mx - MIN_STROKE_GAP; sMin.value = String(mn); }
-        else                    { mx = mn + MIN_STROKE_GAP; sMax.value = String(mx); }
-      }
-      strokeMin = mn; strokeMax = mx;
-      updateUI(); sendSettings();
-    }
-    sMin.addEventListener("input", onChange);
-    sMax.addEventListener("input", onChange);
-    updateUI();
-    return wrap;
   }
 
   // ── Handy WiFi Panel ───────────────────────────────────────────────────────
@@ -2304,22 +2234,28 @@ function injectStyles() {
   // or everything useful would sit in the first few pixels of the track.
   const knobs = [];
 
+  // o.prefix / o.registry / o.onCommit let the script panel reuse this; the
+  // defaults are the pattern panel's. o.words(v) adds a live readout in words.
   function knobRow(id, label, help, o, get, set) {
+    const pre = `${PLUGIN_ID}-${o.prefix || "manual"}-${id}`;
     const row = document.createElement("div");
-    row.id = `${PLUGIN_ID}-manual-${id}-box`;
+    row.id = `${pre}-box`;
     row.className = `${PLUGIN_ID}-field`;
 
     const head = document.createElement("div");
     head.className = `${PLUGIN_ID}-field-head`;
     const lab = document.createElement("label");
     lab.textContent = label;
-    lab.setAttribute("for", `${PLUGIN_ID}-manual-${id}`);
+    lab.setAttribute("for", pre);
     head.appendChild(lab);
+    const words = document.createElement("span");
+    words.className = `${PLUGIN_ID}-field-words`;
+    if (o.words) head.appendChild(words);
 
     const ctl = document.createElement("div");
     ctl.className = `${PLUGIN_ID}-field-ctl`;
     const inp = document.createElement("input");
-    inp.id   = `${PLUGIN_ID}-manual-${id}`;
+    inp.id   = pre;
     inp.type = "number";
     inp.step = String(o.inputStep);
     ctl.appendChild(inp);
@@ -2363,10 +2299,12 @@ function injectStyles() {
       const pos = toPos(v);
       if (document.activeElement !== sld) sld.value = String(pos);
       sld.style.setProperty("--fill", `${pos / 10}%`);
+      if (o.words) words.textContent = o.words(v);
     }
     function commit(v, final) {
       set(Math.max(min, Math.min(max, v)));
       refresh();
+      if (o.onCommit) { o.onCommit(final); return; }
       saveSettingsToStorage();
       updateManualUI();
       if (final) sendManual(); else throttledManual();
@@ -2379,7 +2317,7 @@ function injectStyles() {
       commit(parse(v), true);
     });
 
-    knobs.push({ id, refresh });
+    (o.registry || knobs).push({ id, refresh });
     refresh();
     return row;
   }
@@ -2538,6 +2476,7 @@ function injectStyles() {
     injectStyles();          // it lives on document.body, not inside the toolbar
     const pop = document.createElement("div");
     pop.id = `${PLUGIN_ID}-pattern-pop`;
+    pop.className = `${PLUGIN_ID}-pop`;
     // Belt and braces: if the stylesheet ever fails to apply, these keep the
     // panel out of the document flow instead of dumping it at the end of the
     // page. Everything else about its appearance stays in the stylesheet.
@@ -2653,6 +2592,15 @@ function injectStyles() {
       { min: 1, max: 100, curve: "lin", unit: "%", inputStep: 1 },
       () => manualCeiling, (v) => { manualCeiling = Math.round(v); }
     ));
+    const microRow = document.createElement("div");
+    microRow.className = `${PLUGIN_ID}-micro-row`;
+    microRow.innerHTML = `<label>Below the motor's floor</label>`;
+    const microBtn = document.createElement("button");
+    microBtn.type = "button";
+    microBtn.className = `${PLUGIN_ID}-micro-btn`;
+    microBtn.addEventListener("click", toggleMicro);
+    microRow.appendChild(microBtn);
+    limits.appendChild(microRow);
     limits.appendChild(knobRow(
       "microms", "Micro pulse",
       "Only used below the motor's floor, with Micro pulsing on. Short feels like ticking, long like purring.",
@@ -2668,6 +2616,7 @@ function injectStyles() {
 
     document.body.appendChild(pop);
     updatePresetUI();
+    updateMicroButtons();
     return pop;
   }
 
@@ -2677,6 +2626,7 @@ function injectStyles() {
       manualPop = buildManualPopover();
     }
     const show = force !== undefined ? force : !manualPop.classList.contains("is-open");
+    if (show) toggleScriptPanel(false);
     manualPop.classList.toggle("is-open", show);
     manualPop.style.opacity       = show ? "" : "0";
     manualPop.style.pointerEvents = show ? "" : "none";
@@ -2687,264 +2637,527 @@ function injectStyles() {
   }
 
   function positionManualPopover() {
-    const anchor = byId(`${PLUGIN_ID}-pattern-btn`);
-    if (!anchor || !manualPop) return;
+    positionPopover(manualPop, byId(`${PLUGIN_ID}-pattern-btn`));
+  }
+
+  function positionPopover(pop, anchor) {
+    if (!anchor || !pop) return;
     const a = anchor.getBoundingClientRect();
-    const r = manualPop.getBoundingClientRect();
+    const r = pop.getBoundingClientRect();
     const pad = 10;
     let left = a.left;
     let top  = a.top - r.height - 8;                 // above the toolbar by default
     if (top < pad) top = a.bottom + 8;               // no room, drop below
     left = Math.max(pad, Math.min(left, window.innerWidth - r.width - pad));
-    manualPop.style.left = Math.round(left) + "px";
-    manualPop.style.top  = Math.round(top) + "px";
+    pop.style.left = Math.round(left) + "px";
+    pop.style.top  = Math.round(top) + "px";
   }
 
+  // One dismiss handler for both popovers: a click outside a popover and its
+  // own button closes it.
   document.addEventListener("pointerdown", (ev) => {
-    if (!manualPop || !manualPop.classList.contains("is-open")) return;
-    if (manualPop.contains(ev.target)) return;
-    if (byId(`${PLUGIN_ID}-pattern-btn`)?.contains(ev.target)) return;
-    toggleManualPopover(false);
+    const pops = [
+      [manualPop, `${PLUGIN_ID}-pattern-btn`, () => toggleManualPopover(false)],
+      [scriptPop, `${PLUGIN_ID}-script-name`, () => toggleScriptPanel(false)],
+    ];
+    for (const [pop, anchorId, close] of pops) {
+      if (!pop || !pop.classList.contains("is-open")) continue;
+      if (pop.contains(ev.target)) continue;
+      if (byId(anchorId)?.contains(ev.target)) continue;
+      close();
+    }
   }, true);
   window.addEventListener("resize", () => {
     if (manualPop?.classList.contains("is-open")) positionManualPopover();
+    if (scriptPop?.classList.contains("is-open")) positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
   });
 
-  // ── Script vibe controls (advanced row) ────────────────────────────────────
-  // These used to be bare number boxes whose meaning lived in a tooltip. Each
-  // now has a visible name and a readout that says what the number does.
-  const VIBE_MODE_NOTES = {
-    auto:     "Beat for Cock Hero style scripts, Flow for everything else. Start here.",
-    flow:     "Follows how busy the scene is, levelled to this script. Tune with Smoothness and Rhythm.",
-    speed:    "Faster strokes buzz harder. Works for most scripts.",
-    position: "Follows where the stroke is. The top of a stroke is strongest.",
-    beat:     "One short burst per stroke turn. Suits music-synced scripts.",
-    off:      "The script does not drive the vibrator. Manual still works.",
-  };
-  let refreshVibeControls = () => {};
+  // ── Per-script memory ──────────────────────────────────────────────────────
+  // The right offset and feel depend on the script, not on the user: a FunGen
+  // tracker file and a Cock Hero file want different settings, and every file
+  // has its own sync. Tuning while a script is loaded is remembered for that
+  // script; scripts never tuned use the defaults. Stored like presets (Stash
+  // plugin config plus a browser mirror, newer rev wins), keyed by a short
+  // hash of the path so the config stays small. Capped at SCRIPT_MAX, oldest
+  // dropped first.
+  const SCRIPT_STORE_KEY = "IntifaceSync.scriptSettings";
+  const SCRIPT_CFG_KEY   = "scriptSettings";
+  const SCRIPT_MAX       = 200;
+  const SCRIPT_KEYS = ["vibeMode", "flowSmooth", "flowRhythm", "flowGain", "vibeMaxSpeed",
+                       "beatMs", "beatEdge", "beatProminence", "offsetMs", "strokeMin",
+                       "strokeMax", "vibeTrackOn"];
+  let scriptStore    = { v: 1, rev: 0, scripts: {} };
+  let scriptDefaults = null;       // the values scripts without memory use
+  let scriptSaveTimer = null;
 
-  function advGroup(label, title, ...els) {
-    const g = document.createElement("span");
-    g.className = `${PLUGIN_ID}-adv`;
-    if (title) g.title = title;
-    const l = document.createElement("span");
-    l.className = `${PLUGIN_ID}-adv-label`;
-    l.textContent = label;
-    g.appendChild(l);
-    els.forEach((e) => g.appendChild(e));
-    return g;
+  function pathKey(path) {
+    let h = 0x811c9dc5;                                   // FNV-1a, 32 bit
+    for (let i = 0; i < path.length; i++) {
+      h ^= path.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
   }
 
-  function advSlider(id, width) {
-    const s = document.createElement("input");
-    s.id = id; s.type = "range"; s.min = "0"; s.max = "1000"; s.step = "1";
-    s.className = `${PLUGIN_ID}-slider`;
-    s.style.width = `${width}px`;
-    return s;
+  function readScriptValues() {
+    return { vibeMode, flowSmooth, flowRhythm, flowGain, vibeMaxSpeed, beatMs, beatEdge,
+             beatProminence, offsetMs, strokeMin, strokeMax, vibeTrackOn };
   }
 
-  function advRead(id) {
-    const r = document.createElement("span");
-    r.className = `${PLUGIN_ID}-adv-read`;
-    if (id) r.id = id;
-    return r;
+  function writeScriptValues(o) {
+    if (!o) return;
+    const n = (v, lo, hi, d) => (typeof v === "number" && isFinite(v)) ? Math.max(lo, Math.min(hi, v)) : d;
+    if (["auto", "flow", "speed", "position", "beat", "off"].includes(o.vibeMode)) vibeMode = o.vibeMode;
+    flowSmooth     = n(o.flowSmooth, 0, 100, flowSmooth);
+    flowRhythm     = n(o.flowRhythm, 0, 100, flowRhythm);
+    flowGain       = n(o.flowGain, 0.25, 4, flowGain);
+    vibeMaxSpeed   = n(o.vibeMaxSpeed, 50, 2000, vibeMaxSpeed);
+    beatMs         = n(o.beatMs, 60, 1000, beatMs);
+    if (["all", "low", "high"].includes(o.beatEdge)) beatEdge = o.beatEdge;
+    beatProminence = n(o.beatProminence, 5, 60, beatProminence);
+    offsetMs       = n(o.offsetMs, -2000, 2000, offsetMs);
+    strokeMin      = n(o.strokeMin, 0, 95, strokeMin);
+    strokeMax      = n(o.strokeMax, 5, 100, strokeMax);
+    if (typeof o.vibeTrackOn === "boolean") vibeTrackOn = o.vibeTrackOn;
   }
 
-  const logPos = (v, lo, hi) => Math.round(Math.log(v / lo) / Math.log(hi / lo) * 1000);
-  const logVal = (p, lo, hi) => lo * Math.pow(hi / lo, p / 1000);
+  function scriptMemory(path) {
+    if (!path) return null;
+    const m = scriptStore.scripts[pathKey(path)];
+    return m && m.path === path ? m : null;
+  }
 
-  function buildVibeControls() {
-    const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;";
+  // A script just became current (loaded, picked, or switched in another tab).
+  function applyScriptSettingsFor(path) {
+    writeScriptValues(scriptMemory(path) || scriptDefaults);
+    sendSettings();
+    updateScriptUI();
+  }
 
-    // Mode, with its meaning spelled out next to it
+  // Every script-panel control calls this instead of sendSettings().
+  function scriptSettingChanged() {
+    if (selectedFunscript) {
+      scriptStore.scripts[pathKey(selectedFunscript)] =
+        { path: selectedFunscript, ...readScriptValues(), ts: Date.now() };
+      const keys = Object.keys(scriptStore.scripts);
+      if (keys.length > SCRIPT_MAX) {
+        keys.sort((a, b) => (scriptStore.scripts[a].ts || 0) - (scriptStore.scripts[b].ts || 0));
+        keys.slice(0, keys.length - SCRIPT_MAX).forEach((k) => delete scriptStore.scripts[k]);
+      }
+      // Sliders fire on release, but a run of edits should be one write.
+      clearTimeout(scriptSaveTimer);
+      scriptSaveTimer = setTimeout(persistScripts, 800);
+    } else {
+      scriptDefaults = readScriptValues();
+    }
+    sendSettings();
+    updateScriptUI();
+  }
+
+  function persistScripts() {
+    scriptStore.rev = Date.now();
+    try { localStorage.setItem(SCRIPT_STORE_KEY, JSON.stringify(scriptStore)); } catch (_) {}
+    writeStashKey(SCRIPT_CFG_KEY, scriptStore)
+      .catch((e) => log(`Script settings sync to Stash failed: ${e.message}`));
+  }
+
+  function forgetScriptTuning() {
+    if (!selectedFunscript) return;
+    delete scriptStore.scripts[pathKey(selectedFunscript)];
+    persistScripts();
+    applyScriptSettingsFor(selectedFunscript);
+  }
+
+  function makeScriptDefaults() {
+    scriptDefaults = readScriptValues();
+    saveSettingsToStorage();
+    updateScriptUI();
+  }
+
+  function parseScriptStore(raw) {
+    try {
+      const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!s || typeof s.scripts !== "object" || !s.scripts) return null;
+      return { v: 1, rev: Number(s.rev) || 0, scripts: s.scripts };
+    } catch (_) { return null; }
+  }
+
+  async function loadScriptStore() {
+    let local = null;
+    try { local = parseScriptStore(localStorage.getItem(SCRIPT_STORE_KEY)); } catch (_) {}
+    let remote = null;
+    try { remote = parseScriptStore((await loadPluginConfig())?.[SCRIPT_CFG_KEY]); } catch (_) {}
+    const best = [local, remote].filter(Boolean).sort((a, b) => b.rev - a.rev)[0];
+    if (best) scriptStore = best;
+    if (local && (!remote || local.rev > remote.rev)) {
+      writeStashKey(SCRIPT_CFG_KEY, scriptStore).catch(() => {});
+    }
+    if (best && best !== local) {
+      try { localStorage.setItem(SCRIPT_STORE_KEY, JSON.stringify(scriptStore)); } catch (_) {}
+    }
+    if (selectedFunscript) applyScriptSettingsFor(selectedFunscript);
+  }
+
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== SCRIPT_STORE_KEY) return;
+    const s = parseScriptStore(ev.newValue);
+    if (!s || s.rev <= scriptStore.rev) return;
+    const before = JSON.stringify(scriptMemory(selectedFunscript));
+    scriptStore = s;
+    if (JSON.stringify(scriptMemory(selectedFunscript)) !== before) {
+      applyScriptSettingsFor(selectedFunscript);
+    }
+  });
+
+  // ── Script panel ───────────────────────────────────────────────────────────
+  // Everything about how the funscript drives the toy, in one place, opened
+  // from the script name. It replaced a row of controls under ⚙ that mixed
+  // script tuning with app settings and a debug tool.
+  const SCRIPT_MODES = [
+    ["auto",     "Auto",     "Flow, or Beat for music-synced scripts. Start here."],
+    ["flow",     "Flow",     "Follows how busy the scene is. Best for most scripts."],
+    ["beat",     "Beat",     "A burst on every stroke. For Cock Hero style scripts."],
+    ["speed",    "Speed",    "Classic: faster strokes buzz harder."],
+    ["position", "Position", "Follows the stroke: the top is strongest."],
+    ["off",      "Off",      "The script does not drive the vibrator."],
+  ];
+  let scriptPop = null;
+  const scriptKnobs = [];
+  let overviewCanvas = null;
+  let overviewTimer  = null;
+
+  function effectiveScriptMode() {
+    if (vibeMode !== "auto") return vibeMode;
+    return (isOwner && statusData && statusData.vibeEffective) || "flow";
+  }
+
+  function scriptKnob(id, label, help, o, get, set) {
+    return knobRow(id, label, help,
+      { ...o, prefix: "script", registry: scriptKnobs,
+        onCommit: (final) => { if (final) scriptSettingChanged(); else updateScriptUI(); } },
+      get, set);
+  }
+
+  function buildScriptPanel() {
+    injectStyles();
+    const pop = document.createElement("div");
+    pop.id = `${PLUGIN_ID}-script-pop`;
+    pop.className = `${PLUGIN_ID}-pop`;
+    pop.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none;";
+    pop.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    scriptPop = pop;
+
+    pop.innerHTML = `
+      <div class="${PLUGIN_ID}-pop-head">
+        <strong id="${PLUGIN_ID}-sp-title">Script</strong>
+        <span class="${PLUGIN_ID}-pop-sub">How the funscript drives the toy</span>
+      </div>
+      <div class="${PLUGIN_ID}-memory" id="${PLUGIN_ID}-sp-memory"></div>
+      <div class="${PLUGIN_ID}-sp-pick" id="${PLUGIN_ID}-script-pick">
+        <label for="${PLUGIN_ID}-select">Script file</label>
+      </div>
+      <div class="${PLUGIN_ID}-overview" id="${PLUGIN_ID}-sp-overview">
+        <canvas id="${PLUGIN_ID}-overview-canvas"></canvas>
+        <div class="${PLUGIN_ID}-field-help">Scene intensity as Flow sees it. Click to jump there.</div>
+      </div>
+      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-track"></div>
+      <div class="${PLUGIN_ID}-section">
+        <div class="${PLUGIN_ID}-sec-title">Mode</div>
+        <div class="${PLUGIN_ID}-cards" id="${PLUGIN_ID}-sp-modes"></div>
+      </div>
+      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-feel">
+        <div class="${PLUGIN_ID}-sec-title">Feel</div>
+      </div>
+      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-timing">
+        <div class="${PLUGIN_ID}-sec-title">Timing and range</div>
+      </div>
+      <div class="${PLUGIN_ID}-section" id="${PLUGIN_ID}-sp-signal">
+        <div class="${PLUGIN_ID}-sec-title">Live signal</div>
+      </div>`;
+
+    // script picker, for folders with more than one candidate
     const sel = document.createElement("select");
-    sel.id = `${PLUGIN_ID}-vibe-mode`;
-    sel.style.cssText = "background:#222;color:#fff;border:1px solid #555;" +
-                        "border-radius:3px;padding:2px 4px;font-size:11px;";
-    [["auto", "Auto"], ["flow", "Flow"], ["beat", "Beat"], ["speed", "Speed (classic)"],
-     ["position", "Position"], ["off", "Off"]]
-      .forEach(([v, t]) => {
-        const o = document.createElement("option");
-        o.value = v; o.textContent = t;
-        sel.appendChild(o);
-      });
-    sel.value = vibeMode;
-    const modeNote = document.createElement("span");
-    modeNote.className = `${PLUGIN_ID}-adv-note`;
-    const modeGrp = advGroup("Script vibe", "How a stroking script is turned into vibration.",
-                             sel, modeNote);
-
-    // Sensitivity. Stored as the stroke speed that means full power, which is
-    // backwards to how people think about it, so the slider runs the other
-    // way: right is more sensitive (full power comes sooner).
-    const SENS_LO = 50, SENS_HI = 2000;
-    const sens = advSlider(`${PLUGIN_ID}-vibe-sens`, 110);
-    const sensRead = advRead();
-    const sensGrp = advGroup("Sensitivity",
-      "How quickly the script reaches full power. If it sits at full most of the time, move it left. " +
-      "If it barely moves, move it right. Tracker scripts (FunGen) usually want it further right " +
-      "than Cock Hero scripts in Beat mode.",
-      sens, sensRead);
-    const showSens = () => {
-      sens.value = String(1000 - logPos(vibeMaxSpeed, SENS_LO, SENS_HI));
-      sensRead.textContent = vibeMaxSpeed >= 1000 ? "gentle"
-                           : vibeMaxSpeed >= 600  ? "balanced"
-                           : vibeMaxSpeed >= 300  ? "lively" : "very buzzy";
-      sensRead.title = `Full power at ${vibeMaxSpeed} funscript units per second`;
-    };
-    sens.addEventListener("input", () => {
-      vibeMaxSpeed = Math.round(logVal(1000 - parseInt(sens.value, 10), SENS_LO, SENS_HI) / 25) * 25;
-      vibeMaxSpeed = Math.max(SENS_LO, Math.min(SENS_HI, vibeMaxSpeed));
-      showSens();
+    sel.id = `${PLUGIN_ID}-select`;
+    sel.addEventListener("change", () => {
+      if (!sel.value) return;
+      selectedFunscript = sel.value;
+      applyScriptSettingsFor(sel.value);
+      loadFunscript(sel.value);
     });
-    sens.addEventListener("change", sendSettings);
+    pop.querySelector(`#${PLUGIN_ID}-script-pick`).appendChild(sel);
 
-    // Beat burst length
-    const BL_LO = 60, BL_HI = 1000;
-    const beatLen = advSlider(`${PLUGIN_ID}-beat-ms`, 80);
-    const beatRead = advRead();
-    const beatGrp = advGroup("Burst",
-      "How long each beat buzzes. Raise it if slow sections are too faint to feel. " +
-      "It is shortened automatically when beats come faster than this.",
-      beatLen, beatRead);
-    const showBeat = () => {
-      beatLen.value = String(logPos(beatMs, BL_LO, BL_HI));
-      beatRead.textContent = `${beatMs} ms`;
-    };
-    beatLen.addEventListener("input", () => {
-      beatMs = Math.max(BL_LO, Math.min(BL_HI,
-        Math.round(logVal(parseInt(beatLen.value, 10), BL_LO, BL_HI) / 10) * 10));
-      showBeat();
+    // whole-scene strip: click to seek
+    overviewCanvas = pop.querySelector(`#${PLUGIN_ID}-overview-canvas`);
+    overviewCanvas.addEventListener("click", (ev) => {
+      if (!flowOverview || !videoEl) return;
+      const r = overviewCanvas.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+      const ms = flowOverview.t0 + f * (flowOverview.t1 - flowOverview.t0);
+      videoEl.currentTime = Math.max(0, ms / 1000);
     });
-    beatLen.addEventListener("change", sendSettings);
 
-    // Which keyframes count as beats
-    const beatSel = document.createElement("select");
-    beatSel.id = `${PLUGIN_ID}-beat-edge`;
-    beatSel.style.cssText = sel.style.cssText;
-    [["all", "every stroke turn"], ["low", "bottom turns only"], ["high", "top turns only"]]
-      .forEach(([v, t]) => {
-        const o = document.createElement("option");
-        o.value = v; o.textContent = t;
-        beatSel.appendChild(o);
-      });
-    beatSel.value = beatEdge;
-    beatSel.addEventListener("change", () => {
-      beatEdge = beatSel.value;
-      sendSettings();
-      log(`Beat edge: ${beatEdge}`, "debug");
-    });
-    const edgeGrp = advGroup("Fire on",
-      "Pick bottom or top only to halve the tempo, for scripts that mark both the beat and the off-beat.",
-      beatSel);
-
-    // Peak picking, only for densely sampled tracker scripts
-    const prom = advSlider(`${PLUGIN_ID}-beat-prom`, 80);
-    const promRead = advRead();
-    const promGrp = advGroup("Beat detail",
-      "This script is sampled every video frame (FunGen or another tracker), so beats are picked out " +
-      "of it. Left finds more, smaller beats; right keeps only big strokes.",
-      prom, promRead);
-    const showProm = () => {
-      prom.value = String(Math.round((beatProminence - 5) / 55 * 1000));
-      const n = statusData && statusData.beatPeaks ? ` · ${statusData.beatPeaks} beats` : "";
-      promRead.textContent = (beatProminence <= 15 ? "fine" : beatProminence <= 35 ? "normal" : "coarse") + n;
-    };
-    prom.addEventListener("input", () => {
-      beatProminence = Math.max(5, Math.min(60, Math.round((5 + parseInt(prom.value, 10) / 1000 * 55) / 5) * 5));
-      showProm();
-    });
-    prom.addEventListener("change", sendSettings);
-
-    // Dedicated vibrator track, only offered when the script has one
+    // vibrator track switch
+    const track = pop.querySelector(`#${PLUGIN_ID}-sp-track`);
     const trackBtn = document.createElement("button");
+    trackBtn.type = "button";
+    trackBtn.id = `${PLUGIN_ID}-sp-track-btn`;
     trackBtn.addEventListener("click", () => {
       vibeTrackOn = !vibeTrackOn;
-      sendSettings();
-      refreshVibeControls();
+      scriptSettingChanged();
       updateFunscriptSelector();
     });
-    const trackGrp = advGroup("Vibrator track",
-      "This script comes with a track made for vibrators. When it is used, the vibrator plays " +
-      "that track as written and the modes below only apply if you turn it off.",
-      trackBtn);
+    const trackText = document.createElement("div");
+    trackText.className = `${PLUGIN_ID}-field-help`;
+    trackText.id = `${PLUGIN_ID}-sp-track-text`;
+    const trackHead = document.createElement("div");
+    trackHead.className = `${PLUGIN_ID}-field-head`;
+    trackHead.innerHTML = `<label>Vibrator track</label>`;
+    trackHead.appendChild(trackBtn);
+    track.appendChild(trackHead);
+    track.appendChild(trackText);
 
-    // Flow: three sliders, each read back in words
-    const mkPct = (id, get, set, words, label, title) => {
-      const sl = advSlider(id, 90);
-      const rd = advRead();
-      const show = () => { sl.value = String(get() * 10); rd.textContent = words(get()); };
-      sl.addEventListener("input", () => { set(Math.round(parseInt(sl.value, 10) / 10)); show(); });
-      sl.addEventListener("change", sendSettings);
-      return { grp: advGroup(label, title, sl, rd), show };
-    };
-    const fSmooth = mkPct(`${PLUGIN_ID}-flow-smooth`, () => flowSmooth, (v) => { flowSmooth = v; },
-      (v) => v < 25 ? "follows each stroke" : v < 70 ? "balanced" : "follows the scene",
-      "Smoothness",
-      "Left: the level moves with every stroke. Right: it follows how busy the scene is and " +
-      "rises and fades gently.");
-    const fRhythm = mkPct(`${PLUGIN_ID}-flow-rhythm`, () => flowRhythm, (v) => { flowRhythm = v; },
-      (v) => v === 0 ? "smooth" : v < 40 ? "light pulse" : v < 85 ? "strong pulse" : "bursts only",
-      "Rhythm",
-      "How much each stroke pulses on top of the level. 0 is a smooth buzz, all the way right " +
-      "is one burst per stroke with silence between.");
-    const GAIN_LO = 0.25, GAIN_HI = 4;
-    const gSl = advSlider(`${PLUGIN_ID}-flow-gain`, 90);
-    const gRd = advRead();
-    const showGain = () => {
-      gSl.value = String(logPos(flowGain, GAIN_LO, GAIN_HI));
-      gRd.textContent = Math.abs(flowGain - 1) < 0.05 ? "as scripted"
-                      : flowGain > 1 ? `${flowGain.toFixed(1)}x livelier` : `${(1 / flowGain).toFixed(1)}x calmer`;
-    };
-    gSl.addEventListener("input", () => {
-      flowGain = Math.round(logVal(parseInt(gSl.value, 10), GAIN_LO, GAIN_HI) * 20) / 20;
-      showGain();
-    });
-    gSl.addEventListener("change", sendSettings);
-    const fGainGrp = advGroup("Sensitivity", "Flow levels itself to each script, so the busiest " +
-      "parts reach full power. Move right to make quieter parts stronger, left to calm it down.",
-      gSl, gRd);
-
-    refreshVibeControls = () => {
-      const hasTrack = !!(statusData && statusData.vibeTrack);
-      trackGrp.style.display = hasTrack ? "" : "none";
-      trackBtn.textContent = vibeTrackOn ? "Used" : "Ignored";
-      trackBtn.classList.toggle("is-on", vibeTrackOn);
-      const eff  = vibeMode === "auto" ? ((statusData && statusData.vibeEffective) || "flow") : vibeMode;
-      const flow = eff === "flow";
-      const beat = eff === "beat";
-      [fSmooth.grp, fRhythm.grp, fGainGrp].forEach((g) => { g.style.display = flow ? "" : "none"; });
-      fSmooth.show(); fRhythm.show(); showGain();
-      if (sel.value !== vibeMode) sel.value = vibeMode;
-      modeNote.textContent = VIBE_MODE_NOTES[vibeMode] || "";
-      // Sensitivity also sets beat level (burst strength comes from beat pace
-      // through the same mapping), so keep it visible in the beat modes.
-      sensGrp.style.display = (eff === "speed" || beat) ? "" : "none";
-      beatGrp.style.display = beat ? "" : "none";
-      edgeGrp.style.display = beat ? "" : "none";
-      promGrp.style.display = (beat && statusData && statusData.beatPicked) ? "" : "none";
-      showSens(); showBeat(); showProm();
-    };
-    refreshVibeControls();
-
-    sel.addEventListener("change", () => {
-      vibeMode = sel.value;
-      refreshVibeControls();
-      sendSettings();
-      log(`Vibe mode: ${vibeMode}`, "debug");
+    // mode cards
+    const modes = pop.querySelector(`#${PLUGIN_ID}-sp-modes`);
+    SCRIPT_MODES.forEach(([value, label, blurb]) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `${PLUGIN_ID}-card`;
+      card.dataset.mode = value;
+      card.innerHTML = `<span class="${PLUGIN_ID}-card-name">${label}</span>
+                        <span class="${PLUGIN_ID}-card-blurb">${blurb}</span>`;
+      card.addEventListener("click", () => { vibeMode = value; scriptSettingChanged(); });
+      modes.appendChild(card);
     });
 
-    wrap.appendChild(trackGrp);
-    wrap.appendChild(modeGrp);
-    wrap.appendChild(fSmooth.grp);
-    wrap.appendChild(fRhythm.grp);
-    wrap.appendChild(fGainGrp);
-    wrap.appendChild(sensGrp);
-    wrap.appendChild(beatGrp);
-    wrap.appendChild(edgeGrp);
-    wrap.appendChild(promGrp);
-    return wrap;
+    // feel: one set of knobs per mode, shown by updateScriptUI()
+    const feel = pop.querySelector(`#${PLUGIN_ID}-sp-feel`);
+    feel.appendChild(scriptKnob("smooth", "Smoothness",
+      "Left: the level moves with every stroke. Right: it follows how busy the scene is and rises and fades gently.",
+      { min: 0, max: 100, curve: "lin", unit: "%", inputStep: 5,
+        words: (v) => v < 25 ? "follows each stroke" : v < 70 ? "balanced" : "follows the scene" },
+      () => flowSmooth, (v) => { flowSmooth = Math.round(v); }));
+    feel.appendChild(scriptKnob("rhythm", "Rhythm",
+      "How much each stroke pulses on top of the level. 0 is a smooth buzz; all the way right is one burst per stroke with silence between.",
+      { min: 0, max: 100, curve: "lin", unit: "%", inputStep: 5,
+        words: (v) => v < 1 ? "smooth" : v < 40 ? "light pulse" : v < 85 ? "strong pulse" : "bursts only" },
+      () => flowRhythm, (v) => { flowRhythm = Math.round(v); }));
+    feel.appendChild(scriptKnob("gain", "Sensitivity",
+      "Flow levels itself to each script so the busiest parts reach full power. Right makes quieter parts stronger, left calms it down.",
+      { min: 0.25, max: 4, curve: "log", unit: "x", inputStep: 0.05,
+        words: (v) => Math.abs(v - 1) < 0.05 ? "as scripted" : v > 1 ? "livelier" : "calmer" },
+      () => flowGain, (v) => { flowGain = Math.round(v * 20) / 20; }));
+    feel.appendChild(scriptKnob("maxspeed", "Sensitivity",
+      "The stroke speed that means full power. If it sits at full most of the time, raise it; if it barely moves, lower it.",
+      { min: 50, max: 2000, curve: "log", unit: "u/s", inputStep: 25,
+        words: (v) => v >= 1000 ? "gentle" : v >= 600 ? "balanced" : v >= 300 ? "lively" : "very buzzy" },
+      () => vibeMaxSpeed, (v) => { vibeMaxSpeed = Math.round(v / 25) * 25; }));
+    feel.appendChild(scriptKnob("burst", "Burst length",
+      "How long each beat buzzes. Raise it if slow sections are too faint to feel; it shortens itself when beats come fast.",
+      { min: 60, max: 1000, curve: "log", unit: "ms", inputStep: 10 },
+      () => beatMs, (v) => { beatMs = Math.round(v / 10) * 10; }));
+    feel.appendChild(scriptKnob("prom", "Beat detail",
+      "This script is sampled every video frame (FunGen or another tracker), so beats are picked out of it. Left finds more, smaller beats; right keeps only big strokes.",
+      { min: 5, max: 60, curve: "lin", unit: "", inputStep: 5,
+        words: (v) => v <= 15 ? "fine" : v <= 35 ? "normal" : "coarse" },
+      () => beatProminence, (v) => { beatProminence = Math.round(v / 5) * 5; }));
+    const edgeRow = document.createElement("div");
+    edgeRow.className = `${PLUGIN_ID}-field`;
+    edgeRow.id = `${PLUGIN_ID}-script-edge-box`;
+    edgeRow.innerHTML = `<div class="${PLUGIN_ID}-field-head"><label for="${PLUGIN_ID}-sp-edge">Fire on</label></div>
+      <div class="${PLUGIN_ID}-field-help">Pick bottom or top only to halve the tempo, for scripts that mark both the beat and the off-beat.</div>`;
+    const edgeSel = document.createElement("select");
+    edgeSel.id = `${PLUGIN_ID}-sp-edge`;
+    [["all", "every stroke turn"], ["low", "bottom turns only"], ["high", "top turns only"]]
+      .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; edgeSel.appendChild(o); });
+    edgeSel.addEventListener("change", () => { beatEdge = edgeSel.value; scriptSettingChanged(); });
+    edgeRow.querySelector(`.${PLUGIN_ID}-field-head`).appendChild(edgeSel);
+    feel.appendChild(edgeRow);
+
+    // timing and output range
+    const timing = pop.querySelector(`#${PLUGIN_ID}-sp-timing`);
+    timing.appendChild(scriptKnob("offset", "Timing",
+      "If the toy reacts after the action on screen, make it fire earlier. Every script has its own sync, so this is remembered per script.",
+      { min: -2000, max: 2000, curve: "lin", unit: "ms", inputStep: 10,
+        words: (v) => v === 0 ? "in sync" : v > 0 ? `${v} ms earlier` : `${-v} ms later` },
+      () => offsetMs, (v) => { offsetMs = Math.round(v / 10) * 10; }));
+    timing.appendChild(scriptKnob("rmin", "Weakest",
+      "The level the quietest moving part of the script plays at. Raise it if quiet parts drop below what you can feel. Silence stays silent.",
+      { min: 0, max: 95, curve: "lin", unit: "%", inputStep: 1 },
+      () => strokeMin, (v) => { strokeMin = Math.min(Math.round(v), strokeMax - MIN_STROKE_GAP); }));
+    timing.appendChild(scriptKnob("rmax", "Strongest",
+      "The most the script may drive the toy. Manual mode has its own Power limit in the pattern panel.",
+      { min: 5, max: 100, curve: "lin", unit: "%", inputStep: 1 },
+      () => strokeMax, (v) => { strokeMax = Math.max(Math.round(v), strokeMin + MIN_STROKE_GAP); }));
+
+    // live signal: the scope, moved here from the advanced row
+    const sig = pop.querySelector(`#${PLUGIN_ID}-sp-signal`);
+    const scopeBtn = document.createElement("button");
+    scopeBtn.type = "button";
+    scopeBtn.id = `${PLUGIN_ID}-sp-scope-btn`;
+    scopeBtn.addEventListener("click", () => { setPreview(!previewOn); updateScriptUI(); });
+    const sigHead = document.createElement("div");
+    sigHead.className = `${PLUGIN_ID}-field-head`;
+    sigHead.innerHTML = `<label>What is being sent to the toy</label>`;
+    sigHead.appendChild(scopeBtn);
+    sig.appendChild(sigHead);
+    const sigHelp = document.createElement("div");
+    sigHelp.className = `${PLUGIN_ID}-field-help`;
+    sigHelp.textContent = "Grey is the script, dashed purple is the Flow plan, green is what the toy " +
+                          "actually gets. Useful while tuning; it turns off when this panel closes.";
+    sig.appendChild(sigHelp);
+    sig.appendChild(buildPreview());
+
+    document.body.appendChild(pop);
+    updateFunscriptSelector();
+    updateScriptUI();
+    return pop;
+  }
+
+  function updateScriptUI() {
+    const btn = byId(`${PLUGIN_ID}-script-name`);
+    if (btn) btn.classList.toggle("is-tuned", !!scriptMemory(selectedFunscript));
+    if (!scriptPop) return;
+    const $ = (id) => scriptPop.querySelector(`#${PLUGIN_ID}-${id}`);
+    const eff = effectiveScriptMode();
+
+    $("sp-title").textContent = selectedFunscript ? `♪ ${baseName(selectedFunscript)}` : "Script";
+
+    // memory bar
+    const mem = $("sp-memory");
+    mem.innerHTML = "";
+    const tuned = !!scriptMemory(selectedFunscript);
+    const txt = document.createElement("span");
+    txt.textContent = !selectedFunscript
+      ? "No script loaded. Changes here set your defaults."
+      : tuned ? "Tuned for this script. It comes back like this next time."
+              : "Using your defaults. Anything you change is remembered for this script.";
+    mem.appendChild(txt);
+    mem.classList.toggle("is-tuned", tuned);
+    if (tuned) {
+      const b1 = document.createElement("button");
+      b1.type = "button"; b1.textContent = "Use defaults";
+      b1.title = "Forget the tuning for this script and go back to your defaults";
+      b1.addEventListener("click", forgetScriptTuning);
+      const b2 = document.createElement("button");
+      b2.type = "button"; b2.textContent = "Make these my defaults";
+      b2.title = "Scripts you have not tuned will start from these settings";
+      b2.addEventListener("click", makeScriptDefaults);
+      mem.appendChild(b1); mem.appendChild(b2);
+    }
+
+    $("script-pick").style.display = funscripts.length > 1 ? "" : "none";
+
+    const hasTrack = isOwner && statusData && statusData.vibeTrack;
+    $("sp-track").style.display = hasTrack ? "" : "none";
+    if (hasTrack) {
+      $("sp-track-btn").textContent = vibeTrackOn ? "Used" : "Ignored";
+      $("sp-track-btn").classList.toggle("is-on", vibeTrackOn);
+      $("sp-track-text").textContent = vibeTrackOn
+        ? `${statusData.vibeTrack} was made for vibrators, so the vibrator plays it as written and the mode below is not used. A stroker still follows the main script.`
+        : `${statusData.vibeTrack} is being ignored; the mode below is used instead.`;
+    }
+
+    scriptPop.querySelectorAll(`#${PLUGIN_ID}-sp-modes .${PLUGIN_ID}-card`).forEach((c) => {
+      c.classList.toggle("is-sel", c.dataset.mode === vibeMode);
+      if (c.dataset.mode === "auto") {
+        c.querySelector(`.${PLUGIN_ID}-card-name`).textContent =
+          vibeMode === "auto" ? `Auto (${eff === "beat" ? "Beat" : "Flow"})` : "Auto";
+      }
+    });
+
+    const show = (id, on) => { const el = $(`script-${id}-box`); if (el) el.style.display = on ? "" : "none"; };
+    show("smooth", eff === "flow");
+    show("rhythm", eff === "flow");
+    show("gain", eff === "flow");
+    // graded beat scripts take their strength from stroke height, not speed
+    show("maxspeed", eff === "speed" || (eff === "beat" && statusData?.beatKind !== "graded"));
+    show("burst", eff === "beat");
+    show("edge", eff === "beat");
+    show("prom", eff === "beat" && !!(statusData && statusData.beatPicked));
+    const feelAny = ["flow", "speed", "beat"].includes(eff) && !(hasTrack && vibeTrackOn);
+    $("sp-feel").style.display = feelAny ? "" : "none";
+    const edge = $("sp-edge"); if (edge && edge.value !== beatEdge) edge.value = beatEdge;
+    scriptKnobs.forEach((k) => k.refresh());
+
+    $("sp-scope-btn").textContent = previewOn ? "Hide" : "Show";
+    $("sp-scope-btn").classList.toggle("is-on", previewOn);
+    drawOverview();
+    if (scriptPop.classList.contains("is-open")) positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
+  }
+
+  function drawOverview() {
+    const cv = overviewCanvas;
+    const box = scriptPop && scriptPop.querySelector(`#${PLUGIN_ID}-sp-overview`);
+    if (!cv || !box) return;
+    const lv = flowOverview && flowOverview.levels;
+    box.style.display = lv && lv.length && isOwner ? "" : "none";
+    if (!lv || !lv.length || !cv.isConnected || !scriptPop.classList.contains("is-open")) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(cv.clientWidth * dpr));
+    const h = Math.max(1, Math.round(cv.clientHeight * dpr));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, w, h);
+    const bw = w / lv.length;
+    lv.forEach((v, i) => {
+      const bh = Math.max(v > 0 ? 1.5 * dpr : 0, v * (h - 2 * dpr));
+      g.fillStyle = `rgba(90,169,255,${0.25 + 0.6 * v})`;
+      g.fillRect(i * bw, h - bh, Math.max(1, bw - 0.5), bh);
+    });
+    if (videoEl && flowOverview.t1 > flowOverview.t0) {
+      const x = ((videoEl.currentTime * 1000 - flowOverview.t0) / (flowOverview.t1 - flowOverview.t0)) * w;
+      g.fillStyle = "#fff";
+      g.fillRect(Math.round(Math.max(0, Math.min(w - dpr, x))), 0, dpr * 1.5, h);
+    }
+  }
+
+  function toggleScriptPanel(force) {
+    if (!scriptPop) {
+      if (force === false) return;
+      buildScriptPanel();
+    }
+    const show = force !== undefined ? force : !scriptPop.classList.contains("is-open");
+    if (show) toggleManualPopover(false);
+    scriptPop.classList.toggle("is-open", show);
+    scriptPop.style.opacity       = show ? "" : "0";
+    scriptPop.style.pointerEvents = show ? "" : "none";
+    clearInterval(overviewTimer);
+    if (show) {
+      updateScriptUI();
+      positionPopover(scriptPop, byId(`${PLUGIN_ID}-script-name`));
+      overviewTimer = setInterval(drawOverview, 500);    // moving playhead
+    } else if (previewOn) {
+      setPreview(false);         // the scope lives in here; stop paying for it
+    }
+  }
+
+  // Micro pulsing is one setting shown in two places: the ⚙ row and the
+  // pattern panel, where the floor hint tells people to turn it on.
+  function toggleMicro() {
+    vibeSubstep = !vibeSubstep;
+    saveSettingsToStorage();
+    sendSettings();
+    updateMicroButtons();
+    updateManualUI();
+    log(`Micro pulsing: ${vibeSubstep ? "on" : "off"}`);
+  }
+
+  function updateMicroButtons() {
+    const floorPct = (scalarStep * 100).toFixed(0);
+    document.querySelectorAll(`.${PLUGIN_ID}-micro-btn`).forEach((b) => {
+      b.textContent = vibeSubstep ? "Micro pulsing on" : "Micro pulsing off";
+      b.classList.toggle("is-on", vibeSubstep);
+      b.title =
+        `Gets you below the motor's own floor of ${floorPct}%. It rapidly pulses between ` +
+        "silence and one step, and the motor's inertia averages that into something gentler " +
+        `than the hardware can hold steady. Only does anything below ${floorPct}%.`;
+    });
+    if (toolbarEl) {
+      toolbarEl.querySelectorAll(`.${PLUGIN_ID}-micro-btn`).forEach((b) => {
+        b.textContent = vibeSubstep ? "Micro pulsing on" : "Micro pulsing off";
+        b.classList.toggle("is-on", vibeSubstep);
+      });
+    }
   }
 
   function buildHandyPanel() {
@@ -3078,23 +3291,11 @@ function injectStyles() {
     modeWrap.appendChild(btnHandy);
     row1.appendChild(modeWrap);
 
-    // Funscript selector
-    const selectEl = document.createElement("select");
-    selectEl.id    = `${PLUGIN_ID}-select`;
-    selectEl.style.cssText = "background:#222;color:#fff;border:1px solid #555;" +
-                             "border-radius:3px;padding:3px 6px;font-size:11px;" +
-                             "max-width:260px;text-overflow:ellipsis;flex:0 1 260px;";
-    selectEl.addEventListener("change", () => {
-      if (selectEl.value) loadFunscript(selectEl.value);
-    });
-
-    // Row 1 shows only the script in use. The picker lives in the advanced row
-    // and only appears when the folder actually holds more than one candidate.
-    const scriptLabel = document.createElement("span");
+    // Row 1 shows the script in use; clicking it opens the script panel with
+    // every setting about how the script drives the toy.
+    const scriptLabel = document.createElement("button");
     scriptLabel.id = `${PLUGIN_ID}-script-name`;
-    scriptLabel.style.cssText =
-      "font-size:11px;opacity:0.85;max-width:260px;flex:0 1 auto;min-width:0;" +
-      "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    scriptLabel.addEventListener("click", (ev) => { ev.stopPropagation(); toggleScriptPanel(); });
     row1.appendChild(scriptLabel);
 
 
@@ -3121,9 +3322,11 @@ function injectStyles() {
     connectBtn.addEventListener("click", requestIntifaceConnect);
     row1.appendChild(connectBtn);
 
-    // Stop
+    // Disconnect. It was labelled Stop, which next to "Device muted" read as a
+    // pause; it actually stops everything and drops the Intiface connection.
     const stopBtn = document.createElement("button");
-    stopBtn.textContent   = "Stop";
+    stopBtn.textContent   = "Disconnect";
+    stopBtn.title = "Stop the toy and disconnect from Intiface. Connect brings it back.";
     stopBtn.id = `${PLUGIN_ID}-stop`;
     stopBtn.addEventListener("click", () => {
       log("Stop button clicked", "debug");
@@ -3153,43 +3356,13 @@ function injectStyles() {
     row2.id = `${PLUGIN_ID}-advanced`;
     row2.style.cssText = "display:none;align-items:center;gap:10px;width:100%;" +
                          "flex-wrap:wrap;padding-top:4px;border-top:1px solid #333;";
-    const pickWrap = document.createElement("span");
-    pickWrap.id = `${PLUGIN_ID}-script-pick`;
-    pickWrap.style.cssText = "display:none;align-items:center;gap:6px;";
-    const pickLabel = document.createElement("span");
-    pickLabel.textContent  = "Funscript:";
-    pickLabel.style.cssText = "opacity:0.8;";
-    pickWrap.appendChild(pickLabel);
-    pickWrap.appendChild(selectEl);
-    row2.appendChild(pickWrap);
-
+    // The advanced row holds device and app settings only. Script tuning
+    // lives in the script panel, manual tuning in the pattern panel.
     row2.appendChild(modeWrap);
-    row2.appendChild(buildVibeControls());
-    row2.appendChild(buildOffsetInput());
-    row2.appendChild(buildStrokeRange());
 
     const subBtn = document.createElement("button");
-    function updateSubBtn() {
-      const floorPct = (scalarStep * 100).toFixed(0);
-      subBtn.textContent = vibeSubstep ? "Micro pulsing on" : "Micro pulsing off";
-      subBtn.classList.toggle("is-on", vibeSubstep);
-      subBtn.title =
-        `Gets you below the motor's own floor of ${floorPct}%. It rapidly ` +
-        "pulses between silence and one step, and the motor's inertia averages " +
-        "that into something gentler than the hardware can hold steady.\n\n" +
-        `It only does anything when the requested level is under ${floorPct}%, ` +
-        "so if the panel says Micro is idle, lower the max % in manual mode " +
-        "until the peak drops under the floor.";
-    }
-    updateSubBtn();
-    subBtn.addEventListener("click", () => {
-      vibeSubstep = !vibeSubstep;
-      updateSubBtn();
-      saveSettingsToStorage();
-      sendSettings();
-      updateManualUI();
-      log(`Micro pulsing: ${vibeSubstep ? "on" : "off"}`);
-    });
+    subBtn.className = `${PLUGIN_ID}-micro-btn`;
+    subBtn.addEventListener("click", toggleMicro);
     row2.appendChild(subBtn);
 
     const hotkeyBtn = document.createElement("button");
@@ -3201,35 +3374,26 @@ function injectStyles() {
       saveSettingsToStorage();
     });
     row2.appendChild(hotkeyBtn);
-    updateHotkeyBtn();        // only after mounting: byId cannot see it before
 
-    const scopeBtn = document.createElement("button");
-    function updateScopeBtn() {
-      scopeBtn.textContent = previewOn ? "Signal preview on" : "Signal preview";
-      scopeBtn.classList.toggle("is-on", previewOn);
-      scopeBtn.title = "Live scope of what is actually being sent to the toy. " +
-                       "Debug only: it streams ~25 samples/sec from the backend, " +
-                       "so leave it off during normal use.";
-    }
-    updateScopeBtn();
-    scopeBtn.addEventListener("click", () => {
-      setPreview(!previewOn);
-      updateScopeBtn();
-    });
-    row2.appendChild(scopeBtn);
-
-
+    const note = document.createElement("span");
+    note.className = `${PLUGIN_ID}-adv-note`;
+    note.textContent = "Script settings: click the \u266A script name. Manual pattern: the pattern button.";
+    row2.appendChild(note);
 
     gearBtn.addEventListener("click", () => {
       advancedOpen = !advancedOpen;
       row2.style.display = advancedOpen ? "flex" : "none";
       gearBtn.classList.toggle("is-on", advancedOpen);
-      // closing the panel hides the scope, so stop paying for the stream
-      if (!advancedOpen && previewOn) { setPreview(false); updateScopeBtn(); }
     });
+    gearBtn.title = "Device and app settings";
 
     bar.appendChild(row2);
-    row2.appendChild(buildPreview());
+    // Only now can byId() reach row 2 (through toolbarEl). Calling this
+    // before row2 was attached left the button blank whenever the plugin's
+    // disableHotkeys setting had never been saved, since the later refresh
+    // from the plugin config only runs when that setting exists.
+    updateHotkeyBtn();
+    updateMicroButtons();
 
     // ── Row 3: Handy Panel (visible only in mobile mode) ───────────────────
     const handyPanel = buildHandyPanel();
@@ -3335,12 +3499,12 @@ function injectStyles() {
         // status describes the driver's script; a spectator's own may differ
         const track   = isOwner && statusData && statusData.vibeTrack;
         label.textContent   = (pending ? `♪ ${name} …` : `♪ ${name}`) +
-                              (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "");
+                              (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "") + " \u25BE";
         label.style.opacity = pending ? "0.6" : "0.85";
         label.title = (funscripts.length > 1
           ? `${selectedFunscript}\n\n${funscripts.length} candidates in this folder; ` +
-            "switch under ⚙ Advanced."
-          : selectedFunscript) +
+            "click to switch or tune."
+          : `${selectedFunscript}\n\nClick to tune how this script drives the toy.`) +
           (track ? `\n\nVibrator track: ${track}. ` +
                    (vibeTrackOn ? "The vibrator plays this track directly; a stroker still follows the main script."
                                 : "Ignored, the vibrator follows the main script. Turn it back on under ⚙.")
@@ -3349,7 +3513,7 @@ function injectStyles() {
     }
 
     // The picker is only worth showing when there is a real choice to make.
-    if (pick) pick.style.display = funscripts.length > 1 ? "inline-flex" : "none";
+    if (pick) pick.style.display = funscripts.length > 1 ? "" : "none";
 
     if (!sel) return;
     sel.innerHTML = "";
@@ -3382,6 +3546,7 @@ function injectStyles() {
     applyHandyVisibility();
     updateManualUI();
     updateOutputUI();
+    updateHotkeyBtn();
     updateToolbarStatus();
     updateFunscriptSelector();
     log("Toolbar injected", "debug");
@@ -3506,7 +3671,9 @@ function injectStyles() {
     installHotkeys();
     log(`Plugin initialized (backend: ${BACKEND_URL})`);
     loadSettingsFromStorage();
+    scriptDefaults = readScriptValues();
     loadPresets();
+    loadScriptStore();
     connectBackend();
     watchNavigation();
     const sceneId = getSceneIdFromUrl();
