@@ -1,9 +1,10 @@
 /**
  * QuickTools - Stash UI plugin
  *
- * Four shortcuts for the scene player, sharing one core:
+ * Shortcuts for the scene player, sharing one core:
  *   R            rate the scene, 0.0 - 10.0
- *   M            add a marker at the current position
+ *   M            add a marker at the current position (U undoes it)
+ *   Shift+M      mark a range: once at the start, once at the end
  *   D            toggle the "Marked for Delete" tag
  *   double-click jump through the scene queue (off by default)
  *
@@ -28,6 +29,15 @@
 
   // ═══ Shared core ═══════════════════════════════════════════════════════════
 
+  // What to tell the user when Stash answers with something other than a
+  // GraphQL reply. The usual cause is a lapsed login, which used to surface as
+  // "Unexpected token <" from parsing the login page.
+  function httpErrorText(status) {
+    if (status === 401 || status === 403) return `Stash returned ${status}: logged out?`;
+    if (status >= 500) return `Stash returned ${status}: server error`;
+    return `Stash returned ${status}`;
+  }
+
   async function gql(query, variables) {
     const res = await fetch(GQL_URL, {
       method: "POST",
@@ -35,9 +45,12 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, variables }),
     });
-    const json = await res.json();
-    if (json.errors?.length) throw new Error(json.errors[0].message);
-    return json.data ?? null;
+    let json;
+    try { json = await res.json(); }
+    catch { throw new Error(res.ok ? "Stash sent a reply that is not JSON" : httpErrorText(res.status)); }
+    if (json?.errors?.length) throw new Error(json.errors[0].message);
+    if (!res.ok) throw new Error(httpErrorText(res.status));
+    return json?.data ?? null;
   }
 
   function currentSceneId() {
@@ -66,6 +79,26 @@
     ));
   }
 
+  // Rating keypad. "8" then "5" means 8.5, not 85: if appending a digit would
+  // pass 10, it becomes the first decimal instead. "0" then "5" means 0.5.
+  // Returns null for a keystroke that changes nothing (a second ".").
+  function typeDigit(buffer, ch) {
+    if (ch === "," ) ch = ".";
+    if (ch === "." && buffer.includes(".")) return null;
+    if (buffer === "0" && ch !== ".") buffer = "0." + ch;
+    else {
+      const next = buffer + ch;
+      const n = parseFloat(next);
+      buffer = (!isNaN(n) && n > 10) ? buffer + "." + ch : next;
+    }
+    return { buffer, value: parseFloat(buffer) || 0 };
+  }
+
+  // A range marker's two presses, in either order, as [start, end].
+  function orderRange(a, b) {
+    return a <= b ? [a, b] : [b, a];
+  }
+
   function fmtTime(sec) {
     // Round to tenths first. Rounding after the split lets 59.95 render 0:60.0.
     const s = Math.round(Math.max(0, sec) * 10) / 10;
@@ -74,6 +107,53 @@
     const r = s - h * 3600 - m * 60;
     const rr = (r < 10 ? "0" : "") + r.toFixed(1);
     return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${rr}` : `${m}:${rr}`;
+  }
+
+  // ── Where floating UI lives ────────────────────────────────────────────────
+  // A fixed element in the body is not painted over a fullscreen element, so
+  // everything this plugin shows has to move into the fullscreen element and
+  // back. Before 1.3 only the delete overlay did this: R or M in fullscreen
+  // opened a panel nobody could see that still took the keyboard, so typed
+  // digits auto-saved a rating blind. A <video> cannot host children (native
+  // fullscreen on some browsers), so that case falls back to the body.
+  function uiHost() {
+    const fs = document.fullscreenElement;
+    return fs && fs.tagName !== "VIDEO" ? fs : document.body;
+  }
+
+  function mount(el) {
+    const h = uiHost();
+    if (el && el.parentNode !== h) h.appendChild(el);
+  }
+
+  function playerRect() {
+    const v = videoEl();
+    if (!v) return null;
+    const r = v.getBoundingClientRect();
+    return (r.width > 40 && r.height > 40) ? r : null;
+  }
+
+  // One toast for every feature: short confirmations over the player.
+  let toastEl    = null;
+  let toastTimer = null;
+  function toast(text, cls, tipHtml, ms) {
+    injectStyles();
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.id = "qt-toast";
+    }
+    mount(toastEl);
+    toastEl.innerHTML = escapeHtml(text) + (tipHtml ? `<span class="qt-tip">${tipHtml}</span>` : "");
+    toastEl.className = cls || "";
+    const r = playerRect();
+    toastEl.style.left = r ? Math.round(r.left + r.width / 2) + "px" : "50%";
+    toastEl.style.top  = r ? Math.round(r.top + r.height / 2) + "px" : "50%";
+    // Reflow so a repeat restarts the transition instead of being ignored.
+    void toastEl.offsetWidth;
+    toastEl.classList.add("qt-on");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("qt-on"),
+                            ms || (cls === "qt-err" ? 2600 : 1400));
   }
 
   // ── Apollo cache ───────────────────────────────────────────────────────────
@@ -268,9 +348,9 @@
   padding: 0 3px; font-size: 9px; font-family: inherit; color: #e8cbc8;
 }
 
-/* marked for delete: the brief confirmation over the player */
-#qt-del-toast {
-  position: fixed; z-index: 10003; pointer-events: none;
+/* the brief confirmation over the player, shared by every feature */
+#qt-toast {
+  position: fixed; z-index: 10003; text-align: center; pointer-events: none;
   padding: 10px 18px; border-radius: 6px; white-space: nowrap;
   background: rgba(0,0,0,.74); border: 1px solid #a3403a;
   color: #fff; font-size: 15px; font-weight: 600;
@@ -278,13 +358,17 @@
   opacity: 0; transform: translate(-50%,-50%) scale(.92);
   transition: opacity .16s ease, transform .16s ease;
 }
-#qt-del-toast.qt-on  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
-#qt-del-toast.qt-off { border-color: #4a5560; }
-#qt-del-toast.qt-err { border-color: #f5a623; color: #f5d8a0; font-size: 13px; }
-#qt-del-toast .qt-del-tip { display: block; margin-top: 4px; font-weight: 400; }
+#qt-toast.qt-on  { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+#qt-toast.qt-off { border-color: #4a5560; }
+#qt-toast.qt-err { border-color: #f5a623; color: #f5d8a0; font-size: 13px; }
+#qt-toast.qt-info { border-color: #3c6e9a; }
+#qt-toast .qt-tip { display: block; margin-top: 4px; font-size: 11px; font-weight: 400; color: #c6ced6; }
+#qt-toast kbd { background: #2e3944; border: 1px solid #44525f; border-radius: 3px;
+  padding: 0 4px; font-size: 10px; font-family: inherit; color: #e6e9ec; }
+#qt-mark .qt-dur { font-size: 12px; font-weight: 400; color: #8b97a3; margin-left: 6px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .qt-panel, #qt-flash, #qt-del-overlay, #qt-del-toast { transition: none; }
+  .qt-panel, #qt-flash, #qt-del-overlay, #qt-toast { transition: none; }
 }
 `;
     document.head.appendChild(s);
@@ -353,6 +437,14 @@
   });
   window.addEventListener("pagehide", () => { if (active) active.close(true); });
 
+  // One handler moves every floating piece in or out of fullscreen. The delete
+  // module used to own this listener; now it only says what to redo.
+  document.addEventListener("fullscreenchange", () => {
+    if (active && active.el) { mount(active.el); positionPanel(active.el); }
+    if (toastEl && toastEl.classList.contains("qt-on")) mount(toastEl);
+    Del.onFullscreen();
+  });
+
   // ═══ Rating (R) ════════════════════════════════════════════════════════════
 
   const Rate = (() => {
@@ -366,6 +458,7 @@
     let value     = 0;         // 0.0 - 10.0
     let saved     = null;      // last value known to be in the database
     let original  = null;      // value in the database when the panel opened
+    let originalKnown = false; // the read of `original` actually succeeded
     let touched   = false;     // a commit ran since open
     let buffer    = "";        // digits typed since opening
     let saveTimer = null;
@@ -496,7 +589,7 @@
           <kbd>&uarr;</kbd><kbd>&darr;</kbd> 0.5 &middot;
           <kbd>X</kbd> clear &middot; <kbd>Esc</kbd> undo
         </div>`;
-      document.body.appendChild(el);
+      mount(el);
 
       const track = el.querySelector('[data-qt="track"]');
       const fromEvent = (ev) => {
@@ -545,7 +638,8 @@
       sceneId = id;
 
       if (!panel) panel = build();
-      buffer = ""; saved = null; original = null; touched = false; value = 0;
+      mount(panel);
+      buffer = ""; saved = null; original = null; originalKnown = false; touched = false; value = 0;
       render();
       status("Loading...");
       positionPanel(panel);
@@ -556,6 +650,7 @@
         const current = await fetchRating(id);
         if (!open || sceneId !== id) return;
         original = current;
+        originalKnown = true;
         // If the user already typed and auto-save fired, the database now holds
         // their value. Do not roll `saved` back to what we just read.
         if (!touched) {
@@ -579,9 +674,13 @@
         flushSave();
       } else {
         clearTimeout(saveTimer);
-        if (touched && !same(saved, original)) {
+        if (touched && originalKnown && !same(saved, original)) {
           saved = null;             // bypass commit's no-change shortcut
           commit(original);
+        } else if (touched && !originalKnown) {
+          // The read failed, so "the rating before" is unknown. Writing
+          // `original` here would write null and clear a real rating.
+          toast("Could not undo", "qt-err", "The old rating never loaded, so it was left as saved.");
         }
       }
       open = false;
@@ -619,15 +718,8 @@
 
       if (/^[0-9]$/.test(k) || k === "." || k === ",") {
         stop();
-        const ch = k === "," ? "." : k;
-        if (ch === "." && buffer.includes(".")) return true;
-        if (buffer === "0" && ch !== ".") { buffer = "0." + ch; setValue(parseFloat(buffer)); return true; }
-        const next = buffer + ch;
-        const n = parseFloat(next);
-        // "8" then "5" means 8.5, not 85
-        if (!isNaN(n) && n > 10) buffer = buffer + "." + ch;
-        else                     buffer = next;
-        setValue(parseFloat(buffer) || 0);
+        const r = typeDigit(buffer, k);
+        if (r) { buffer = r.buffer; setValue(r.value); }
         return true;
       }
       return false;
@@ -642,11 +734,16 @@
     const RECENT_KEY   = "quickMarkRecentTags";   // kept: migrates recents from QuickMark
     const RECENT_MAX   = 9;                       // one per number key
     const SEARCH_LIMIT = 8;
+    const UNDO_MS      = 8000;    // how long U can take back the last marker
 
     let panel       = null;
     let open        = false;
     let sceneId     = null;
     let markSeconds = 0;       // frozen at the moment M was pressed
+    let markEnd     = null;    // end of a range marker, null for a point
+    let pendingStart = null;   // {sceneId, seconds}: first Shift+M of a range
+    let lastMarker  = null;    // {id, sceneId, at, label}: what U would undo
+    let endField    = null;    // does this Stash accept end_seconds? probed once
     let results     = [];      // [{id, name, isNew}]
     let highlight   = 0;
     let searchSeq   = 0;
@@ -676,21 +773,39 @@
       return d?.tagCreate ?? null;
     }
 
-    async function createMarker(tagId, title, seconds) {
+    async function createMarker(tagId, title, seconds, end) {
+      const input = {
+        scene_id:       sceneId,
+        primary_tag_id: tagId,
+        seconds:        Math.max(0, Math.round(seconds * 1000) / 1000),
+        title:          title || "",
+      };
+      if (end !== null && end !== undefined) input.end_seconds = Math.round(end * 1000) / 1000;
       const d = await gql(
         `mutation ($input: SceneMarkerCreateInput!) {
            sceneMarkerCreate(input: $input) { id seconds primary_tag { id name } }
          }`,
-        {
-          input: {
-            scene_id:       sceneId,
-            primary_tag_id: tagId,
-            seconds:        Math.max(0, Math.round(seconds * 1000) / 1000),
-            title:          title || "",
-          },
-        }
+        { input }
       );
       return d?.sceneMarkerCreate ?? null;
+    }
+
+    // Markers with an end time arrived in newer Stash. Probe once rather than
+    // guess, the same way rating100 is probed.
+    async function supportsEnd() {
+      if (endField !== null) return endField;
+      try {
+        const d = await gql(`query { __type(name: "SceneMarkerCreateInput") { inputFields { name } } }`);
+        endField = (d?.__type?.inputFields ?? []).some((f) => f.name === "end_seconds");
+      } catch (e) {
+        log(`end_seconds probe failed: ${e.message}`);
+        endField = false;
+      }
+      return endField;
+    }
+
+    async function destroyMarker(id) {
+      await gql(`mutation ($id: ID!) { sceneMarkerDestroy(id: $id) }`, { id });
     }
 
     function loadRecent() {
@@ -730,10 +845,11 @@
           <kbd>1</kbd>-<kbd>9</kbd> recent &middot;
           <kbd>&uarr;</kbd><kbd>&darr;</kbd> pick &middot;
           <kbd>Enter</kbd> add &middot;
-          <kbd>,</kbd><kbd>.</kbd> nudge 1s &middot;
+          <kbd>,</kbd><kbd>.</kbd> nudge 1s<span data-qt="endhint"> &middot;
+          <kbd>&lt;</kbd><kbd>&gt;</kbd> nudge end</span> &middot;
           <kbd>Esc</kbd> cancel
         </div>`;
-      document.body.appendChild(el);
+      mount(el);
       el.querySelector('[data-qt="search"]').addEventListener("input", onSearchInput);
       el.querySelector('[data-qt="search"]').addEventListener("keydown", onPanelKey);
       el.querySelector('[data-qt="title"]').addEventListener("keydown", onPanelKey);
@@ -742,7 +858,15 @@
 
     const q = (n) => panel.querySelector(`[data-qt="${n}"]`);
     const status = (t) => { if (panel) q("status").textContent = t; };
-    const renderTime = () => { q("time").textContent = fmtTime(markSeconds); };
+    const renderTime = () => {
+      const t = q("time");
+      if (markEnd === null) { t.textContent = fmtTime(markSeconds); }
+      else {
+        t.innerHTML = `${fmtTime(markSeconds)} \u2013 ${fmtTime(markEnd)}` +
+          `<span class="qt-dur">${(markEnd - markSeconds).toFixed(1)} s</span>`;
+      }
+      q("endhint").style.display = markEnd === null ? "none" : "";
+    };
 
     function renderList() {
       const list = q("list");
@@ -819,14 +943,22 @@
           status("Adding marker...");
         }
         const title  = q("title").value.trim();
-        const marker = await createMarker(tag.id, title, markSeconds);
+        const marker = await createMarker(tag.id, title, markSeconds, markEnd);
         if (!marker) throw new Error("sceneMarkerCreate returned nothing");
 
         noteRecent(tag);
         refetch(["FindSceneMarkers", "SceneMarkerTags", "FindScene"]);
-        status(`Added at ${fmtTime(markSeconds)}`);
-        log(`Marker ${marker.id} at ${markSeconds}s tag=${tag.name}`);
-        setTimeout(closePanel, 550);
+        const when = markEnd === null ? fmtTime(markSeconds)
+                                      : `${fmtTime(markSeconds)} \u2013 ${fmtTime(markEnd)}`;
+        status(`Added at ${when}`);
+        log(`Marker ${marker.id} at ${markSeconds}s${markEnd === null ? "" : `-${markEnd}s`} tag=${tag.name}`);
+        // A wrong marker used to mean hunting it down in the marker list. Keep
+        // a short window where U takes it back.
+        lastMarker = { id: marker.id, sceneId, at: Date.now(), label: `${tag.name} at ${when}` };
+        setTimeout(() => {
+          closePanel();
+          toast(`Marker added: ${tag.name}`, "", `${escapeHtml(when)} \u00b7 <kbd>U</kbd> to undo`, 2500);
+        }, 450);
       } catch (e) {
         log(e.message, "error");
         status(`Failed: ${String(e.message).slice(0, 70)}`);
@@ -842,7 +974,8 @@
       }
     }
 
-    function openPanel() {
+    // range: [start, end] for a range marker, otherwise the current time
+    function openPanel(range) {
       const id = currentSceneId();
       if (!id) return;
       const v = videoEl();
@@ -850,9 +983,11 @@
 
       setActive(entry);
       sceneId     = id;
-      markSeconds = v.currentTime || 0;   // frozen now, fumbling will not move it
+      markSeconds = range ? range[0] : (v.currentTime || 0);   // frozen now
+      markEnd     = range ? range[1] : null;
 
       if (!panel) panel = build();
+      mount(panel);
       q("search").value = "";
       q("title").value  = "";
       status("");
@@ -872,7 +1007,13 @@
       clearTimeout(searchTimer);
       if (panel) panel.classList.remove("qt-open");
       clearActive(entry);
-      videoEl()?.focus?.();
+      // Give the keyboard back. A <video> cannot take focus, so focusing it
+      // left the caret in the hidden search box and the next R, M or D was
+      // typed into it. Blur first, then try the video.js container, which has
+      // a tabindex.
+      if (panel && panel.contains(document.activeElement)) document.activeElement.blur();
+      const player = videoEl()?.closest?.(".video-js");
+      if (player && player.tabIndex >= -1) player.focus?.({ preventScroll: true });
     }
 
     function onPanelKey(ev) {
@@ -894,6 +1035,13 @@
       if ((k === "," || k === ".") && !inTitle && !q("search").value) {
         stop();
         markSeconds = Math.max(0, markSeconds + (k === "." ? 1 : -1));
+        if (markEnd !== null) markSeconds = Math.min(markSeconds, markEnd);
+        renderTime();
+        return;
+      }
+      if ((k === "<" || k === ">") && markEnd !== null && !inTitle && !q("search").value) {
+        stop();
+        markEnd = Math.max(markSeconds, markEnd + (k === ">" ? 1 : -1));
         renderTime();
         return;
       }
@@ -928,7 +1076,65 @@
       return true;      // panel owns the keyboard while it is up
     }
 
-    return { openPanel, onKey, isOpen: () => open, closePanel };
+    // Shift+M: the first press notes the start, the second opens the panel
+    // with both ends. Either order works; the earlier time is the start.
+    async function rangeKey() {
+      const id = currentSceneId();
+      const v  = videoEl();
+      if (!id || !v) return;
+      if (!(await supportsEnd())) {
+        toast("This Stash has no marker end times", "qt-info", "Adding a normal marker instead.");
+        openPanel();
+        return;
+      }
+      const now = v.currentTime || 0;
+      if (!pendingStart || pendingStart.sceneId !== id) {
+        pendingStart = { sceneId: id, seconds: now };
+        toast(`Range starts at ${fmtTime(now)}`, "qt-info",
+              "Press <kbd>Shift</kbd>+<kbd>M</kbd> again at the end \u00b7 <kbd>Esc</kbd> cancels", 4000);
+        return;
+      }
+      const range = orderRange(pendingStart.seconds, now);
+      pendingStart = null;
+      if (range[1] - range[0] < 0.5) {
+        toast("Range too short", "qt-info", "Adding a normal marker instead.");
+        openPanel();
+        return;
+      }
+      openPanel(range);
+    }
+
+    function hasPendingRange() {
+      return !!pendingStart && pendingStart.sceneId === currentSceneId();
+    }
+
+    function cancelRange() {
+      pendingStart = null;
+      toast("Range cancelled", "qt-off");
+    }
+
+    function canUndo() {
+      return !!lastMarker && Date.now() - lastMarker.at < UNDO_MS &&
+             lastMarker.sceneId === currentSceneId();
+    }
+
+    async function undo() {
+      const m = lastMarker;
+      lastMarker = null;
+      if (!m) return;
+      try {
+        await destroyMarker(m.id);
+        refetch(["FindSceneMarkers", "SceneMarkerTags", "FindScene"]);
+        toast("Marker removed", "qt-off", escapeHtml(m.label));
+        log(`Marker ${m.id} undone`);
+      } catch (e) {
+        log(`Undo failed: ${e.message}`, "error");
+        toast(`Could not remove: ${e.message}`, "qt-err");
+      }
+    }
+
+    return { openPanel, onKey, isOpen: () => open, closePanel,
+             rangeKey, hasPendingRange, cancelRange, canUndo, undo };
   })();
 
   // ═══ Queue navigation (double-click) ═══════════════════════════════════════
@@ -1011,9 +1217,18 @@
       log(`Synthesised keys: ${chars.join(" ")}`);
     }
 
+    // Every path above can "succeed" without anything happening: with no
+    // scene queue Stash simply ignores p n. The only reliable signal is
+    // whether the page actually moved, so check and say so if it did not.
     function go(direction) {
       const seq   = direction === "next" ? "p n" : "p p";
       const chars = direction === "next" ? ["p", "n"] : ["p", "p"];
+      const before = location.href;
+      setTimeout(() => {
+        if (location.href !== before) return;
+        toast(`No ${direction} scene`, "qt-off",
+              "Double-click moves through a queue: open scenes from a list, playlist or filter.", 2800);
+      }, 1500);
       if (viaMousetrap(seq)) return;
       if (viaQueueButton(direction)) return;
       viaSyntheticKeys(chars);
@@ -1024,8 +1239,8 @@
       if (!flashEl) {
         flashEl = document.createElement("div");
         flashEl.id = "qt-flash";
-        document.body.appendChild(flashEl);
       }
+      mount(flashEl);
       flashEl.textContent = direction === "next" ? "\u23ED" : "\u23EE";
       flashEl.style.left = x + "px";
       flashEl.style.top  = y + "px";
@@ -1084,7 +1299,6 @@
   const Del = (() => {
     const DEFAULT_NAME = "Marked for Delete";
     const CACHE_KEY    = "quickToolsDeleteTag";   // { name, id }
-    const TOAST_MS     = 1400;
     const POLL_MS      = 500;
 
     let tagId      = null;    // resolved lazily, never on page load
@@ -1093,8 +1307,6 @@
     let marked     = false;
     let busy       = false;
     let overlay    = null;
-    let toast      = null;
-    let toastTimer = null;
     let rafPending = false;
 
     const tagName = () => (settings.deleteTagName || DEFAULT_NAME);
@@ -1200,13 +1412,34 @@
         sceneId = id;
         marked  = now;
         renderOverlay();
-        showToast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off", now);
+        toast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off",
+              now ? "Press <kbd>D</kbd> to unmark" : "");
         refetch(["FindScene", "FindScenes"]);
       } catch (e) {
         log(`Delete mark failed: ${e.message}`, "error");
-        showToast(`Could not tag: ${e.message}`, "qt-err");
+        toast(`Could not tag: ${e.message}`, "qt-err");
       } finally {
         busy = false;
+      }
+    }
+
+    // The tag can change behind our back (Stash's own tag editor, another
+    // tab). Recheck when the page comes back into view, without clearing the
+    // overlay first, so it does not flicker.
+    async function recheck() {
+      const id = currentSceneId();
+      if (!id || busy) return;
+      const tid = await ensureTag(false);
+      if (!tid) return;
+      try {
+        const tags = await sceneTags(id);
+        if (currentSceneId() !== id) return;
+        if (tags.includes(tid) !== marked) {
+          marked = !marked;
+          renderOverlay();
+        }
+      } catch (e) {
+        log(`Delete tag recheck failed: ${e.message}`);
       }
     }
 
@@ -1237,17 +1470,11 @@
     // Fullscreen is the exception: a fixed element in the body is not painted
     // over a fullscreen element, so the nodes move into it and back.
 
-    function host() { return document.fullscreenElement || document.body; }
-
     function build() {
       injectStyles();
       if (!overlay) {
         overlay = document.createElement("div");
         overlay.id = "qt-del-overlay";
-      }
-      if (!toast) {
-        toast = document.createElement("div");
-        toast.id = "qt-del-toast";
       }
       // Only rebuilt when the name actually changes. build() runs on every
       // reposition, and re-writing innerHTML each time would restart the fade
@@ -1264,16 +1491,7 @@
           `</div>`;
       }
 
-      const h = host();
-      if (overlay.parentNode !== h) h.appendChild(overlay);
-      if (toast.parentNode !== h) h.appendChild(toast);
-    }
-
-    function playerRect() {
-      const v = videoEl();
-      if (!v) return null;
-      const r = v.getBoundingClientRect();
-      return (r.width > 40 && r.height > 40) ? r : null;
+      mount(overlay);
     }
 
     // The tint stops above the control bar so the timeline stays readable and
@@ -1308,27 +1526,6 @@
       overlay.classList.add("qt-on");
     }
 
-    function showToast(text, cls, tip) {
-      build();
-      toast.innerHTML = escapeHtml(text) +
-        (tip ? `<span class="qt-del-tip">Press <kbd>D</kbd> to unmark</span>` : "");
-      toast.className = cls || "";
-
-      const r = playerRect();
-      toast.style.left = r ? Math.round(r.left + r.width / 2) + "px" : "50%";
-      toast.style.top  = r ? Math.round(r.top + r.height / 2) + "px" : "50%";
-
-      // Reflow so a repeat press restarts the transition instead of ignoring it.
-      void toast.offsetWidth;
-      toast.classList.add("qt-on");
-
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(
-        () => toast.classList.remove("qt-on"),
-        cls === "qt-err" ? 2600 : TOAST_MS
-      );
-    }
-
     function reposition() {
       if (!marked || rafPending) return;
       rafPending = true;
@@ -1347,14 +1544,20 @@
 
       window.addEventListener("resize", reposition);
       window.addEventListener("scroll", reposition, true);
-      document.addEventListener("fullscreenchange", () => {
-        if (!marked) return;
-        build();          // reparents into or out of the fullscreen element
-        renderOverlay();
+      window.addEventListener("focus", recheck);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") recheck();
       });
     }
 
-    return { start, toggle, isMarked: () => marked };
+    // Called by the core's single fullscreenchange handler.
+    function onFullscreen() {
+      if (!marked) return;
+      build();          // reparents into or out of the fullscreen element
+      renderOverlay();
+    }
+
+    return { start, toggle, onFullscreen, isMarked: () => marked };
   })();
 
   // ═══ Keyboard router ═══════════════════════════════════════════════════════
@@ -1400,7 +1603,20 @@
     if (!settings.disableMarkers && (ev.key === "m" || ev.key === "M")) {
       ev.preventDefault();
       ev.stopPropagation();
-      Mark.openPanel();
+      if (ev.shiftKey) Mark.rangeKey();
+      else             Mark.openPanel();
+      return;
+    }
+    if (!settings.disableMarkers && (ev.key === "u" || ev.key === "U") && Mark.canUndo()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      Mark.undo();
+      return;
+    }
+    if (ev.key === "Escape" && Mark.hasPendingRange()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      Mark.cancelRange();
       return;
     }
     if (!settings.disableDelete && (ev.key === "d" || ev.key === "D")) {
@@ -1420,10 +1636,15 @@
 
   // ═══ Start ═════════════════════════════════════════════════════════════════
 
+  // scripts/test_quicktools.js sets this before loading the file.
+  if (window.__QT_TEST__) {
+    window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost };
+  }
+
   loadSettings().then(() => {
     const on = [];
     if (!settings.disableRating)  on.push("R rate");
-    if (!settings.disableMarkers) on.push("M mark");
+    if (!settings.disableMarkers) on.push("M mark", "Shift+M range", "U undo");
     if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
     if (settings.enableNav)       on.push("double-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);

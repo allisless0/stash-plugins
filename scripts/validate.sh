@@ -49,6 +49,13 @@ if grep -q 'if ws is self._driver or self._driver is None:' plugins/IntifaceSync
   note "  ok   deadman follows the driver"
 else note "  FAIL deadman no longer restricted to the driving tab"; fail=1; fi
 
+note "== QuickTools tests =="
+if node scripts/test_quicktools.js >/tmp/test_qt.out 2>&1; then
+  note "  ok   $(grep -c '^  ok' /tmp/test_qt.out) checks passed"
+else
+  note "  FAIL"; grep -v '^  ok' /tmp/test_qt.out; fail=1
+fi
+
 note "== IntifaceSync test suite =="
 if timeout 300 python3 plugins/IntifaceSync/test_vibe.py >/tmp/test_vibe.out 2>&1; then
   note "  ok   $(grep -c 'OK$' /tmp/test_vibe.out) checks passed"

@@ -7,6 +7,8 @@ Four shortcuts for the Stash scene player. Each can be turned off in
 |---|---|---|
 | `R` | on | Rating panel, 0.0 – 10.0 |
 | `M` | on | Add a marker at the current position |
+| `Shift+M` | on | Mark a range: press at the start, again at the end |
+| `U` | on | Undo the marker you just added (for 8 s) |
 | `D` | on | Toggle the "Marked for Delete" tag |
 | double-click | **off** | Jump through the scene queue |
 
@@ -52,6 +54,14 @@ a number key to pick one of your last nine tags.
 
 The timestamp is captured the instant you press `M`, so the video playing on
 while you pick a tag does not move it.
+
+**Undo.** For 8 seconds after a marker is added, `U` removes it again, so a
+wrong tag does not mean hunting the marker down in the marker list.
+
+**Ranges.** Press `Shift+M` where something starts and `Shift+M` again where it
+ends; the panel opens with both times and `<` `>` nudge the end. `Esc` cancels
+a range you started. Needs a Stash version with marker end times; on older
+ones you get a normal marker and a note saying why.
 
 If no tag matches what you typed, the last row offers to create it. Nothing is
 saved until you press `Enter` — unlike the rating panel, clicking away cancels.
@@ -104,6 +114,8 @@ continue-play and history behave exactly as they do with the queue buttons.
   saves the rating and switches.
 - `D` is not a panel. It does not take the keyboard and does not close on the
   next click, so it does not interfere with the other two.
+- Everything works in fullscreen: the panels and messages move into the
+  player while it is fullscreen.
 - Debug logging: `localStorage.quickToolsDebug = "1"` in the browser console.
 
 ## Troubleshooting
@@ -117,6 +129,10 @@ reload the page.
 **The rating saves but the stars do not change.** Stash renders from a cache
 that the plugin updates through `PluginApi`. On builds that do not expose it,
 the value is in the database and appears after a reload.
+
+**Double-click says "No next scene".** There is no queue: the scene was
+opened directly. Open it from a scene list, playlist or filter and double-click
+works through that list.
 
 **`D` says it could not tag.** Usually the tag was renamed or deleted in Stash
 while the plugin had its id cached. Press `D` again — the first failure clears

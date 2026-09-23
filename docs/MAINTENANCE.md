@@ -47,7 +47,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
+| QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
 | IntifaceSync (vibe fork) | 1.26-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -61,93 +61,106 @@ back. **Any new hotkey must check its path guard and the other plugin's keys.**
 
 ---
 
-## 3. Conventions shared by all five
+## 3. Conventions
 
-These are deliberate and consistent. Preserve them.
+These are deliberate. Preserve them. "Panels" are QuickTools' rating and marker
+panels; IntifaceSync has its own UI conventions in §4.5.
 
 ### 3.1 GraphQL
 
 Raw `fetch` to `/graphql`, `credentials: "same-origin"`. No Apollo, no
 PluginApi dependency for data. Errors surface as `json.errors[0].message`.
+QuickTools' `gql()` (1.3.0) also turns a non-JSON reply into a sentence
+(`httpErrorText()`: "Stash returned 401: logged out?"); before, a lapsed
+login showed as "Unexpected token <".
 
 ### 3.2 Apollo cache sync (critical, non-obvious)
 
 Stash renders from a normalised Apollo cache. A raw `fetch` mutation writes the
-database but leaves the UI stale until reload. Every plugin that mutates must
-poke the cache:
+database but leaves the UI stale until reload. Every mutation must poke the
+cache (`apolloClient()` in QuickTools):
 
-```js
-const svc    = window.PluginApi?.utils?.StashService;
-const client = typeof svc?.getClient === "function" ? svc.getClient() : null;
-```
-
-- QuickRate uses `cache.modify` to write the field directly (instant, no flash).
-- QuickCriteria/QuickMark evict + `refetchQueries`.
+- Rating uses `cache.modify` to write the field directly (instant, no flash).
+- Markers, marker undo and mark-for-delete use `refetchQueries`.
 
 Always guard for `client` being null; the UI must still work without it, just
 requiring a reload. **Do not assume PluginApi exists.**
 
 ### 3.3 Schema probing rather than assuming
 
-`rating100` vs legacy `rating`, `end_seconds` presence — probed at runtime via
+`rating100` vs legacy `rating`, and `end_seconds` on `SceneMarkerCreateInput`
+(range markers, 1.3.0), probed at runtime via
 `__type(name: "...") { inputFields { name } }`. Keeps the plugins working across
 Stash versions. Extend this pattern for any field that has changed historically.
 
 ### 3.4 Key handling
 
-`document.addEventListener("keydown", handler, true)` — capture phase, so
-`stopPropagation()` beats Stash's own Mousetrap bindings. Always:
+QuickTools has **one** keydown router on `window`, capture phase, so it runs
+before anything on `document` (IntifaceSync, Stash's Mousetrap) and its
+`stopPropagation()` keeps a handled key to itself. Always:
 
 - bail on `ctrlKey || metaKey || altKey`
 - bail when `document.activeElement` is input/textarea/select/contenteditable
 - bail when the path guard does not match
 
+`scripts/test_quicktools.js` loads the file against a stub DOM and fails if
+the number of global keydown, pointerdown or dblclick listeners changes. Do
+not add a listener for a new key; add a branch to the router.
+
 ### 3.5 Commit semantics (deliberately inconsistent, do not "fix")
 
-| Plugin | Click outside |
+| Panel | Click outside |
 |---|---|
-| QuickRate | **commits** — a rating is a cheap, correctable single value |
-| QuickMark | **cancels** — an accidental marker must be hunted down and deleted |
-| QuickCriteria | **cancels** — multi-field write, accidental commits are costly |
+| Rating | **commits**: a rating is a cheap, correctable single value |
+| Marker | **cancels**: a marker is only written on Enter |
 
-### 3.5b Video-surface click swallow (QuickRate, QuickMark)
+Marker undo (`U`, 1.3.0) softens the marker side without changing this.
+
+### 3.5b Video-surface click swallow
 
 When a panel is open and the user clicks the **video itself**, the intent is
-"dismiss the panel", not "pause". Both plugins detect this in the capture-phase
-`pointerdown` (`isVideoSurface()`: inside `video, .vjs-tech, .video-js,
-.VideoPlayer` but **not** inside `.vjs-control-bar, .vjs-menu,
-.vjs-modal-dialog, button, a`), close the panel, then set `swallowUntil =
-now + 600ms`. Capture listeners on `mousedown mouseup pointerup click dblclick
-touchstart touchend` kill everything until that deadline so video.js never sees
-the click. Control-bar clicks are not swallowed: QuickRate still commits on
-play/next as before. With no panel open nothing is intercepted.
+"dismiss the panel", not "pause". The capture-phase `pointerdown` detects this
+(`isVideoSurface()`: inside `video, .vjs-tech, .video-js, .VideoPlayer` but
+**not** inside `.vjs-control-bar, .vjs-menu, .vjs-modal-dialog, button, a`),
+closes the panel, then sets `swallowUntil = now + 600ms`. Capture listeners on
+`mousedown mouseup pointerup click dblclick touchstart touchend` kill
+everything until that deadline so video.js never sees the click. This is why
+the dblclick count in the test is two. Control-bar clicks are not swallowed:
+the rating panel still commits on play/next. With no panel open nothing is
+intercepted. If Stash changes its player DOM, `isVideoSurface()` is the one
+place to update.
 
-If Stash ever changes its player DOM, `isVideoSurface()` is the one place to
-update. Both copies must stay identical.
+### 3.6 Placement and fullscreen
 
-### 3.6 Panel placement
+Panels anchor to the cursor (`mousemove` tracked globally), clamp to the
+viewport, and dodge the bottom 80 px of the `<video>` rect so player controls
+stay clickable.
 
-QuickRate and QuickMark anchor to the cursor (`mousemove` tracked globally),
-clamp to viewport, and dodge the bottom 80px of the `<video>` rect so player
-controls stay clickable. QuickCriteria is a centred modal because it is longer.
+**Everything floating goes through `mount()`**, which puts it in
+`document.fullscreenElement` when there is one (unless that is a bare
+`<video>`, which cannot host children) and in the body otherwise. A fixed
+body child is not painted over a fullscreen element. Before 1.3.0 only the
+delete overlay did this, so R or M in fullscreen opened an invisible panel
+that still took the keyboard and auto-saved a rating typed blind. One
+`fullscreenchange` handler in the core re-mounts the open panel and the toast
+and calls `Del.onFullscreen()`.
 
 ### 3.7 Debug flags
 
-```js
-localStorage.setItem("quickRateDebug", "1");      // etc.
-```
-QuickTools: `quickToolsDebug`. The old per-plugin keys (`quickRateDebug`,
-`quickNavDebug`, `quickMarkDebug`, `quickCriteriaDebug`) are dead. IntifaceSync logs to
-`/root/.stash/plugins/IntifaceSync/intiface_sync.log`.
+QuickTools: `localStorage.quickToolsDebug = "1"`. The old per-plugin keys
+(`quickRateDebug`, `quickNavDebug`, `quickMarkDebug`, `quickCriteriaDebug`)
+are dead. IntifaceSync: `localStorage.intifaceSyncDebug = "1"` in the browser,
+and the backend logs to `/root/.stash/plugins/IntifaceSync/intiface_sync.log`.
 
 ---
 
 ## 4. Per-plugin notes
 
-### 4.1 QuickRate — scene rating, 0.0–10.0
+### 4.1 QuickTools rating (R), formerly QuickRate
 
-Writes `rating100` (0–100). Digit buffer logic: `8` then `5` yields 8.5, not 85
-(if appending would exceed 10, insert a decimal point). `0` then `5` yields 0.5.
+Writes `rating100` (0–100). Digit buffer logic, now the pure `typeDigit()`
+(tested): `8` then `5` yields 8.5, not 85 (if appending would exceed 10,
+insert a decimal point). `0` then `5` yields 0.5.
 Auto-saves 650ms after the last edit (`SAVE_DELAY`); commits on play, click-away
 or scene change. `Esc` is a **real undo**: `original` is captured at open and
 written back if anything was committed meanwhile (v1.3.0; before that Esc only
@@ -155,25 +168,33 @@ cancelled the pending timer, so anything auto-saved stayed). A `touched` flag
 stops the async initial fetch from clobbering `saved` if the user typed before
 it returned.
 
+**Esc only undoes to a value it actually read (1.3.0).** `originalKnown` is
+set when the initial read succeeds. If that read failed, `original` is null,
+and undo used to write null: a network hiccup plus Esc cleared a real rating
+(rule 5). Now it leaves the saved value and says so in a toast.
+
 **Known conflict:** Advanced Rating's *Scenes* half also writes scene
 `rating100` from its `Scene.Update.Post` hook. If that is ever enabled it will
 overwrite QuickRate. Currently the user runs Advanced Rating on performers only.
 
-### 4.2 QuickNav — double-click to change scene
+### 4.2 QuickTools queue navigation (double-click), formerly QuickNav
 
 Triggers Stash's own `p n` / `p p` Mousetrap bindings rather than reimplementing
 queue traversal. Three-tier fallback: `Mousetrap.trigger()` →
 click a queue control → synthesised keypress (Mousetrap reads `which`/`charCode`,
 **not** `key`, so those are set via `Object.defineProperty`).
 
-Requires a populated scene queue; direct-URL scenes have none and nothing
-happens. That is upstream behaviour, not fixable here.
+Requires a populated scene queue; direct-URL scenes have none. Every path
+can "succeed" without anything happening (Stash ignores `p n` with no queue),
+so since 1.3.0 `go()` checks whether `location.href` changed 1.5 s later and
+otherwise shows "No next scene" with a hint. The URL is the only reliable
+signal.
 
 Suppresses dblclick-to-fullscreen. Shift+dblclick restores it. The two single
 clicks that precede a dblclick still toggle play/pause twice — an even number,
 so state is unchanged. Do not "fix" this by delaying single clicks.
 
-### 4.3 QuickMark — scene markers
+### 4.3 QuickTools markers (M), formerly QuickMark
 
 Timestamp frozen at keypress so hunting for a tag does not drag the marker.
 `sceneMarkerCreate` requires `primary_tag_id`, hence the tag-search-first design.
@@ -191,6 +212,21 @@ in the status line; a failing recent tag (renamed/deleted) is pruned from
 the list.
 
 Marker preview images are not generated; that needs a Stash generate task.
+
+**1.3.0:**
+- **Undo.** After a marker is written, `lastMarker` holds its id for
+  `UNDO_MS` (8 s) on the same scene, and `U` (routed through the one keydown
+  router, only when that window is open) calls `sceneMarkerDestroy`. Outside
+  the window `U` is not intercepted.
+- **Range markers.** `Shift+M` once notes the start (toast), again opens the
+  panel with both ends; order does not matter (`orderRange()`), under 0.5 s
+  falls back to a point marker, `Esc` with no panel cancels a pending start.
+  `<` `>` nudge the end, `,` `.` the start. Sends `end_seconds` only if the
+  schema probe finds it; otherwise says so and adds a point marker.
+- **Focus handed back on close.** It used to call `focus()` on the
+  `<video>`, which cannot take focus, so the caret stayed in the hidden
+  search box and the next R/M/D was typed into it. Now it blurs anything
+  inside the panel and focuses the `.video-js` container.
 
 ### 4.4 QuickCriteria — companion to the Advanced Rating plugin
 
@@ -873,10 +909,12 @@ tag later.
   renaming the tag in settings invalidates it. The page-load path
   (`ensureTag(false)`) never creates the tag. A failed toggle forgets the
   cache, re-resolves and retries exactly once (covers a tag deleted in Stash).
-- **Overlay and toast live in `document.body`**, placed from the video's rect
-  on a 500 ms poll plus resize/scroll, and moved into
-  `document.fullscreenElement` on fullscreen because a fixed body child is not
-  painted over it. The tint stops above `.vjs-control-bar` so the timeline
+- **The overlay is mounted through the core's `mount()`** (§3.6), placed from
+  the video's rect on a 500 ms poll plus resize/scroll. The toast moved to the
+  core in 1.3.0 and is shared by every feature.
+- **Recheck on return (1.3.0).** The tag can be removed elsewhere (Stash's tag
+  editor, another tab); `recheck()` re-reads it on window focus and when the
+  tab becomes visible, without clearing the overlay first. The tint stops above `.vjs-control-bar` so the timeline
   stays readable. Appending into the player DOM would be simpler and would be
   wiped by React's next render.
 
@@ -923,6 +961,8 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Beat spacing raised to 190 ms in 1.21 for the BLE budget. Scripts faster than ~5 beats/s now merge beats (loudest swing kept). Check that fast Cock Hero sections still feel like a beat, not a blur. |
 | IntifaceSync | Presets and knob UI tested only in a harness, not a real Stash. Check: save a preset, reload, open Stash Settings > Plugins and change an IntifaceSync setting, reload the scene: the preset list must survive. Check the popover position when the player is fullscreen. |
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
+| QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
+| QuickTools | No touch access: R, M and D are keyboard-only. |
 | QuickTools / IntifaceSync | Key-clash fix (QuickTools on `window`) follows from DOM event order but is untested in a live Stash. Check: IntifaceSync manual on, press `R`, type `10`, manual stays on. |
 | IntifaceSync | Funscript discovery uses `files[0].path`; multi-file scenes may resolve the wrong directory. |
 | IntifaceSync | Spectator tabs (1.25) show who drives and a Take over button, but their toolbar controls still look live and silently do nothing except the kill switches. Could disable them visually. |
@@ -936,6 +976,15 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-23 (evening): QuickTools 1.3.0 and IntifaceSync 1.27
+
+QuickTools: fullscreen panels, Esc-after-failed-read guard, focus handed back
+after the marker panel, marker undo, range markers, queue feedback, delete
+overlay recheck, readable HTTP errors, and `scripts/test_quicktools.js` in
+`validate.sh` (pure helpers plus the one-handler rule). §3 rewritten: it
+still described five separate plugins. IntifaceSync 1.27: the script panel
+became a dock under the player (see §4.5).
 
 ### 2026-09-23 (later still): IntifaceSync overhaul, four releases
 

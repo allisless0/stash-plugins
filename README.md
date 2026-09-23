@@ -17,7 +17,7 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 
 | Plugin | Keys | What it does |
 |---|---|---|
-| **QuickTools** | `R` `M` `D` double-click | Four scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, and double-click queue navigation. Each can be turned off. |
+| **QuickTools** | `R` `M` `Shift+M` `U` `D` double-click | Four scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, and double-click queue navigation. Each can be turned off. |
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 
 Each folder under `plugins/` has its own README with the details.
