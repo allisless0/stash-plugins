@@ -1,6 +1,6 @@
 # Stash plugins
 
-Three Stash plugins. QuickTools and Collections are pure frontend JS;
+Four Stash plugins. QuickTools, Collections and ScriptBadges are pure frontend JS;
 IntifaceSync also has a Python backend that drives sex toys over Buttplug.io /
 Intiface Central.
 
@@ -17,7 +17,7 @@ are, including several fixes that look removable and are not.
    See docs/MAINTENANCE.md §4.5.
 2. **Validate before claiming done:** `./scripts/validate.sh`. It runs
    `node --check`, `py_compile`, YAML parsing, safety-chain greps, and the
-   52-check IntifaceSync suite plus the checks in `scripts/test_quicktools.js` and `scripts/test_collections.js`. A change is not finished until it passes.
+   52-check IntifaceSync suite plus the checks in `scripts/test_quicktools.js`, `scripts/test_collections.js` and `scripts/test_scriptbadges.js`. A change is not finished until it passes.
 3. **Bump the version in the plugin's `.yml`** for every functional change.
    Stash caches aggressively and an unchanged version makes debugging a guess.
 4. **Add a test for every backend behaviour change.** `plugins/IntifaceSync/test_vibe.py`

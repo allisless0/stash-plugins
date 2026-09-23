@@ -49,7 +49,8 @@ Keep those greps in step with any refactor of the safety chain.
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
 | IntifaceSync (vibe fork) | 1.28-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
-| Collections | 1.0.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
+| Collections | 1.0.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
+| ScriptBadges | 1.0.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -921,6 +922,29 @@ so it reported 12.5 cmd/s for an emitter really doing 8.3 and failed
 `validate.sh` on the maintainer's machine while passing in Linux CI. Tests
 that fake `time.monotonic` are immune.
 
+### 4.8 ScriptBadges (1.0.0)
+
+Scene-card badge, bottom-left: "Script · <speed>" or "No script". Data is
+Stash's own `interactive` / `interactive_speed`, one `findScenes(ids:)` per
+batch of cards, cached 60 s. That is deliberately the same source as the
+Scenes page Interactive filter, so the badge and the filter agree. It is also
+its limit: Stash only matches `<video name>.funscript` exactly and only at
+scan time, while IntifaceSync matches loosely (normalised names, prefixes), so
+a scene IntifaceSync can play may still say "No script". Asking the
+IntifaceSync backend would be more accurate but would couple the badge to a
+running backend; not done.
+
+**Card corners are shared.** Stash: rating ribbon and selection box top-left,
+studio overlay top-right, specs bottom-right, `interactive_speed` bottom-left.
+ScriptBadges takes bottom-left and hides Stash's bare speed number on cards it
+has badged (`.scene-card.sb-done`), since the badge carries the number.
+Collections' score badge sits top-centre (moved there in 1.0.1; top-left
+covered the rating ribbon). New card decorations must pick a free spot.
+
+Setting `onlyMissing` shows only "No script". Tests:
+`scripts/test_scriptbadges.js`. Browser-checked against Stash-like card
+markup with both plugins loaded.
+
 ### 4.7 Collections (1.0.0)
 
 A collection is a studio plus its sub-studios with its own top-bar tab, hidden
@@ -1071,6 +1095,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M and D are keyboard-only. |
+| ScriptBadges | Stash's exact-name matching means scripts IntifaceSync finds (fuzzy names) can show as "No script". An optional check through the IntifaceSync backend would fix that. |
 | Collections | Untested in a real Stash. Check: the tab lands in the nav bar and filters; the Scenes page hides the studio (maybe after one reload); a Hardcore round records on O; the chip shows in fullscreen; cards show badges. |
 | Collections | Hiding covers the Scenes page only. `performer_scenes`, `tag_scenes` etc. are separate default-filter views and could get the same merge. |
 | Collections | Pressing O by Stash's keyboard shortcut (if any) is caught only by the 4 s poll, so the recorded position can be up to 4 s late. |
@@ -1087,6 +1112,11 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-23 (late night): ScriptBadges 1.0.0, Collections 1.0.1
+
+New plugin, see §4.8. Collections' card badge moved to top-centre because
+top-left sat on Stash's rating ribbon.
 
 ### 2026-09-23 (night): Collections 1.0.0, IntifaceSync 1.28
 

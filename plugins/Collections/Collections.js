@@ -356,8 +356,11 @@
 }
 .coll-best.hc   { background: #f5c442; box-shadow: 0 0 4px rgba(245,196,66,.8); }
 .coll-best.easy { background: rgba(120,190,255,.6); }
+/* top centre: top-left is Stash's rating ribbon and selection box, top-right
+   the studio overlay, the bottom corners specs and ScriptBadges */
 .coll-badge {
-  position: absolute; top: 6px; left: 6px; z-index: 2; pointer-events: none;
+  position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+  z-index: 2; pointer-events: none;
   padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600;
   color: #fff; background: rgba(0,0,0,.72); border: 1px solid rgba(245,196,66,.6);
   white-space: nowrap;
