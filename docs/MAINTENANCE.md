@@ -49,7 +49,7 @@ Keep those greps in step with any refactor of the safety chain.
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
 | IntifaceSync (vibe fork) | 1.28-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
-| Collections | 1.1.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
+| Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1020,6 +1020,22 @@ So the tab stayed gold on the main Scenes page. `isTabUrl()` decodes each `c`
 criterion and only a studios INCLUDES/INCLUDES_ALL with the id counts. The
 link also blurs on click and non-active tabs cannot keep a focus background.
 
+**The player appears late (1.1.1).** Stash's `ScenePlayer` creates the
+`<video-js>` element in an effect after the page renders, so it usually
+arrives after the plugin has loaded the scene. 1.0/1.1.0 tried to draw the
+chip once, found no player, and only retried on a video event, so "Round
+ready" never showed (user report; reproduced in the harness by delaying the
+player 1.5 s, and confirmed 1.1.0 shows nothing there). Now `attachVideo()`
+draws the chip and lines when it finds a new player, the observer draws a
+missing chip for any scoring scene, and the 1 s timer does the same as a
+backstop. Harness pages must create the player late, like Stash, or they
+hide this class of bug.
+
+**Diagnostics.** One `console.info` line at startup (version, studios found,
+where scores are stored), and `window.__Collections.status()` returns the
+version, collections with resolved studio ids, the current scene's
+collection, whether it is scoring, and whether the player and chip were found.
+
 **UI.** The round chip lives inside `.video-js` (video.js owns that DOM, not
 React), so it also shows in fullscreen. Best lines go in
 `.vjs-progress-holder`. Card badges: cards found by `.scene-card`, ids from
@@ -1125,6 +1141,12 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-24 (later): Collections 1.1.1
+
+"Round ready" never appeared: the chip was drawn before Stash's player
+existed and never redrawn (see §4.7 "The player appears late"). Added a
+startup console line and `window.__Collections.status()` for support.
 
 ### 2026-09-24: Collections 1.1.0, ScriptBadges 1.1.0
 

@@ -106,4 +106,18 @@ mode. Tuning it in IntifaceSync's script settings is remembered for that
 script and wins from then on. Your global IntifaceSync defaults are not
 changed.
 
+## If something does not show
+
+Open the browser console (F12) on a Cock Hero scene and run:
+
+```js
+window.__Collections.status()
+```
+
+It says which version is running, whether the studio was found, whether this
+scene belongs to a collection, where scores are stored, and whether the player
+and the round indicator were found. The console also shows one
+`[Collections] ... ready` line when the plugin loads; if that line is missing,
+the plugin is not loaded (reload plugins in Stash, then hard-refresh).
+
 Debug logging: `localStorage.collectionsDebug = "1"` in the browser console.

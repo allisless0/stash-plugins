@@ -14,6 +14,7 @@
   window.__CollectionsLoaded = true;
 
   const PLUGIN_ID      = "Collections";
+  const VERSION        = "1.1.1";
   const DEFAULT_CONFIG = "Cock Hero = Cock Hero, score, mode:beat";
   const DEBUG          = (() => { try { return localStorage.getItem("collectionsDebug") === "1"; } catch { return false; } })();
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
@@ -313,7 +314,10 @@
     }
 
     await syncHidden(cfg);
-    log(`Collections: ${collections.map((c) => `${c.name}${c.id ? "" : " (studio missing)"}`).join(", ")}`);
+    // One line, always: says the plugin loaded and what it found.
+    console.info(`[${PLUGIN_ID}] ${VERSION} ready: ` +
+      collections.map((c) => `${c.name} (${c.id ? `studio ${c.id}` : "STUDIO NOT FOUND"}${c.score ? ", scores" : ""})`).join("; ") +
+      `. Scores stored in ${customFields ? "scene custom fields" : "plugin config"}.`);
   }
 
   // ═══ Score storage ═════════════════════════════════════════════════════════
@@ -634,12 +638,19 @@
     renderChip();
   }
 
+  // Stash builds its video.js player in an effect after the page renders,
+  // so the player usually appears after the scene data. 1.1.0 drew the chip
+  // once, found no player, and never tried again until playback started, so
+  // "Round ready" never showed. A newly found player now gets the chip and
+  // the lines straight away.
   function attachVideo() {
     const v = document.querySelector(".video-js video") || document.querySelector("video");
     if (v === video) return;
     video = v;
     if (!v) return;
     for (const t of ["timeupdate", "play", "pause", "ratechange", "ended"]) v.addEventListener(t, onVideoEvent);
+    renderChip();
+    renderLines();
   }
 
   async function finish(kind, posHint) {
@@ -800,7 +811,7 @@
       scheduleBadges();
       if (scene) {
         attachVideo();
-        if (chip && !chip.isConnected) renderChip();
+        if (scoring() && !chip?.isConnected) renderChip();
         const holder = video?.closest(".video-js")?.querySelector(".vjs-progress-holder");
         if (holder && !holder.querySelector(".coll-best")) renderLines();
       }
@@ -811,6 +822,8 @@
     if (location.href !== lastHref) { lastHref = location.href; ensureTabs(); }
     const id = currentSceneId();
     if (id !== lastScene) { lastScene = id; onScene(id); }
+    // belt and braces for the observer: a scoring scene always has its chip
+    if (scene && scoring()) { attachVideo(); if (!chip?.isConnected) renderChip(); }
     // O pressed some other way (hotkey, another tab): poll every 4 s while a
     // round runs
     if (round && !round.over && scene && !pendingO && document.visibilityState === "visible" &&
@@ -821,6 +834,16 @@
 
   // ═══ For IntifaceSync: which vibe mode a scene's collection asks for ═══════
   window.__Collections = {
+    // For support: run window.__Collections.status() in the browser console.
+    status() {
+      return {
+        version: VERSION, customFields, scoresIn: customFields ? "scene custom fields" : "plugin config",
+        collections: collections.map((c) => ({ tab: c.name, studio: c.studio, studioId: c.id || "NOT FOUND",
+                                               score: c.score, hide: c.hide, mode: c.mode })),
+        scene: scene ? { id: scene.id, collection: scene.collection?.name || "none (studio not in a collection)" } : null,
+        scoring: scoring(), playerFound: !!video?.closest(".video-js"), chipShown: !!chip?.isConnected,
+      };
+    },
     async vibeModeFor(sceneId) {
       try {
         const info = await loadScene(String(sceneId));
