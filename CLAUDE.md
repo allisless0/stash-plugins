@@ -17,9 +17,11 @@ are, including several fixes that look removable and are not.
    See docs/MAINTENANCE.md §4.5.
 2. **Validate before claiming done:** `./scripts/validate.sh`. It runs
    `node --check`, `py_compile`, YAML parsing, safety-chain greps, and the
-   56-test IntifaceSync suite plus the checks in `scripts/test_quicktools.js`, `scripts/test_collections.js` and `scripts/test_scriptbadges.js`. A change is not finished until it passes.
+   57-test IntifaceSync suite plus the checks in `scripts/test_quicktools.js`, `scripts/test_collections.js` and `scripts/test_scriptbadges.js`. A change is not finished until it passes.
 3. **Bump the version in the plugin's `.yml`** for every functional change.
    Stash caches aggressively and an unchanged version makes debugging a guess.
+   IntifaceSync also carries it as `PLUGIN_VERSION` in the `.py` and `.js`;
+   bump all three (validate.sh checks), the page warns on a stale backend.
 4. **Add a test for every backend behaviour change.** `plugins/IntifaceSync/test_vibe.py`
    is fully stubbed, no hardware. Append, do not renumber.
 5. **Never drop tags or user data on write.** The archived QuickCriteria

@@ -94,6 +94,10 @@ except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp", "--quiet", "--break-system-packages"])
     import aiohttp
 
+# Kept equal to the manifest and the JS by validate.sh. The page compares it
+# with its own: reloading plugins in Stash does not restart this process, and
+# an old backend behind a new page caused two "the fix does not work" reports.
+PLUGIN_VERSION    = "1.30-vibe"
 BACKEND_PORT      = 7880
 BACKEND_HOST      = "0.0.0.0"
 FUNSCRIPT_PORT    = 7881
@@ -2496,6 +2500,7 @@ class BackendServer:
                 "vibeEffective": ("track" if self.player and self.player.using_vibe_track()
                                   else self.player.effective_vibe_mode() if self.player else "speed"),
                 "driver":    self._driver_info(),
+                "version":   PLUGIN_VERSION,
                 "tabs":      len(self.clients),
                 "vibeTrack": (os.path.basename(self._vibe_track_path)
                               if self._vibe_track_path and self.player and self.player.vibe_track

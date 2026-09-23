@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.29-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.30-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -608,6 +608,26 @@ Also: `ws_serve(ping_interval=5, ping_timeout=8)` so leaked browser sockets
 die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
+
+**Backend version check (1.30).** `PLUGIN_VERSION` exists in the manifest,
+the Python and the JS, and `validate.sh` fails if they differ. The backend
+sends it in every status; once a real status has arrived
+(`backendStatusSeen`), a mismatch replaces the status line with "Old backend
+(x): run Stop Backend, then Start Backend". Reason: reloading plugins in Stash
+does not restart the Python process, and two separate user reports of "the
+fix does not work" were a new page talking to an old backend. Bump all three
+together. Test 57.
+
+**Toolbar layout (1.30).** Row 1 is split: what is playing on the left (script
+button, Manual group, ⚙), the connection on the right in one
+`margin-left:auto` group (status, Device live, Connect and Disconnect as plug
+icons) so it wraps as a unit and stays right-aligned. The script button shows
+the **scene title** (`currentSceneTitle`, else a tidied file name), and is lit
+(`is-on`, the same style as "Manual on") only while the script is what drives
+the toy: loaded, this tab drives, manual off, mode not off. Dock open/closed
+is now a ▾/▴ caret rather than the highlight. With no script it reads "No
+funscript · manual when playing". Manual on script-less scenes starts on
+**play**, not on opening the page, by design.
 
 **Scripts belong to one video (1.29).** `_best_match()` used to fall back to
 the first `.funscript` in the folder when nothing matched, so in a folder of
@@ -1186,6 +1206,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-24 (night): IntifaceSync 1.30
+
+User: manual still did not come on for a scene without a script; wanted the
+scene title instead of the file name, connection controls on the right as
+icons, and the script button lit when a script is active. The manual report
+matched an old backend still serving the pre-1.29 matcher, so 1.30 adds the
+backend version check. Also: manual on script-less scenes waits for play.
 
 ### 2026-09-24 (evening): IntifaceSync 1.29
 

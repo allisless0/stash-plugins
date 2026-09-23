@@ -25,6 +25,14 @@ for f in plugins/*/*.yml; do
   else note "  FAIL $f"; fail=1; fi
 done
 
+note "== IntifaceSync versions agree (manifest, backend, page) =="
+# The page warns when the backend is older, so all three must be bumped together.
+v_yml=$(python3 -c "import yaml;print(yaml.safe_load(open('plugins/IntifaceSync/IntifaceSync.yml'))['version'])")
+v_py=$(grep -o 'PLUGIN_VERSION *= *"[^"]*"' plugins/IntifaceSync/IntifaceSync.py | sed 's/.*"\(.*\)"/\1/')
+v_js=$(grep -o 'PLUGIN_VERSION *= *"[^"]*"' plugins/IntifaceSync/IntifaceSync.js | sed 's/.*"\(.*\)"/\1/')
+if [ "$v_yml" = "$v_py" ] && [ "$v_yml" = "$v_js" ]; then note "  ok   $v_yml"
+else note "  FAIL yml=$v_yml py=$v_py js=$v_js"; fail=1; fi
+
 note "== Browser storage ban (Stash plugins must not use localStorage for device state) =="
 # localStorage IS used deliberately for UI prefs and the tab lock; this only
 # catches it creeping into the IntifaceSync safety path.

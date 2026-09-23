@@ -1421,3 +1421,17 @@ asyncio.run(_panic_notice())
 print("   'Stopped for safety: the tab that was driving the toy closed'  OK")
 
 print("\nFORK 1.29 TESTS PASSED")
+
+print("57. status carries the backend version, and it matches the manifest")
+async def _version():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "status"})
+    st = a.last_status()
+    assert st.get("version") == isync.PLUGIN_VERSION, st.get("version")
+    import yaml as _yaml
+    man = _yaml.safe_load(open(os.path.join(_HERE, "IntifaceSync.yml"), encoding="utf-8"))
+    assert man["version"] == isync.PLUGIN_VERSION, "manifest and backend versions differ"
+asyncio.run(_version())
+print(f"   {isync.PLUGIN_VERSION} in status and manifest  OK")
+
+print("\nFORK 1.30 TESTS PASSED")

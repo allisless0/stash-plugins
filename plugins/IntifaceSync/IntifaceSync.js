@@ -11,6 +11,7 @@
   const BACKEND_HOST    = window.location.hostname;
   const BACKEND_URL     = `ws://${BACKEND_HOST}:7880`;
   const PLUGIN_ID       = "IntifaceSync";
+  const PLUGIN_VERSION  = "1.30-vibe";   // must match the backend; see updateToolbarStatus
   const MIN_STROKE_GAP  = 5;
   const LS_KEY          = "IntifaceSync.settings";
 
@@ -66,6 +67,7 @@
   // Python). This tab only asks: "claim" when it wants the device, "presence"
   // so the backend and other tabs know what it is showing.
   const TAB_ID       = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  let   backendStatusSeen = false;   // a real status arrived (the version check needs one)
   let   isOwner      = false;     // this tab is the driver, per the last status
   let   initDone     = false;
   let   driverInfo   = null;      // {tab, scene, title, playing} or null
@@ -715,6 +717,7 @@
   }
 
   function updateManualUI() {
+    updateFunscriptSelector();
     const btn = byId(`${PLUGIN_ID}-manual-btn`);
     if (btn) {
       btn.textContent = manualOn ? "Manual on" : "Manual";
@@ -1093,6 +1096,7 @@
 
     if (msg.type === "status") {
       statusData = msg;
+      backendStatusSeen = true;
       applyDriver(msg);
       if (typeof msg.outputEnabled === "boolean" && msg.outputEnabled !== outputOn) {
         outputOn = msg.outputEnabled;
@@ -1825,9 +1829,12 @@ function injectStyles() {
     #${PLUGIN_ID}-sp-track { margin-bottom: 8px; }
     #${PLUGIN_ID}-sp-signal { margin-top: 10px; }
     #${PLUGIN_ID}-dock #${PLUGIN_ID}-preview { height: 130px !important; }
-    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name.is-on {
-      background: rgba(90,169,255,0.18); border-color: rgba(90,169,255,0.55); color: #fff;
+    /* the script button lights like "Manual on" while the script drives the toy */
+    #${PLUGIN_ID}-toolbar .${PLUGIN_ID}-icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 5px 8px; min-width: 30px;
     }
+    #${PLUGIN_ID}-toolbar .${PLUGIN_ID}-icon-btn svg { width: 15px; height: 15px; display: block; }
 
     /* ── Script panel ─────────────────────────────────────────── */
     .${PLUGIN_ID}-memory {
@@ -3152,7 +3159,8 @@ function injectStyles() {
     const $ = (id) => scriptPop.querySelector(`#${PLUGIN_ID}-${id}`);
     const eff = effectiveScriptMode();
 
-    $("sp-title").textContent = selectedFunscript ? `♪ ${baseName(selectedFunscript)}` : "Script";
+    $("sp-title").textContent = selectedFunscript
+      ? `\u266A ${currentSceneTitle || prettyName(selectedFunscript)}` : "Script";
 
     // memory bar
     const mem = $("sp-memory");
@@ -3263,7 +3271,7 @@ function injectStyles() {
       // the scope is only visible in the dock; stop the stream, keep the switch
       if (previewOn) setPreview(false);
     }
-    byId(`${PLUGIN_ID}-script-name`)?.classList.toggle("is-on", show);
+    updateFunscriptSelector();          // the caret shows whether it is open
   }
 
   // Micro pulsing is one setting shown in two places: the ⚙ row and the
@@ -3434,14 +3442,6 @@ function injectStyles() {
     row1.appendChild(scriptLabel);
 
 
-    // Master kill switch. "Output ON/OFF" read as a verb to some people and a
-    // state to others, so say which it is and show it.
-    const outBtn = document.createElement("button");
-    outBtn.id = `${PLUGIN_ID}-output-btn`;
-    outBtn.className = `${PLUGIN_ID}-primary`;
-    outBtn.addEventListener("click", () => setOutput(!outputOn));
-    row1.appendChild(outBtn);
-
     row1.appendChild(buildManualControls());
 
     // Advanced toggle
@@ -3450,29 +3450,14 @@ function injectStyles() {
     gearBtn.title = "Advanced settings";
     row1.appendChild(gearBtn);
 
-    // Connect (Intiface only)
-    const connectBtn = document.createElement("button");
-    connectBtn.id         = `${PLUGIN_ID}-connect-btn`;
-    connectBtn.textContent  = "Connect";
-    connectBtn.addEventListener("click", requestIntifaceConnect);
-    row1.appendChild(connectBtn);
-
-    // Disconnect. It was labelled Stop, which next to "Device muted" read as a
-    // pause; it actually stops everything and drops the Intiface connection.
-    const stopBtn = document.createElement("button");
-    stopBtn.textContent   = "Disconnect";
-    stopBtn.title = "Stop the toy and disconnect from Intiface. Connect brings it back.";
-    stopBtn.id = `${PLUGIN_ID}-stop`;
-    stopBtn.addEventListener("click", () => {
-      log("Stop button clicked", "debug");
-      sendMsg({ type: "stop" });
-    });
-    row1.appendChild(stopBtn);
-
-    // Spacer
-    const spacer = document.createElement("span");
-    spacer.style.cssText = "flex:1 1 auto;";
-    row1.appendChild(spacer);
+    // Everything about the connection sits on the right: status, the master
+    // switch, connect and disconnect. The left is what is playing. One group
+    // with margin-left:auto, so on a narrow player it wraps as a unit and
+    // stays right-aligned instead of landing under the playback controls.
+    const conn = document.createElement("span");
+    conn.style.cssText = "display:inline-flex;align-items:center;gap:8px;margin-left:auto;" +
+                         "min-width:0;flex:0 1 auto;";
+    row1.appendChild(conn);
 
     // Status (with Ellipsis + Tooltip)
     const statusEl = document.createElement("span");
@@ -3481,7 +3466,43 @@ function injectStyles() {
       "opacity:0.8; flex:0 1 auto; min-width:0; " +
       "overflow:hidden; text-overflow:ellipsis; " +
       "white-space:nowrap; text-align:right;";
-    row1.appendChild(statusEl);
+    conn.appendChild(statusEl);
+
+    // Master kill switch. "Output ON/OFF" read as a verb to some people and a
+    // state to others, so say which it is and show it.
+    const outBtn = document.createElement("button");
+    outBtn.id = `${PLUGIN_ID}-output-btn`;
+    outBtn.className = `${PLUGIN_ID}-primary`;
+    outBtn.addEventListener("click", () => setOutput(!outputOn));
+    conn.appendChild(outBtn);
+
+    // Connect and disconnect, as icons (plug in, unplug)
+    const connectBtn = document.createElement("button");
+    connectBtn.id        = `${PLUGIN_ID}-connect-btn`;
+    connectBtn.className = `${PLUGIN_ID}-icon-btn`;
+    connectBtn.title     = "Connect to Intiface (starts the backend if it is not running)";
+    connectBtn.setAttribute("aria-label", "Connect");
+    connectBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5v3M10 1.5v3"/>
+      <path d="M4 4.5h8v3a4 4 0 0 1-8 0z"/><path d="M8 11.5v3"/></svg>`;
+    connectBtn.addEventListener("click", requestIntifaceConnect);
+    conn.appendChild(connectBtn);
+
+    // Disconnect. It was labelled Stop, which next to "Device muted" read as a
+    // pause; it actually stops everything and drops the Intiface connection.
+    const stopBtn = document.createElement("button");
+    stopBtn.id        = `${PLUGIN_ID}-stop`;
+    stopBtn.className = `${PLUGIN_ID}-icon-btn`;
+    stopBtn.title     = "Stop the toy and disconnect from Intiface. Connect brings it back.";
+    stopBtn.setAttribute("aria-label", "Disconnect");
+    stopBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5v3M10 1.5v3"/>
+      <path d="M4 4.5h8v3a4 4 0 0 1-8 0z"/><path d="M8 11.5v3"/><path d="M2 2l12 12"/></svg>`;
+    stopBtn.addEventListener("click", () => {
+      log("Stop button clicked", "debug");
+      sendMsg({ type: "stop" });
+    });
+    conn.appendChild(stopBtn);
 
 
     bar.appendChild(row1);
@@ -3600,6 +3621,17 @@ function injectStyles() {
       return;
     }
 
+    // Reloading plugins in Stash does not restart the Python backend, so a
+    // new page can talk to an old backend and new fixes silently do nothing.
+    if (backendStatusSeen && statusData && statusData.version !== PLUGIN_VERSION) {
+      statusEl.textContent = `\u26A0 Old backend (${statusData.version || "before 1.30"}): run Stop Backend, then Start Backend`;
+      statusEl.style.color = "#f90";
+      statusEl.title = `This page is ${PLUGIN_VERSION} but the backend is ${statusData.version || "older"}. ` +
+                       "Reloading plugins does not restart it: Settings \u203a Tasks \u203a IntifaceSync \u203a " +
+                       "Stop Backend, then Start Backend.";
+      return;
+    }
+
     if (!outputOn) {
       statusEl.textContent = "⛔ Output disabled (E)";
       statusEl.style.color = "#f66";
@@ -3636,28 +3668,37 @@ function injectStyles() {
     return String(path || "").split(/[\\/]/).pop();
   }
 
+  function prettyName(path) {
+    return baseName(path).replace(/\.funscript$/i, "").replace(/[_.]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   function updateFunscriptSelector() {
     const sel   = byId(`${PLUGIN_ID}-select`);
     const label = byId(`${PLUGIN_ID}-script-name`);
     const pick  = byId(`${PLUGIN_ID}-script-pick`);
 
     if (label) {
+      const caret = dockOpen ? " \u25B4" : " \u25BE";
+      // The scene's title reads better than a script file name.
+      const title = currentSceneTitle || (selectedFunscript ? prettyName(selectedFunscript) : "");
       if (funscripts.length === 0) {
-        label.textContent = "No funscript found";
-        label.style.opacity = "0.55";
-        label.title = "Nothing matching this video was found next to it.";
+        label.textContent = (autoManual ? "No funscript \u00b7 manual when playing" : "No funscript") + caret;
+        label.style.opacity = "0.7";
+        label.classList.remove("is-on");
+        label.title = "Nothing next to this video belongs to it. " +
+          (autoManual ? "Your manual pattern plays while the video plays (switch under \u2699)."
+                      : "The toy stays silent (switch under \u2699).");
       } else {
-        const name    = baseName(selectedFunscript);
         const pending = funscriptLoaded === "pending";
         // status describes the driver's script; a spectator's own may differ
         const track   = isOwner && statusData && statusData.vibeTrack;
-        label.textContent   = (pending ? `♪ ${name} …` : `♪ ${name}`) +
-                              (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "") + " \u25BE";
-        label.style.opacity = pending ? "0.6" : "0.85";
-        label.title = (funscripts.length > 1
-          ? `${selectedFunscript}\n\n${funscripts.length} candidates in this folder; ` +
-            "click to switch or tune."
-          : `${selectedFunscript}\n\nClick to tune how this script drives the toy.`) +
+        label.textContent   = (pending ? `\u266A ${title} \u2026` : `\u266A ${title}`) +
+                              (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "") + caret;
+        label.style.opacity = pending ? "0.6" : "";
+        // Lit like "Manual on" while the script is what drives the toy: loaded,
+        // this tab drives, and manual is not overriding it.
+        label.classList.toggle("is-on", funscriptLoaded === true && isOwner && !manualOn && vibeMode !== "off");
+        label.title = `${selectedFunscript}\n\nClick to show or hide how this script drives the toy.` +
           (track ? `\n\nVibrator track: ${track}. ` +
                    (vibeTrackOn ? "The vibrator plays this track directly; a stroker still follows the main script."
                                 : "Ignored, the vibrator follows the main script. Turn it back on under ⚙.")
@@ -3701,7 +3742,7 @@ function injectStyles() {
       placeDock();
       clearInterval(overviewTimer);
       overviewTimer = setInterval(drawOverview, 500);
-      byId(`${PLUGIN_ID}-script-name`)?.classList.add("is-on");
+
     }
     applyHandyVisibility();
     updateManualUI();

@@ -30,9 +30,15 @@ reaches the toy, script or manual, no exceptions. Use it as a panic button.
 **Manual** drives the toy directly, ignoring the funscript. The slider next to
 it sets intensity, and also scales funscript output when a script is playing.
 
-**The script name** (`♪ …`) shows or hides the script settings under the
-player: everything about how the funscript drives the toy. They stay open
-while you scrub and across scenes. See [Script playback](#script-playback).
+**The script button** (`♪ Scene title`) shows or hides the script settings
+under the player. It lights up, like **Manual on**, while the script is what
+drives the toy. With no script for the scene it says so. See
+[Script playback](#script-playback).
+
+On the right: the status, **Device live / Device muted**, and two icons,
+**Connect** (plug) and **Disconnect** (crossed-out plug). If the status says
+**Old backend**, run Stop Backend and then Start Backend in Settings › Tasks:
+reloading plugins does not restart the backend.
 
 **The pattern button** shows the active preset (or the pattern, if no preset is
 active) and opens the pattern panel. A `*` after the name means you have
@@ -40,8 +46,8 @@ changed something since loading it.
 
 **⚙** holds device and app settings: micro pulsing and keyboard shortcuts.
 
-**Disconnect** stops the toy and drops the Intiface connection; **Connect**
-brings it back.
+The crossed-out plug stops the toy and drops the Intiface connection; the
+plug brings it back.
 
 ## Manual patterns
 
@@ -138,7 +144,7 @@ name (spaces, brackets and case may differ), or a named version like
 `Scene [FunGen].funscript`. Another video's script in the same folder is never
 used, and there is nothing to pick from.
 
-**Scenes without a script** play your manual pattern while the video plays,
+**Scenes without a script** play your manual pattern once you press play,
 and stop when it pauses or ends. A manual session you started yourself is left
 alone, and if you turn it off during a scene it stays off. Switch it off under
 ⚙ ("No script: silent") if you prefer those scenes quiet.
