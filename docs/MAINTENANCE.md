@@ -48,7 +48,8 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.27-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.28-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| Collections | 1.0.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -920,6 +921,85 @@ so it reported 12.5 cmd/s for an emitter really doing 8.3 and failed
 `validate.sh` on the maintainer's machine while passing in Linux CI. Tests
 that fake `time.monotonic` are immune.
 
+### 4.7 Collections (1.0.0)
+
+A collection is a studio plus its sub-studios with its own top-bar tab, hidden
+from the main Scenes list, optionally with round scores. All config is one
+STRING setting parsed by `parseCollections()`
+(`Tab = Studio, score, show, mode:x, sort:y; ...`, blank = Cock Hero with
+score and mode:beat). Studios resolve by exact name or alias through
+`findStudios`; a missing studio leaves a greyed tab that says so.
+
+**Tab.** Injected into `.top-nav .navbar-collapse .navbar-nav` with Stash's own
+nav-item classes, re-added by the one MutationObserver when React re-renders
+the bar. Navigates with `pushState` plus a `popstate` event so React Router
+handles it (a plain link would reload the SPA). The URL carries a studios
+criterion in Stash's list encoding: JSON with `{ }` swapped for `( )` outside
+strings, `encodeURI`, then `?#&;=+` escaped (`encodeCriterion()`, copied
+from `ListFilterModel.getEncodedParams` / `translateJSON`; if Stash changes
+that, the tab opens unfiltered). Depth -1 includes sub-studios. A URL with
+query params does not get the page's default filter, which is why the tab is
+unaffected by the hiding.
+
+**Hiding** is Stash's own Scenes default filter, stored in UI config at
+`defaultFilters.scenes` (checked in `views.ts` / `useDefaultFilter`; the
+older `setDefaultFilter` mutation is deprecated). Written with
+`configureUISetting(key: "defaultFilters.scenes")`, which sets one dotted key
+and leaves the rest of the UI config alone. `mergeHide()` is the rule-5
+part: it adds "studios EXCLUDES x (depth -1)" to whatever is there, merges
+into an existing EXCLUDES list or an INCLUDES rule's `excluded` list, keeps
+every other criterion, sort and UI option, and refuses (logs a conflict) if
+the user has an IS_NULL/NOT_NULL/EQUALS studio rule. The ids it added are
+kept in plugin config `managedHidden`, so removing `hide` takes back exactly
+those and never a user's own exclusion. It re-applies on every page load:
+the setting is the source of truth. After a write it refetches the
+`Configuration` query; if the UI does not pick it up, a reload does.
+
+**Rounds** (pure functions, tested): a round starts Hardcore when playback
+starts within `START_GRACE_S` (10 s) of 0:00 and drops one way to Easy on a
+seek, speed change or reload. `roundTime()` compares the position change
+with wall-clock time since the last timeupdate: forward further than
+playback could have gone (+`JUMP_S` 1.5 s) or any jump back is a seek; a
+buffering stall (position frozen, clock running) is not. Paused scrubbing
+over 0.5 s is a seek. The score in both modes is `roundScore()`: the end of
+the first coverage interval, if it starts at 0. Coverage intervals merge
+across gaps under 0.5 s (pause/play boundaries), so a skip ahead leaves a
+gap the score cannot cross until played through. Cleared = score within
+`CLEAR_SLACK_S` of the end. Easy coverage is saved in localStorage
+(`Collections.round.<id>`, 30 days; UI state, fine under the storage rule)
+and restored as Easy after a reload.
+
+**O detection.** One capture-phase click listener: a click on the first
+button of `[data-action="o-counter"]` (Stash's `OCounterButton`; the
+dropdown toggle and menu are ignored) notes the position, and 900 ms later
+`checkO()` re-reads `o_counter` and only counts a loss if it went up. While a
+round runs it also polls every 4 s for O pressed some other way. The O count
+is re-read on every scene open (`loadScene(id, true)`); a cached count made a
+revisit record a loss that never happened, found in review.
+
+**Records.** `roundRecord()` computes only changed keys and they are written as
+`custom_fields: { partial }`, never `full`, so other custom fields on the
+scene survive. Hardcore results also count toward Easy. Needs scene custom
+fields (probed on `SceneUpdateInput`); without them, scoring is off and the
+tab and hiding still work.
+
+**UI.** The round chip lives inside `.video-js` (video.js owns that DOM, not
+React), so it also shows in fullscreen. Best lines go in
+`.vjs-progress-holder`. Card badges: cards found by `.scene-card`, ids from
+their `/scenes/<id>` link, one `findScenes(ids:)` per batch, cached 60 s.
+The observer batches with `setTimeout`, not rAF: rAF never fires in a hidden
+tab, which stalled the whole plugin in testing.
+
+**IntifaceSync contract.** `window.__Collections.vibeModeFor(sceneId)` resolves
+to the collection's `mode:` or null. IntifaceSync (1.28) calls it per scene
+and applies it only to scripts without per-script memory, and never saves it
+into its defaults.
+
+Tests: `scripts/test_collections.js` (36 checks: parsing, URL encoding,
+default-filter merge incl. rule 5, round rules, records). Browser-tested in a
+fake Stash SPA (tab, hiding, badges, a Hardcore round and its record, skip to
+Easy, reload continuation, restart). Not tested in a real Stash.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -991,6 +1071,9 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M and D are keyboard-only. |
+| Collections | Untested in a real Stash. Check: the tab lands in the nav bar and filters; the Scenes page hides the studio (maybe after one reload); a Hardcore round records on O; the chip shows in fullscreen; cards show badges. |
+| Collections | Hiding covers the Scenes page only. `performer_scenes`, `tag_scenes` etc. are separate default-filter views and could get the same merge. |
+| Collections | Pressing O by Stash's keyboard shortcut (if any) is caught only by the 4 s poll, so the recorded position can be up to 4 s late. |
 | QuickTools / IntifaceSync | Key-clash fix (QuickTools on `window`) follows from DOM event order but is untested in a live Stash. Check: IntifaceSync manual on, press `R`, type `10`, manual stays on. |
 | IntifaceSync | Funscript discovery uses `files[0].path`; multi-file scenes may resolve the wrong directory. |
 | IntifaceSync | Spectator tabs (1.25) show who drives and a Take over button, but their toolbar controls still look live and silently do nothing except the kill switches. Could disable them visually. |
@@ -1004,6 +1087,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-23 (night): Collections 1.0.0, IntifaceSync 1.28
+
+New plugin, see §4.7. Designed with the user in chat: tab per studio sorted
+by O count, hidden from Scenes, round scores with Hardcore that silently
+drops to Easy rather than a mode picker, Easy scored by continuous coverage
+so skipping cannot inflate it. IntifaceSync 1.28 reads a collection's vibe
+mode through `window.__Collections`.
 
 ### 2026-09-23 (evening): QuickTools 1.3.0 and IntifaceSync 1.27
 

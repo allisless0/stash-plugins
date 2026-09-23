@@ -2729,6 +2729,10 @@ function injectStyles() {
                        "strokeMax", "vibeTrackOn"];
   let scriptStore    = { v: 1, rev: 0, scripts: {} };
   let scriptDefaults = null;       // the values scripts without memory use
+  // Vibe mode the Collections plugin asks for this scene (e.g. Cock Hero ->
+  // beat). Applies to scripts with no tuning of their own; never saved into
+  // the defaults.
+  let collectionVibe = null;
   let scriptSaveTimer = null;
 
   function pathKey(path) {
@@ -2770,7 +2774,9 @@ function injectStyles() {
 
   // A script just became current (loaded, picked, or switched in another tab).
   function applyScriptSettingsFor(path) {
-    writeScriptValues(scriptMemory(path) || scriptDefaults);
+    const base = (path && collectionVibe && scriptDefaults)
+      ? { ...scriptDefaults, vibeMode: collectionVibe } : scriptDefaults;
+    writeScriptValues(scriptMemory(path) || base);
     sendSettings();
     updateScriptUI();
   }
@@ -3078,6 +3084,7 @@ function injectStyles() {
     txt.textContent = !selectedFunscript
       ? "No script loaded. Changes here set your defaults."
       : tuned ? "Tuned for this script. It comes back like this next time."
+      : collectionVibe ? `Using your defaults, in ${collectionVibe} mode for this collection. Anything you change is remembered for this script.`
               : "Using your defaults. Anything you change is remembered for this script.";
     mem.appendChild(txt);
     mem.classList.toggle("is-tuned", tuned);
@@ -3641,6 +3648,21 @@ function injectStyles() {
     currentSceneId    = sceneId;
     currentSceneTitle = scene.title || (videoPath ? baseName(videoPath) : "");
     sendPresence();
+
+    // The Collections plugin, if installed, says which vibe mode this scene's
+    // collection starts in. Asked per scene; its answer can arrive after the
+    // script, so re-apply if the script has no tuning of its own.
+    collectionVibe = null;
+    const coll = window.__Collections;
+    if (coll && typeof coll.vibeModeFor === "function") {
+      coll.vibeModeFor(sceneId).then((m) => {
+        if (currentSceneId !== sceneId) return;
+        collectionVibe = m || null;
+        if (collectionVibe && selectedFunscript && !scriptMemory(selectedFunscript)) {
+          applyScriptSettingsFor(selectedFunscript);
+        }
+      }).catch(() => {});
+    }
 
     if (videoPath) {
       if (wsReady) sendMsg({ type: "findFunscripts", videoPath });

@@ -102,6 +102,10 @@ stay open while you scrub the timeline and when you change scene, until you
 click the name again. At the top, a strip shows how busy each part of the
 scene is; click it to jump there.
 
+**Collections.** With the Collections plugin, a collection can say which mode
+its scripts start in (Cock Hero starts in Beat). That applies to scripts you
+have not tuned; your own tuning wins.
+
 **Settings are remembered per script.** The right timing and feel depend on
 the file, so whatever you change while a script is loaded is kept for that
 script and comes back next time. Scripts you have not tuned use your defaults.

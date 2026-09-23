@@ -1,0 +1,14 @@
+name: Collections
+description: "Give a studio its own tab in the top bar, sorted by O count, and keep it out of the main Scenes list. Optional round scores for Cock Hero videos: how far you got before pressing O, as Hardcore and Easy records."
+version: 1.0.0
+url: https://github.com/allisless0/stash-plugins
+
+ui:
+  javascript:
+    - Collections.js
+
+settings:
+  collections:
+    displayName: Collections
+    description: "One per semicolon, as: Tab name = Studio name, options. Options: score (round scores), show (also keep them in the main Scenes list), mode:beat (IntifaceSync starts in this vibe mode), sort:date (instead of O count). Leave blank for: Cock Hero = Cock Hero, score, mode:beat. Reload the page after changing."
+    type: STRING
