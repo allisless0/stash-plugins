@@ -1344,3 +1344,80 @@ async def _bg_claim():
     assert srv._driver is a, "a visible tab still takes an idle (not playing) device"
 asyncio.run(_bg_claim())
 print("   background claims wait, visible ones take an idle device  OK")
+
+
+# ── 53-56. 1.29 strict script matching, unload, tease start, safety notice ───
+print("53. a video only gets its own script, never another video's")
+_d2 = _tf.mkdtemp()
+try:
+    for n in ("Scene One.mp4", "Scene One.funscript", "Scene One 2.mp4", "Scene One 2.funscript",
+              "Scene Two.mp4", "Scene Two.funscript", "Scene Three.mp4",
+              "Solo.mp4", "Solo.vib.funscript", "Movie.mp4", "Movie [FunGen].funscript",
+              "Movie.roll.funscript", "Tracked Clip.mp4", "tracked_clip.funscript",
+              "Axis Only.mp4", "Axis Only.roll.funscript"):
+        with open(os.path.join(_d2, n), "w", encoding="utf-8") as f:
+            f.write('{"actions": [{"at": 0, "pos": 0}, {"at": 500, "pos": 90}]}' if n.endswith(".funscript") else "")
+    fs = lambda v: [os.path.basename(x) for x in isync.find_funscripts(os.path.join(_d2, v))[0]]
+    assert fs("Scene Three.mp4") == [], f"borrowed another video's script: {fs('Scene Three.mp4')}"
+    assert fs("Scene One.mp4") == ["Scene One.funscript"], fs("Scene One.mp4")
+    assert fs("Scene One 2.mp4") == ["Scene One 2.funscript"], "the longer-named video keeps its own"
+    assert fs("Solo.mp4") == ["Solo.vib.funscript"], "a lone vibe track is the script"
+    assert fs("Movie.mp4") == ["Movie [FunGen].funscript"], "a named variant counts, an axis file does not"
+    assert fs("Tracked Clip.mp4") == ["tracked_clip.funscript"], "FunGen-style names still match"
+    assert fs("Axis Only.mp4") == [], "an extra motion axis alone is not a main script"
+    print("   no-script video gets nothing, variants and vibe tracks match, neighbours do not  OK")
+finally:
+    _sh.rmtree(_d2, ignore_errors=True)
+
+print("54. a scene without a script drops the last one but keeps manual running")
+async def _unload_msg():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    srv.player.load([{"at": i * 300, "pos": i % 2 * 100} for i in range(60)])
+    srv._current_script_path = "x/Scene One.funscript"
+    await srv._route(a, {"type": "manual", "enabled": True, "level": 0.5, "shape": "wave"})
+    await srv._route(a, {"type": "unloadScript"})
+    assert srv.player.actions == [] and srv._current_script_path is None
+    assert srv.player.manual_enabled, "unloading a script must not end a manual session"
+    await srv._route(b, {"type": "unloadScript"})          # not driving: ignored
+    assert srv._driver is a
+asyncio.run(_unload_msg())
+print("   script gone, manual still on, only the driver may unload  OK")
+
+print("55. tease builds from the starting buzz length, and a build change restarts it")
+async def _on_from():
+    p = isync.FunscriptPlayer(FakeBP([GUSH]))
+    p.set_manual(shape="tease", period=4.0, on_ms=1500, build=4, on_from_ms=200)
+    lens = []
+    for k in range(6):                       # sample the buzz length of each cycle
+        t0 = 500.0 + k * 4.0
+        on = [p._manual_shape_value(t0 + x / 100.0) for x in range(0, 390, 2)]
+        lens.append(round(sum(1 for v in on if v > 0) * 0.02, 2))
+    want = [0.2, 0.52, 0.86, 1.18, 1.5, 1.5]
+    assert all(abs(a - b) <= 0.05 for a, b in zip(lens, want)), f"buzz lengths {lens}"
+    p.set_manual(period=4.0)                                # unrelated change: keeps going
+    assert p._manual_started is not None
+    p.set_manual(on_from_ms=300)                            # build change: starts over
+    assert p._manual_started is None and p.manual_on_from_ms == 300
+    srv = isync.BackendServer()
+    await srv._handle(None, {"type": "manual", "onFromMs": 250})
+    assert srv._manual["on_from_ms"] == 250 and srv.player.manual_on_from_ms == 250
+asyncio.run(_on_from())
+print("   0.2 s growing to 1.5 s over 4 buzzes; tuning the build restarts it  OK")
+
+print("56. a safety stop tells the remaining tabs why")
+async def _panic_notice():
+    srv, a, b = await _two_tabs()
+    await srv._route(a, {"type": "claim"})
+    await srv._route(a, {"type": "manual", "enabled": True, "level": 0.5, "shape": "tease"})
+    b.out.clear()
+    await srv._client_gone(a)
+    ev = [m for m in b.out if m.get("type") == "event"]
+    assert ev and "closed" in ev[-1]["message"] and ev[-1].get("safety"), f"no notice: {b.out[-3:]}"
+    b.out.clear()
+    await srv._panic("idle test")                           # nothing was running: no notice
+    assert not [m for m in b.out if m.get("type") == "event"]
+asyncio.run(_panic_notice())
+print("   'Stopped for safety: the tab that was driving the toy closed'  OK")
+
+print("\nFORK 1.29 TESTS PASSED")

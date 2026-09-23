@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.28-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.29-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -609,6 +609,51 @@ die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
 
+**Scripts belong to one video (1.29).** `_best_match()` used to fall back to
+the first `.funscript` in the folder when nothing matched, so in a folder of
+many videos a scene without a script played another scene's script (user
+report: "funscript mode on a video with no script"). Now it returns the
+video's own script only: exact or normalised name, else a named variant
+(`Video [FunGen].funscript`) unless that longer name is another video in the
+folder (`Scene One 2.mp4` owns `Scene One 2.funscript`), never an extra
+motion axis, and a lone vibe track as a last resort. `find_funscripts()`
+returns that one file or nothing, so the picker never appears. Test 53.
+
+**`unloadScript` (1.29).** Sent by the driver on every scene change and when a
+scene has no script; the backend calls `player.unload()`. Without it the
+previous scene's script kept playing against the new video. Not a stop path:
+manual keeps running (same reasoning as `pause()` / takeover). Driver-only
+through `_route`. Test 54.
+
+**Manual on scenes without a script (1.29, frontend).** User request. When the
+driver plays a scene whose script lookup came back empty, `autoManualCheck()`
+turns manual on with the current pattern; pause, end and scene change turn it
+off again (`autoManualStop()`), but only a session the plugin started
+(`autoManualActive`). A manual session the user started is never touched.
+Turning manual off during the scene sets `autoManualVeto` until the next
+scene. Switch in the ⚙ row ("No script: manual on / silent"), default on.
+**Race found in testing:** the backend's status for `play` arrives saying
+manual is off (sent before the manual message was processed); clearing
+`autoManualActive` on that made pause leave manual running. The status
+handler must not clear it. Turning manual off from pause is an ordinary
+manual-off, which is always safe; the deadman covers a tab that dies mid-scene.
+
+**Tease starting buzz length (1.29).** `manual_on_from_ms` / `onFromMs`: the
+length build grows from this to Buzz length (now labelled "Final buzz length"
+when a build is on). Was fixed at `MANUAL_MIN_ON_MS` (60 ms), too short to feel
+on a Gush 2, so a build seemed to do nothing for the first several buzzes.
+Backend default stays 60 so old sessions behave the same; the UI default is
+200 ms. Changing any build setting restarts the build (`_manual_started =
+None`), so a tweak can be felt from the first buzz; other settings do not
+restart it. Presets carry `onFromMs` (old presets load as 60). Test 55.
+
+**Safety stops say why (1.29).** `_panic()` broadcasts an `event` with
+`safety: true` ("Stopped for safety: the tab that was driving the toy
+closed" / "the driving tab went quiet for N s (closed, asleep, or frozen by
+the browser)") when something was actually running. The status line shows it
+for 15 s. The user saw manual "randomly" turn off; the two causes that survive
+testing are exactly these, both by design. Test 56.
+
 **Script dock (1.27): not a popover.** 1.26 put script settings in a floating
 popover, which closed on any outside click, and the user tunes while scrubbing
 the timeline. Now `#IntifaceSync-dock` sits directly after the toolbar in the
@@ -906,7 +951,7 @@ semantics, fake backend socket): save, edit, update, revert, reload, fresh
 browser, two tabs, and a stale-settings-page overwrite. Not tested in a real
 Stash.
 
-**Tests:** `test_vibe.py`, 52 checks, run from the plugin's parent directory:
+**Tests (1.29: 56 numbered, see validate output for check count):** `test_vibe.py`, 52 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -1141,6 +1186,17 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-24 (evening): IntifaceSync 1.29
+
+User reports: manual turned off when playing a new video in another tab and
+the toy followed "a funscript" on a scene without one; picking other videos'
+scripts made no sense; the tease build did not seem to work. Reproduced with
+a new fake Intiface server (`fake_intiface.py`, one Gush 2) against the real
+backend: the scriptless scene loaded another video's script. Manual never
+turned off through takeover or scene changes in testing; the remaining causes
+are the two safety stops, which now explain themselves. See §4.5 for strict
+matching, `unloadScript`, manual on script-less scenes, and the tease start.
 
 ### 2026-09-24 (later): Collections 1.1.1
 

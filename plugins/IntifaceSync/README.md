@@ -65,8 +65,10 @@ screen, that pattern ignores it.
   buzzes for Pulse and Tease.
 - **Buzz length** — how long each buzz lasts. Short reads as a tap, long as a throb.
 - **Dip to** — how far the level falls between peaks. 0 falls to silence.
-- **Length build-up** (Tease) — how many buzzes it takes to grow from a flick
-  to the full buzz length.
+- **Length build-up** (Tease): how many buzzes it takes to grow from the
+  **Starting buzz length** to the **Final buzz length**, e.g. 0.2 s growing
+  to 1.5 s over 10 buzzes. Changing a build setting starts the build over, so
+  you feel the change straight away.
 - **Strength build-up** (Tease) — how many buzzes it takes to grow from the
   **Starting strength** to full. Use it on its own, or with the length
   build-up so buzzes get both longer and stronger.
@@ -131,6 +133,16 @@ and **Make these my defaults** to copy it.
 - **Speed (classic)**: intensity follows stroke speed against a fixed scale.
 - **Position**: intensity follows stroke position.
 
+**Scripts are matched strictly.** A video only gets its own script: the same
+name (spaces, brackets and case may differ), or a named version like
+`Scene [FunGen].funscript`. Another video's script in the same folder is never
+used, and there is nothing to pick from.
+
+**Scenes without a script** play your manual pattern while the video plays,
+and stop when it pauses or ends. A manual session you started yourself is left
+alone, and if you turn it off during a scene it stays off. Switch it off under
+⚙ ("No script: silent") if you prefer those scenes quiet.
+
 **Vibrator tracks.** Some scripts come with a second file made for vibrators,
 named like `Scene.vib.funscript` next to `Scene.funscript`. When one is there
 the vibrator plays it as written, which is almost always better than anything
@@ -173,6 +185,11 @@ Stash open.
 - Closing the tab that is driving stops the toy.
 
 ## Safety
+
+When the toy is stopped for safety (the tab that was driving it closed, or
+went quiet for 15 seconds because the browser froze or the computer slept),
+the other open tabs say so in the status line.
+
 
 The toy stops when you close the browser, when the tab crashes, when the laptop
 sleeps, when the connection drops, and when the backend shuts down. A watchdog

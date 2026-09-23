@@ -189,6 +189,7 @@ MANUAL_DEFAULT_ON_MS   = 400    # burst length for pulse / tease, milliseconds
 MANUAL_MIN_ON_MS       = 60     # shorter than this and the motor never spins up
 MANUAL_DEFAULT_DEPTH   = 0.15   # how far wave / ramp dip, as a fraction of peak
 MANUAL_DEFAULT_BUILD   = 0      # tease: cycles spent escalating, 0 = no build
+MANUAL_DEFAULT_ON_FROM_MS = 60  # tease: first buzz length when building (was fixed at the minimum)
 MANUAL_DEFAULT_BUILD_AMP = 0    # tease: cycles spent growing buzz strength, 0 = off
 MANUAL_DEFAULT_AMP_FROM  = 0.20 # tease: strength of the first buzz, as a share of peak
 DEADMAN_S              = 15     # stop device after this many seconds without a frontend message
@@ -1039,6 +1040,7 @@ class FunscriptPlayer:
         self.manual_on_ms       = MANUAL_DEFAULT_ON_MS
         self.manual_depth       = MANUAL_DEFAULT_DEPTH
         self.manual_build       = MANUAL_DEFAULT_BUILD
+        self.manual_on_from_ms  = MANUAL_DEFAULT_ON_FROM_MS
         self.manual_build_amp   = MANUAL_DEFAULT_BUILD_AMP
         self.manual_amp_from    = MANUAL_DEFAULT_AMP_FROM
         self.manual_ceiling     = MANUAL_DEFAULT_CEILING
@@ -1612,7 +1614,11 @@ class FunscriptPlayer:
             build = max(0, int(self.manual_build))
             if build > 0:
                 frac    = min(1.0, self._manual_cycle / float(build))
-                min_s   = MANUAL_MIN_ON_MS / 1000.0
+                # Grows from the starting length to the final one. The start
+                # was fixed at MANUAL_MIN_ON_MS (60 ms) until 1.29, too short
+                # to feel on a Gush 2, so a build seemed to do nothing at first.
+                min_s   = max(MANUAL_MIN_ON_MS / 1000.0,
+                              min(on_s, float(self.manual_on_from_ms) / 1000.0 * self._manual_on_scale))
                 this_on = min_s + (on_s - min_s) * frac
             else:
                 this_on = on_s
@@ -1739,7 +1745,12 @@ class FunscriptPlayer:
     def set_manual(self, enabled=None, level=None, shape=None, period=None,
                    on_ms=None, depth=None, build=None, ceiling=None,
                    smooth=None, micro_ms=None, build_amp=None,
-                   amp_from=None) -> None:
+                   amp_from=None, on_from_ms=None) -> None:
+        # Changing how a build grows restarts it, so the change can be felt
+        # from the first buzz instead of landing somewhere past its end.
+        restart = any(v is not None and abs(float(v) - float(cur)) > 1e-9 for v, cur in (
+            (build, self.manual_build), (build_amp, self.manual_build_amp),
+            (amp_from, self.manual_amp_from), (on_from_ms, self.manual_on_from_ms)))
         if level is not None:
             self.master = max(0.0, min(1.0, float(level)))
         if shape in MANUAL_SHAPES:
@@ -1756,6 +1767,8 @@ class FunscriptPlayer:
             self.manual_depth = max(0.0, min(0.95, float(depth)))
         if build is not None:
             self.manual_build = max(0, min(200, int(build)))
+        if on_from_ms is not None:
+            self.manual_on_from_ms = max(MANUAL_MIN_ON_MS, min(10000.0, float(on_from_ms)))
         if build_amp is not None:
             self.manual_build_amp = max(0, min(200, int(build_amp)))
         if amp_from is not None:
@@ -1778,13 +1791,15 @@ class FunscriptPlayer:
                     asyncio.ensure_future(self.bp.stop_all())
                 except RuntimeError:
                     pass
+        if restart and self.manual_shape == "tease":
+            self._manual_started = None
         if self.manual_enabled:
             self._ensure_loop()
         step = self.bp.scalar_step() if hasattr(self.bp, "scalar_step") else VIBE_STEP
         peak = self.master * self.manual_ceiling
         log.info(f"Manual: enabled={self.manual_enabled} shape={self.manual_shape} "
                  f"period={self.manual_period_s:.1f}s on={self.manual_on_ms:.0f}ms "
-                 f"depth={self.manual_depth:.2f} build={self.manual_build} "
+                 f"depth={self.manual_depth:.2f} build={self.manual_build} from={self.manual_on_from_ms:.0f}ms "
                  f"build_amp={self.manual_build_amp}/{self.manual_amp_from:.2f} "
                  f"master={self.master:.2f} ceiling={self.manual_ceiling:.2f} "
                  f"peak={peak:.3f} ({'sub-step' if peak < step else 'above floor'})")
@@ -2082,37 +2097,54 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
-def _best_match(video_name: str, funscripts: list) -> str:
+VIDEO_EXTS = (".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv",
+              ".mpg", ".mpeg", ".ts", ".m2ts", ".3gp")
+
+
+def _best_match(video_name: str, funscripts: list, other_videos: list | None = None) -> str | None:
+    """The script that belongs to this video, or None. Never another video's.
+
+    Up to 1.28 this fell back to the first .funscript in the folder when no
+    name matched, so in a folder of many videos a scene without a script
+    silently played a different scene's script. Now, in order:
+      1. same name (case-insensitive), or the same once normalised;
+      2. a named variant, "Video [FunGen].funscript", unless that longer name
+         is itself another video's name ("Scene One 2" is not a variant of
+         "Scene One" when "Scene One 2.mp4" exists), and not an extra motion
+         axis ("Video.roll") or a vibe track;
+      3. only a vibe track: it is used as the script (it plays as intensity).
+    """
     target = _norm_name(video_name)
-    exact, normal, prefix = [], [], []
+    others = [_norm_name(v) for v in (other_videos or []) if _norm_name(v) != target]
+    exact, normal, variant, vibe = [], [], [], []
 
     for fs in funscripts:
         base = os.path.splitext(os.path.basename(fs))[0]
+        nb = _norm_name(base)
         if base.lower() == video_name.lower():
             exact.append(fs)
-            continue
-        nb = _norm_name(base)
-        if nb == target:
+        elif nb == target:
             normal.append(fs)
         elif target and nb.startswith(target):
-            # e.g. "video.roll.funscript" - keep, but rank below a clean match
-            tail = base[len(video_name):].strip(" ._-").lower() if len(base) > len(video_name) else ""
-            prefix.append((tail in AXIS_SUFFIXES, fs))
+            if any(o.startswith(target) and nb.startswith(o) and len(o) > len(target) for o in others):
+                continue                       # it belongs to a longer-named video
+            parts = [x for x in re.split(r"[ ._-]+", base[len(video_name):]) if x]
+            tail = parts[-1].lower() if parts else ""
+            if tail in VIBE_TRACK_SUFFIXES and len(parts) == 1:
+                vibe.append(fs)
+            elif tail in AXIS_SUFFIXES and len(parts) == 1:
+                continue
+            else:
+                variant.append(fs)
 
-    if exact:
-        return exact[0]
-    if normal:
-        log.info(f"Matched funscript by normalised name: {os.path.basename(normal[0])}")
-        return normal[0]
-    if prefix:
-        prefix.sort(key=lambda x: x[0])          # non-axis variants first
-        log.info(f"Matched funscript by name prefix: {os.path.basename(prefix[0][1])}")
-        return prefix[0][1]
-
-    log.warning(f"No funscript name matches {video_name!r}; "
-                f"defaulting to {os.path.basename(funscripts[0])}. "
-                f"Pick the right one from the dropdown if this is wrong.")
-    return funscripts[0]
+    for group, why in ((exact, ""), (normal, "normalised name"), (variant, "named variant"),
+                       (vibe, "vibe track only")):
+        if group:
+            if why:
+                log.info(f"Matched funscript by {why}: {os.path.basename(group[0])}")
+            return group[0]
+    log.info(f"No funscript belongs to {video_name!r}")
+    return None
 
 
 def find_funscripts(video_path: str) -> tuple[list, str | None]:
@@ -2146,14 +2178,15 @@ def find_funscripts(video_path: str) -> tuple[list, str | None]:
         log_debug(f"No funscripts found in {video_dir!r}")
         return [], None
 
-    default_script = _best_match(video_name, funscripts)
-
-    if funscripts[0] != default_script:
-        funscripts.remove(default_script)
-        funscripts.insert(0, default_script)
-
-    log.info(f"Found {len(funscripts)} funscript(s), default: {os.path.basename(default_script)}")
-    return funscripts, default_script
+    other_videos = [os.path.splitext(f)[0] for f in all_files
+                    if f.lower().endswith(VIDEO_EXTS)]
+    default_script = _best_match(video_name, funscripts, other_videos)
+    if not default_script:
+        return [], None
+    # Only this video's own script is offered. Other scripts in the folder
+    # belong to other videos; a vibe track is picked up by the loader.
+    log.info(f"Funscript for {video_name!r}: {os.path.basename(default_script)}")
+    return [default_script], default_script
 
 
 def load_funscript_file(path: str, invert: bool = False) -> list | None:
@@ -2198,6 +2231,7 @@ class BackendServer:
                                  "depth": MANUAL_DEFAULT_DEPTH,
                                  "build": MANUAL_DEFAULT_BUILD,
                                  "build_amp": MANUAL_DEFAULT_BUILD_AMP,
+                                 "on_from_ms": MANUAL_DEFAULT_ON_FROM_MS,
                                  "amp_from": MANUAL_DEFAULT_AMP_FROM,
                                  "ceiling": MANUAL_DEFAULT_CEILING,
                                  "smooth": MANUAL_DEFAULT_SMOOTH,
@@ -2250,6 +2284,7 @@ class BackendServer:
 
     async def _panic(self, reason: str) -> None:
         log.info(f"PANIC stop ({reason})")
+        was_active = self._device_active()
         self._manual["enabled"] = False
         if self._mode == "intiface":
             if self.player:
@@ -2264,6 +2299,13 @@ class BackendServer:
                 await self._handy_pause()
             except Exception as e:
                 log.warning(f"Handy pause failed during panic: {e}")
+        # A safety stop the user did not ask for looked like the plugin
+        # randomly turning manual off. Tell whichever tabs are still here.
+        if was_active and self.clients:
+            try:
+                await self._broadcast_event("warn", f"Stopped for safety: {reason}", safety=True)
+            except Exception:
+                pass
 
     def _device_active(self) -> bool:
         if self._mode == "intiface":
@@ -2278,7 +2320,8 @@ class BackendServer:
             await asyncio.sleep(DEADMAN_TICK_S)
             idle = time.monotonic() - self._last_seen
             if idle > DEADMAN_S and self._device_active():
-                await self._panic(f"deadman timeout, {idle:.0f}s without frontend")
+                await self._panic(f"the driving tab went quiet for {idle:.0f} s "
+                                  f"(closed, asleep, or frozen by the browser)")
                 self._last_seen = time.monotonic()
                 try:
                     await self._broadcast_status("Stopped: no frontend heartbeat")
@@ -2382,7 +2425,7 @@ class BackendServer:
             self._driver = None
         if was_driver or not self.clients:
             try:
-                await self._panic("driving tab disconnected" if was_driver else "no clients left")
+                await self._panic("the tab that was driving the toy closed" if was_driver else "no clients left")
             except Exception as e:
                 log.warning(f"Panic on disconnect failed: {e}")
             try:
@@ -2667,6 +2710,18 @@ class BackendServer:
             await self._broadcast({"type": "funscripts", "files": files, "default": default})
             return
 
+        # ── Scene without a script: drop the previous one ─────────────────────
+        # Otherwise the last scene's script keeps playing against this video.
+        # Not a stop path: unload() leaves a running manual pattern alone.
+        if t == "unloadScript":
+            if self._mode == "intiface" and self.player:
+                self.player.unload()
+            self._current_script_path = None
+            self._vibe_track_path     = None
+            self._pending_actions     = None
+            await self._broadcast_status()
+            return
+
         # ── Loading Funscript ───────────────────────────────────────────────────
         if t == "loadFile":
             path   = msg.get("path", "")
@@ -2778,6 +2833,8 @@ class BackendServer:
                 self._manual["depth"] = max(0.0, min(0.95, float(msg.get("depth"))))
             if msg.get("build") is not None:
                 self._manual["build"] = max(0, min(200, int(msg.get("build"))))
+            if msg.get("onFromMs") is not None:
+                self._manual["on_from_ms"] = max(MANUAL_MIN_ON_MS, min(10000.0, float(msg.get("onFromMs"))))
             if msg.get("buildAmp") is not None:
                 self._manual["build_amp"] = max(0, min(200, int(msg.get("buildAmp"))))
             if msg.get("ampFrom") is not None:

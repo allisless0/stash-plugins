@@ -134,6 +134,7 @@
     else if (currentScenePath) sendMsg({ type: "findFunscripts", videoPath: currentScenePath });
     if (videoIsPlaying()) pendingPlay = { time: videoEl.currentTime * 1000, rate: videoEl.playbackRate };
     if (dockOpen && previewWanted) setPreview(true);
+    setTimeout(autoManualCheck, 300);       // after the status has told us manual's state
     updateToolbarStatus();
   }
 
@@ -180,6 +181,15 @@
   let manualOnMs            = 400;       // burst length for Pulse / Tease
   let manualDepth           = 15;        // % floor for Wave / Ramp
   let manualBuild           = 0;         // Tease: cycles spent escalating, 0 = off
+  let manualOnFromMs        = 200;       // Tease: first buzz length while building
+  // Scenes with no funscript play the manual pattern while the video plays.
+  // autoManualActive: this plugin turned manual on, so it also turns it off.
+  // autoManualVeto: the user turned it off during this scene; leave it off.
+  let autoManual            = true;
+  let autoManualActive      = false;
+  let autoManualVeto        = false;
+  let sceneHasNoScript      = false;
+  let autoManualInternal    = false;
   let manualBuildAmp        = 0;         // Tease: cycles spent growing strength, 0 = off
   let manualAmpFrom         = 20;        // Tease: first buzz strength, % of peak
   let manualCeiling         = 100;       // % of motor output the slider maxes at
@@ -257,6 +267,8 @@
       if (typeof s.manualOnMs    === "number") manualOnMs    = s.manualOnMs;
       if (typeof s.manualDepth   === "number") manualDepth   = s.manualDepth;
       if (typeof s.manualBuild   === "number") manualBuild   = s.manualBuild;
+      if (typeof s.manualOnFromMs === "number") manualOnFromMs = s.manualOnFromMs;
+      if (typeof s.autoManual   === "boolean") autoManual  = s.autoManual;
       if (typeof s.manualBuildAmp === "number") manualBuildAmp = s.manualBuildAmp;
       if (typeof s.manualAmpFrom  === "number") manualAmpFrom  = s.manualAmpFrom;
       if (typeof s.manualCeiling === "number") manualCeiling = s.manualCeiling;
@@ -281,7 +293,7 @@
         vibeMode, vibeMaxSpeed, vibeSmooth, vibeSubstep, beatMs, beatEdge, beatProminence,
         vibeTrackOn, flowSmooth, flowRhythm, flowGain,
         manualLevel, manualShape, manualPeriod,
-        manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
+        manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs, manualOnFromMs, autoManual,
         manualBuildAmp, manualAmpFrom,
         outputOn, hotkeysOn, presetBase, dockOpen, previewWanted,
         ...defaults,
@@ -360,6 +372,7 @@
       onMs:    manualOnMs,
       depth:   manualDepth / 100,
       build:   manualBuild,
+      onFromMs: manualOnFromMs,
       buildAmp: manualBuildAmp,
       ampFrom:  manualAmpFrom / 100,
       ceiling: manualCeiling / 100,
@@ -368,6 +381,10 @@
   }
 
   function setManual(on, level) {
+    if (on === false && autoManualActive && !autoManualInternal) {
+      autoManualActive = false;
+      autoManualVeto   = true;
+    }
     if (typeof level === "number") manualLevel = Math.max(0, Math.min(100, Math.round(level)));
     if (typeof on === "boolean")   manualOn    = on;
     updateManualUI();
@@ -407,6 +424,7 @@
       shape: manualShape, period: manualPeriod, onMs: manualOnMs,
       depth: manualDepth, build: manualBuild, ceiling: manualCeiling,
       microMs: manualMicroMs, buildAmp: manualBuildAmp, ampFrom: manualAmpFrom,
+      onFromMs: manualOnFromMs,
     };
   }
 
@@ -424,6 +442,8 @@
       // Presets saved before 1.22 have neither; they load as "no strength build".
       buildAmp: Math.round(num(p?.buildAmp, 0, 200, 0)),
       ampFrom:  Math.round(num(p?.ampFrom, 0, 100, 20)),
+      // Presets saved before 1.29 grew from the old fixed 60 ms.
+      onFromMs: Math.round(num(p?.onFromMs, 60, 10000, 60)),
     };
   }
 
@@ -434,7 +454,7 @@
     if (shape !== "constant") f.push("period");
     if (shape === "pulse" || shape === "tease") f.push("onMs");
     if (shape === "wave" || shape === "ramp" || shape === "random") f.push("depth");
-    if (shape === "tease") f.push("build", "buildAmp", "ampFrom");
+    if (shape === "tease") f.push("build", "buildAmp", "ampFrom", "onFromMs");
     return f;
   }
 
@@ -459,6 +479,7 @@
     manualShape = c.shape;   manualPeriod  = c.period;  manualOnMs    = c.onMs;
     manualDepth = c.depth;   manualBuild   = c.build;   manualCeiling = c.ceiling;
     manualMicroMs = c.microMs; manualBuildAmp = c.buildAmp; manualAmpFrom = c.ampFrom;
+    manualOnFromMs = c.onFromMs;
     saveSettingsToStorage();
     updateManualUI();
     // Pattern only. sendManual() also carries the current on/off, which is
@@ -721,6 +742,7 @@
       onms:    burst,
       depth:   manualShape === "wave" || manualShape === "ramp" || manualShape === "random",
       build:   manualShape === "tease",
+      onfrom:  manualShape === "tease" && manualBuild > 0,
       buildamp: manualShape === "tease",
       ampfrom: manualShape === "tease" && manualBuildAmp > 0,
       ceiling: true,
@@ -741,6 +763,18 @@
       if (help) help.textContent = burst
         ? "Time from the start of one buzz to the start of the next."
         : "How long one full rise and fall takes.";
+    }
+
+    // With a length build-up, "Buzz length" is where the buzzes end up.
+    const onBox = byId(`${PLUGIN_ID}-manual-onms-box`);
+    if (onBox) {
+      const growing = manualShape === "tease" && manualBuild > 0;
+      const lab  = onBox.querySelector("label");
+      const help = onBox.querySelector(`.${PLUGIN_ID}-field-help`);
+      if (lab)  lab.textContent  = growing ? "Final buzz length" : "Buzz length";
+      if (help) help.textContent = growing
+        ? "How long the buzzes get once the length build-up is done."
+        : "How long each buzz lasts. Short feels like a tap, long like a throb.";
     }
 
     // The timing section can end up with nothing in it (Steady).
@@ -1023,10 +1057,11 @@
       updateToolbarInfo(msg.message);
       eventInfoActive = true;
       clearTimeout(eventInfoTimer);
+      if (msg.safety) autoManualActive = false;
       eventInfoTimer = setTimeout(() => {
         eventInfoActive = false;
         updateToolbarStatus();
-      }, 4000);
+      }, msg.safety ? 15000 : 4000);
 
       if (msg.uploaded && videoEl && !videoEl.paused && !videoEl.ended) {
         const t = videoEl.currentTime * 1000;
@@ -1065,6 +1100,9 @@
       }
       if (typeof msg.manual === "boolean" && msg.manual !== manualOn) {
         manualOn = msg.manual;
+        // Deliberately not clearing autoManualActive here: a status sent just
+        // before our own manual message says "off", and trusting it made the
+        // plugin forget it had turned manual on, so pause left it running.
         updateManualUI();
       }
       // The device tells us its real resolution, so the panel can say how far
@@ -1121,9 +1159,14 @@
 
       if (funscripts.length === 0) {
         pendingPlay = null;
+        sceneHasNoScript = true;
         applyScriptSettingsFor(null);
         updateFunscriptSelector();
+        // the previous scene's script must not play against this video
+        if (isOwner) sendMsg({ type: "unloadScript" });
+        autoManualCheck();
       } else {
+        sceneHasNoScript = false;
         selectedFunscript = defaultScript || funscripts[0];
         // this script's remembered tuning, before the script itself loads
         applyScriptSettingsFor(selectedFunscript);
@@ -1146,6 +1189,28 @@
     updateFunscriptSelector();
   }
 
+  // ── Manual on scenes without a script ─────────────────────────────────────
+  // Only while the video plays, only in the driving tab, never over a manual
+  // session the user started, and not again this scene if they turned it off.
+  // It ends on pause, end or leaving the scene. Turning manual off is always
+  // safe; the deadman still covers a tab that dies mid-scene.
+  function autoManualCheck() {
+    if (!autoManual || !isOwner || !sceneHasNoScript || autoManualVeto) return;
+    if (manualOn || !videoIsPlaying()) return;
+    autoManualInternal = true;
+    try { setManual(true); } finally { autoManualInternal = false; }
+    autoManualActive = true;
+    updateToolbarInfo("No funscript for this scene: playing your manual pattern");
+    log("No script: manual pattern on while the video plays");
+  }
+
+  function autoManualStop() {
+    if (!autoManualActive) return;
+    autoManualActive = false;
+    autoManualInternal = true;
+    try { setManual(false); } finally { autoManualInternal = false; }
+  }
+
   // ── Stop-Helper ────────────────────────────────────────────────────────────
   function stopPlayback(reason) {
     pendingPlay = null;
@@ -1158,6 +1223,7 @@
     videoEl = video;
 
     video.addEventListener("play", () => {
+      setTimeout(autoManualCheck, 0);
       const t = video.currentTime * 1000;
       log(`Video play @ ${t.toFixed(0)}ms`, "debug");
       sendPresence();
@@ -1183,6 +1249,7 @@
 
     video.addEventListener("pause", () => {
       log("Video pause", "debug");
+      autoManualStop();
       pendingPlay = null;
       sendPresence();                     // let other tabs see we are idle right away
       sendMsg({ type: "pause" });
@@ -1200,6 +1267,7 @@
 
     video.addEventListener("ended", () => {
       log("Video ended", "debug");
+      autoManualStop();
       pendingPlay = null;
       sendMsg({ type: "pause" });
     });
@@ -2113,7 +2181,8 @@ function injectStyles() {
           let this_on = on_s;
           if (p.build > 0) {
             const frac = Math.min(1, Math.floor(t / period) / p.build);
-            this_on = MIN_ON_S + (on_s - MIN_ON_S) * frac;
+            const from = Math.max(MIN_ON_S, Math.min(on_s, (p.onFromMs ?? 60) / 1000));
+            this_on = from + (on_s - from) * frac;
           }
           v = phase_s < this_on ? 1 : 0;
           if (v && p.buildAmp > 0) {
@@ -2174,8 +2243,9 @@ function injectStyles() {
       case "ramp":     return `Climbs from ${low} to ${pk} over ${per}, then drops back and climbs again.`;
       case "tease": {
         const start = `${Math.round(peak * p.ampFrom)}%`;
+        const from = Math.max(MIN_ON_S, Math.min(p.onMs / 1000, (p.onFromMs ?? 60) / 1000));
         const len = p.build > 0
-          ? ` Buzzes grow from ${fmtSecs(MIN_ON_S)} to ${on} long over ${p.build} buzzes (${fmtSecs(p.build * p.period)}).`
+          ? ` Buzzes grow from ${fmtSecs(from)} to ${on} long over ${p.build} buzzes (${fmtSecs(p.build * p.period)}).`
           : "";
         const str = p.buildAmp > 0
           ? ` Strength climbs from ${start} to ${pk} over ${p.buildAmp} buzzes (${fmtSecs(p.buildAmp * p.period)}).`
@@ -2605,6 +2675,14 @@ function injectStyles() {
       "How low it falls between peaks, as a share of the peak. 0 falls all the way to silence.",
       { min: 0, max: 95, curve: "lin", unit: "%", inputStep: 5 },
       () => manualDepth, (v) => { manualDepth = Math.round(v); }
+    ));
+    timing.appendChild(knobRow(
+      "onfrom", "Starting buzz length",
+      "How long the first buzz is. Each one after it grows a little until it reaches the buzz length above.",
+      { min: 60, max: 10000, curve: "log", unit: "sec", inputStep: 0.05,
+        show: (v) => Math.round(v) / 1000, parse: (v) => v * 1000 },
+      () => manualOnFromMs,
+      (v) => { manualOnFromMs = v < 1000 ? Math.round(v / 10) * 10 : Math.round(v / 50) * 50; }
     ));
     timing.appendChild(knobRow(
       "build", "Length build-up",
@@ -3422,6 +3500,24 @@ function injectStyles() {
     subBtn.addEventListener("click", toggleMicro);
     row2.appendChild(subBtn);
 
+    const autoBtn = document.createElement("button");
+    const showAuto = () => {
+      autoBtn.textContent = autoManual ? "No script: manual on" : "No script: silent";
+      autoBtn.classList.toggle("is-on", autoManual);
+      autoBtn.title = autoManual
+        ? "Scenes without a funscript play your manual pattern while the video plays, " +
+          "and stop when it pauses. Click to keep them silent instead."
+        : "Scenes without a funscript stay silent. Click to play your manual pattern on them.";
+    };
+    showAuto();
+    autoBtn.addEventListener("click", () => {
+      autoManual = !autoManual;
+      saveSettingsToStorage();
+      showAuto();
+      if (autoManual) autoManualCheck(); else autoManualStop();
+    });
+    row2.appendChild(autoBtn);
+
     const hotkeyBtn = document.createElement("button");
     hotkeyBtn.id = `${PLUGIN_ID}-hotkey-btn`;
     hotkeyBtn.addEventListener("click", () => {
@@ -3634,6 +3730,13 @@ function injectStyles() {
 
   async function onSceneLoad(sceneId) {
     log(`Scene loaded: ${sceneId}`);
+    // A new scene starts clean: an automatic manual session from the last one
+    // ends, and nothing plays until this scene's script (or its absence) is
+    // known.
+    autoManualStop();
+    autoManualVeto   = false;
+    sceneHasNoScript = false;
+    if (isOwner) sendMsg({ type: "unloadScript" });
     funscriptLoaded       = false;
     pendingPlay           = null;
     pendingFindFunscripts = null;
