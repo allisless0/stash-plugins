@@ -16,7 +16,7 @@ are, including several fixes that look removable and are not.
    See docs/MAINTENANCE.md §4.5.
 2. **Validate before claiming done:** `./scripts/validate.sh`. It runs
    `node --check`, `py_compile`, YAML parsing, safety-chain greps, and the
-   44-check IntifaceSync suite. A change is not finished until it passes.
+   47-check IntifaceSync suite. A change is not finished until it passes.
 3. **Bump the version in the plugin's `.yml`** for every functional change.
    Stash caches aggressively and an unchanged version makes debugging a guess.
 4. **Add a test for every backend behaviour change.** `plugins/IntifaceSync/test_vibe.py`

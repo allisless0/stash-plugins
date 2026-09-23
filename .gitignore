@@ -7,3 +7,4 @@ intiface_sync.log
 *.mp4
 .claude/settings.local.json
 _site/
+*.log.*

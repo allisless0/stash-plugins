@@ -114,7 +114,17 @@ VIBE_STEP             = 0.05    # quantise to 20 levels (Lovense native StepCoun
 VIBE_GAP_MS           = 1500    # keyframe gap longer than this = idle, go silent
 VIBE_DEFAULT_MAXSPEED = 500.0   # funscript units/sec that maps to full intensity
 VIBE_DEFAULT_SMOOTH   = 0.30    # EMA alpha per tick (1.0 = no smoothing)
-VIBE_MODES            = ("off", "speed", "position", "beat", "auto")
+VIBE_MODES            = ("off", "speed", "position", "beat", "auto", "flow")
+# Flow mode: the whole script is rendered to an intensity track when it loads.
+# See render_flow() for why this beats working it out tick by tick.
+FLOW_STEP_MS          = 25      # resolution of the rendered track
+FLOW_DEFAULT_SMOOTH   = 0.50    # 0 follows each stroke, 1 follows the scene
+FLOW_DEFAULT_RHYTHM   = 0.30    # 0 smooth level, 1 a burst per stroke turn
+FLOW_DEFAULT_GAIN     = 1.00    # sensitivity around the script's own level
+FLOW_REF_PCT          = 0.90    # envelope percentile that means "full"
+FLOW_CUTOFF           = 0.05    # below this the tail of a release is silence
+FLOW_CURVE            = 0.75    # <1 lifts quiet passages; linear left slow scenes near the floor
+FLOW_OVERVIEW_POINTS  = 400     # whole-scene intensity strip for the UI
 # beat mode: one short burst per keyframe, silence between. For Cock Hero style
 # scripts that are nothing but 0/100 square waves locked to the music.
 BEAT_DEFAULT_ON_MS    = 120     # burst length
@@ -759,6 +769,108 @@ def extract_peaks(actions: list,
     return out
 
 
+def render_flow(actions: list, turns: list, smooth: float = FLOW_DEFAULT_SMOOTH,
+                rhythm: float = FLOW_DEFAULT_RHYTHM, gain: float = FLOW_DEFAULT_GAIN,
+                step_ms: int = FLOW_STEP_MS) -> tuple[int, list]:
+    """Render a stroke script to a vibration track: (t0_ms, [level 0-1 per step]).
+
+    Why render instead of computing each tick: with the whole script in hand
+    the level can be normalised to this script's own busy parts (so no global
+    sensitivity guess), smoothed with lookahead (so it rises with the action
+    instead of after it), faded out when the action stops, and inspected or
+    tested as a plain list.
+
+    1. Stroke speed on a fixed grid, zero across idle gaps.
+    2. Envelope follower: fast attack, slower release, both set by `smooth`.
+       Shifted earlier by most of the attack so rises land on the action.
+    3. Normalised so the envelope's FLOW_REF_PCT percentile over active time
+       is 1.0, times `gain`, then through a gentle curve (FLOW_CURVE) so slow
+       passages stay above the motor floor. Release tails below FLOW_CUTOFF
+       are cut to zero, or a floor in the intensity limits would hum for
+       seconds after a scene.
+    4. Rhythm. Between consecutive turning points the level is held constant:
+       on for the first part of the stroke, then dipped by `rhythm`. Holding
+       it constant is what keeps this inside the BLE budget: one beat is at
+       most two commands, and turning points are at least BEAT_PEAK_MIN_SEP_MS
+       apart.
+    """
+    if len(actions) < 2:
+        return (0, [])
+    smooth = max(0.0, min(1.0, float(smooth)))
+    rhythm = max(0.0, min(1.0, float(rhythm)))
+    gain   = max(0.05, float(gain))
+    att_ms = 60.0 + smooth * 300.0
+    rel_ms = 250.0 + smooth * 1750.0
+
+    t0 = int(actions[0]["at"])
+    t_end = int(actions[-1]["at"] + rel_ms * 3)
+    n = max(1, (t_end - t0) // step_ms + 1)
+
+    # 1. speed per grid step
+    speed = [0.0] * n
+    for i in range(len(actions) - 1):
+        a, b = actions[i], actions[i + 1]
+        span = b["at"] - a["at"]
+        if span <= 0 or span > VIBE_GAP_MS:
+            continue
+        v = abs(b["pos"] - a["pos"]) / span * 1000.0
+        if v <= 0:
+            continue
+        j0 = max(0, int((a["at"] - t0) // step_ms))
+        j1 = min(n, int((b["at"] - t0) // step_ms) + 1)
+        for j in range(j0, j1):
+            if v > speed[j]:
+                speed[j] = v
+
+    # 2. envelope, then lookahead shift
+    k_att = 1.0 - math.exp(-step_ms / att_ms)
+    k_rel = 1.0 - math.exp(-step_ms / rel_ms)
+    env = [0.0] * n
+    e = 0.0
+    for j in range(n):
+        v = speed[j]
+        e += (v - e) * (k_att if v > e else k_rel)
+        env[j] = e
+    shift = int(att_ms * 0.7 // step_ms)
+    if shift:
+        env = env[shift:] + [env[-1]] * shift
+
+    # 3. normalise against this script's own busy parts
+    active = sorted(env[j] for j in range(n) if speed[j] > 0)
+    if not active:
+        return (t0, [0.0] * n)
+    ref = active[min(len(active) - 1, int(len(active) * FLOW_REF_PCT))]
+    if ref <= 0:
+        return (t0, [0.0] * n)
+    lvl = [0.0] * n
+    for j in range(n):
+        x = env[j] / ref * gain
+        lvl[j] = 0.0 if x < FLOW_CUTOFF else (1.0 if x > 1.0 else x ** FLOW_CURVE)
+
+    # 4. rhythm: hold each beat at one level, dip after the on-part
+    if rhythm > 0.0 and len(turns) >= 2:
+        for i in range(len(turns) - 1):
+            ta, tb = turns[i]["at"], turns[i + 1]["at"]
+            iv = tb - ta
+            if iv <= 0 or iv > BEAT_GAP_MS:
+                continue
+            j0 = max(0, int((ta - t0) // step_ms))
+            j1 = min(n, int((tb - t0) // step_ms))
+            if j1 <= j0:
+                continue
+            level = max(lvl[j0:j1])
+            if level <= 0.0:
+                continue
+            on_ms = max(MANUAL_MIN_ON_MS, min(400.0, iv * 0.45, iv - BEAT_MIN_GAP_MS))
+            j_on = min(j1, j0 + max(1, int(on_ms // step_ms)))
+            low = level * (1.0 - rhythm)
+            for j in range(j0, j_on):
+                lvl[j] = level
+            for j in range(j_on, j1):
+                lvl[j] = low
+    return (t0, lvl)
+
+
 def is_dense_script(actions: list) -> bool:
     """Fixed-rate tracker output: keyframes closer together than a stroke."""
     if len(actions) < BEAT_DETECT_MIN:
@@ -894,6 +1006,14 @@ class FunscriptPlayer:
         self._beat_amp_ref      = BEAT_AMP_REF_MAX  # swing that means full intensity
         self._beats_peak_picked = False  # dense script reduced to turnarounds
         self._beats             = []     # keyframes beat mode fires on
+        # flow mode: rendered intensity track, rebuilt on load and on tuning
+        self.flow_smooth        = FLOW_DEFAULT_SMOOTH
+        self.flow_rhythm        = FLOW_DEFAULT_RHYTHM
+        self.flow_gain          = FLOW_DEFAULT_GAIN
+        self._flow_t0           = 0
+        self._flow              = []
+        self._flow_turns        = []
+        self.overview_cb        = None    # callable(dict) when the rendered track changes
         # dedicated vibrator track, played as intensity when present and enabled
         self.vibe_track         = []
         self.vibe_track_enabled = True
@@ -942,7 +1062,8 @@ class FunscriptPlayer:
     def apply_settings(self, offset_ms=None, stroke_min=None, stroke_max=None, invert=None,
                        vibe_mode=None, vibe_max_speed=None, vibe_smooth=None,
                        vibe_substep=None, beat_on_ms=None, beat_edge=None,
-                       beat_prominence=None, vibe_track=None):
+                       beat_prominence=None, vibe_track=None, flow_smooth=None,
+                       flow_rhythm=None, flow_gain=None):
         if offset_ms is not None and int(offset_ms) != self.offset_ms:
             self.offset_ms = int(offset_ms)
             # the stroker index was seated against the old offset
@@ -962,12 +1083,26 @@ class FunscriptPlayer:
             if abs(newp - self.beat_prominence) > 0.01:
                 self.beat_prominence = newp
                 self._rebuild_beats()
+                self._flow_turns = extract_peaks(self.actions, self.beat_prominence,
+                                                 BEAT_PEAK_MIN_SEP_MS) if self.actions else []
+                self._render_flow()
         if vibe_max_speed is not None:
             self.vibe_max_speed = max(50.0, float(vibe_max_speed))
         if vibe_smooth is not None:
             self.vibe_smooth = max(0.05, min(1.0, float(vibe_smooth)))
         if vibe_track is not None:
             self.vibe_track_enabled = bool(vibe_track)
+        flow_changed = False
+        for name, val, lo, hi in (("flow_smooth", flow_smooth, 0.0, 1.0),
+                                  ("flow_rhythm", flow_rhythm, 0.0, 1.0),
+                                  ("flow_gain",   flow_gain,   0.25, 4.0)):
+            if val is not None:
+                v = max(lo, min(hi, float(val)))
+                if abs(v - getattr(self, name)) > 1e-4:
+                    setattr(self, name, v)
+                    flow_changed = True
+        if flow_changed:
+            self._render_flow()
         if vibe_substep is not None:
             self.substep_enabled = bool(vibe_substep)
             if not self.substep_enabled:
@@ -977,7 +1112,8 @@ class FunscriptPlayer:
                  f"range=[{self.stroke_min:.2f},{self.stroke_max:.2f}] invert={self.invert} "
                  f"vibe={self.vibe_mode}/{self.vibe_max_speed:.0f}/{self.vibe_smooth:.2f} "
                  f"substep={self.substep_enabled} "
-                 f"beat={self.beat_on_ms:.0f}ms/{self.beat_edge}/prom{self.beat_prominence:.0f}")
+                 f"beat={self.beat_on_ms:.0f}ms/{self.beat_edge}/prom{self.beat_prominence:.0f} "
+                 f"flow={self.flow_smooth:.2f}/{self.flow_rhythm:.2f}/x{self.flow_gain:.2f}")
 
     def _reset_vibe(self) -> None:
         self._vibe_level     = 0.0
@@ -1106,8 +1242,38 @@ class FunscriptPlayer:
 
     def effective_vibe_mode(self) -> str:
         if self.vibe_mode == "auto":
-            return "beat" if self._script_is_beat else "speed"
+            return "beat" if self._script_is_beat else "flow"
         return self.vibe_mode
+
+    def _render_flow(self) -> None:
+        t = time.monotonic()
+        self._flow_t0, self._flow = render_flow(self.actions, self._flow_turns,
+                                                self.flow_smooth, self.flow_rhythm,
+                                                self.flow_gain)
+        ms = (time.monotonic() - t) * 1000.0
+        if self._flow:
+            log_debug(f"Flow rendered: {len(self._flow)} steps in {ms:.0f}ms")
+        if self.overview_cb is not None:
+            try:
+                self.overview_cb(self.flow_overview())
+            except Exception as e:
+                log.debug(f"Overview callback failed: {e}")
+
+    def _flow_level(self, t_ms: float) -> float:
+        if not self._flow:
+            return 0.0
+        j = int((t_ms - self._flow_t0) // FLOW_STEP_MS)
+        return self._flow[j] if 0 <= j < len(self._flow) else 0.0
+
+    def flow_overview(self, points: int = FLOW_OVERVIEW_POINTS) -> dict:
+        """Peak level per bucket across the whole scene, for the intensity strip."""
+        f = self._flow
+        if not f:
+            return {"t0": 0, "t1": 0, "levels": []}
+        per = max(1, math.ceil(len(f) / points))
+        levels = [round(max(f[i:i + per]), 3) for i in range(0, len(f), per)]
+        return {"t0": self._flow_t0, "t1": self._flow_t0 + len(f) * FLOW_STEP_MS,
+                "levels": levels}
 
     @staticmethod
     def _beat_index(actions: list, t_ms: float) -> int:
@@ -1227,6 +1393,12 @@ class FunscriptPlayer:
         # Beat mode fires on turnarounds, which for a dense script are a small
         # subset of the keyframes. Mark them so the scope shows why a burst
         # happened where it did.
+        if self.effective_vibe_mode() == "flow" and self._flow and not self.using_vibe_track():
+            j0 = max(0, int((lo - self._flow_t0) // FLOW_STEP_MS))
+            j1 = min(len(self._flow), int((hi - self._flow_t0) // FLOW_STEP_MS) + 1)
+            stride = max(1, (j1 - j0) // PREVIEW_SCRIPT_MAX + 1)
+            out["flow"] = [[round(self._flow_t0 + j * FLOW_STEP_MS), round(self._flow[j], 3)]
+                           for j in range(j0, j1, stride)]
         if self.effective_vibe_mode() == "beat" and self._beats:
             b0 = max(0, self._beat_index(self._beats, lo))
             beats = []
@@ -1363,6 +1535,11 @@ class FunscriptPlayer:
             raw    = self._vibe_track_level(now_ms)
             target = self._shape(raw, allow_invert=False)
             self._vibe_level = target          # authored edges, no EMA
+            state  = (raw, 0.0)
+        elif mode == "flow":
+            raw    = self._flow_level(now_ms)
+            target = self._shape(raw)
+            self._vibe_level = target          # already smoothed by the render
             state  = (raw, 0.0)
         elif mode == "beat":
             target = self._beat_target(now_ms)
@@ -1629,6 +1806,9 @@ class FunscriptPlayer:
         self._script_is_beat   = bool(self._script_beat_kind)
         self._beat_level_src   = "amp" if self._script_beat_kind == "graded" else "speed"
         self._rebuild_beats()
+        self._flow_turns = (extract_peaks(self.actions, self.beat_prominence, BEAT_PEAK_MIN_SEP_MS)
+                            if self.actions else [])
+        self._render_flow()
         if self.actions:
             extra = ""
             if self._script_is_beat:
@@ -1996,6 +2176,8 @@ class BackendServer:
         self._intiface_url    = "ws://localhost:12345"
         self.bp               = ButtplugClient(self._intiface_url)
         self.player           = FunscriptPlayer(self.bp)
+        self._last_overview   = None
+        self.player.overview_cb = self._overview_emit
 
         # Handy WiFi
         self._handy_key       = ""
@@ -2017,6 +2199,16 @@ class BackendServer:
             msg["script"] = script
         try:
             asyncio.ensure_future(self._broadcast(msg))
+        except RuntimeError:
+            pass
+
+    def _overview_emit(self, overview: dict) -> None:
+        """The rendered Flow track changed: send the whole-scene strip."""
+        self._last_overview = overview
+        if not self.clients:
+            return
+        try:
+            asyncio.ensure_future(self._broadcast({"type": "overview", **overview}))
         except RuntimeError:
             pass
 
@@ -2212,6 +2404,7 @@ class BackendServer:
 
             self.bp     = ButtplugClient(url)
             self.player = FunscriptPlayer(self.bp)
+            self.player.overview_cb = self._overview_emit
 
             # A script loaded while idle must survive the swap, or connecting a
             # device would silently unload it.
@@ -2371,6 +2564,9 @@ class BackendServer:
                         beat_edge      = msg.get("beatEdge"),
                         beat_prominence = msg.get("beatProminence"),
                         vibe_track     = msg.get("vibeTrack"),
+                        flow_smooth    = msg.get("flowSmooth"),
+                        flow_rhythm    = msg.get("flowRhythm"),
+                        flow_gain      = msg.get("flowGain"),
                     )
             else:
                 # Handy-Mode
@@ -2642,6 +2838,8 @@ class BackendServer:
         log.info(f"Frontend connected: {ws.remote_address} (clients={len(self.clients)})")
         try:
             await self._broadcast_status()
+            if self._last_overview:
+                await ws.send(json.dumps({"type": "overview", **self._last_overview}))
             async for raw in ws:
                 self._last_seen = time.monotonic()
                 try:

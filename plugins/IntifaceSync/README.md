@@ -94,13 +94,22 @@ pattern panel and give it a name. Click a preset to load it.
 
 **Vibe mode** decides how a stroking script becomes vibration:
 
-- **Auto** — picks for you. Use this.
-- **Speed** — intensity follows stroke speed.
-- **Position** — intensity follows stroke position.
-- **Beat** — one burst per stroke turnaround. Suits Cock Hero scripts and, with
+- **Auto**: picks for you (Beat for Cock Hero style scripts, Flow for the
+  rest). Start here.
+- **Flow**: made for vibrators. It reads the whole script when it loads and
+  follows how busy the scene is, levelled to that script, so a slow script and
+  a frantic one both use the full range. Three sliders:
+  - **Smoothness**: left follows each stroke, right follows the scene and
+    fades gently when the action stops.
+  - **Rhythm**: how much each stroke pulses on top. 0 is a smooth buzz, all the
+    way right is a burst per stroke.
+  - **Sensitivity**: right makes quieter parts stronger, left calms it down.
+- **Beat**: one burst per stroke turnaround. Suits Cock Hero scripts and, with
   peak picking, tracker-generated ones too. Auto also recognises "graded" beat
   scripts (Cock Hero Colors style), where the height of each stroke sets how
   strong the burst is.
+- **Speed (classic)**: intensity follows stroke speed against a fixed scale.
+- **Position**: intensity follows stroke position.
 
 **Vibrator tracks.** Some scripts come with a second file made for vibrators,
 named like `Scene.vib.funscript` next to `Scene.funscript`. When one is there

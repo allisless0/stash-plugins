@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
-| IntifaceSync (vibe fork) | 1.23-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.24-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -610,6 +610,41 @@ set, so a later `manual` message (a slider nudge) could re-arm tease on that
 player. Rule 1 says every stop-type path calls `_panic()`; this one now does
 so first, then disconnects as before. Test 39.
 
+**Flow mode (1.24): render, don't compute per tick.** The complaint was
+that funscripts are written for strokers and none of speed / position / beat
+feel right on a vibrator. Speed mode follows each segment, so it is a
+staircase that jumps at every turn and needs a global `vibe_max_speed` guess
+that is wrong for most scripts. Beat mode is the opposite extreme.
+
+`render_flow(actions, turns, smooth, rhythm, gain)` turns the whole script
+into a 25 ms intensity list when it loads:
+
+1. stroke speed on the grid, zero across `VIBE_GAP_MS` gaps;
+2. an attack/release envelope (attack 60-360 ms, release 250-2000 ms, both
+   from `smooth`), shifted earlier by 70% of the attack so rises land on the
+   action instead of after it;
+3. normalised so the 90th percentile of the active envelope is 1.0, times
+   `gain`, through `x ** FLOW_CURVE` (0.75, lifts slow passages off the motor
+   floor; linear left a slow scene at 26%), with release tails under
+   `FLOW_CUTOFF` cut to silence;
+4. rhythm: between consecutive turning points (`extract_peaks` with the beat
+   prominence, `BEAT_PEAK_MIN_SEP_MS` apart) the level is **held constant**,
+   on for the first ~45% of the stroke then dipped by `rhythm`. Holding it
+   constant is the BLE guarantee: one beat is at most two commands.
+
+Playback is a list lookup in `_vibe_tick` (no EMA; the render already
+smoothed). Auto now means Beat for beat scripts and **Flow** otherwise (test
+23's expectation changed from speed to flow on purpose). JS default for new
+installs is `auto`; saved settings keep their mode. The preview window
+carries `flow` points (drawn dashed purple, "flow plan"), and
+`overview_cb` sends a 400-point whole-scene strip (`type: "overview"`) on
+load and on every re-render; the server caches the last one for new
+clients. Render cost: ~120 ms for a one-hour 30 fps tracker script on the
+dev machine, on load and on releasing a Flow slider, on the event loop.
+If the Unraid box is much slower, move `_render_flow` to an executor.
+Tests 45-47 (per-script levelling, fade-out, lookahead, rhythm, budget
+sweep over rhythm 0/0.5/1 and 100-600 ms strokes, worst 10.6 cmd/s).
+
 **Dedicated vibrator tracks (1.23).** Some scripts ship a track written
 for vibrators next to the main one (`Scene.vib.funscript`, the multi-axis
 suffix convention; also `vibe`, `vibrate`, `vibration`, `vibrator`, `v0`).
@@ -689,7 +724,7 @@ semantics, fake backend socket): save, edit, update, revert, reload, fresh
 browser, two tabs, and a stale-settings-page overwrite. Not tested in a real
 Stash.
 
-**Tests:** `test_vibe.py`, 44 checks, run from the plugin's parent directory:
+**Tests:** `test_vibe.py`, 47 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -762,7 +797,8 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Clock sync untested on hardware. Check `driftMs` in the status payload during a long scene; it should stay under ~150 and never trend. |
 | IntifaceSync | `SYNC_GAIN` 0.25 at a 2 s heartbeat means a 100 ms drift takes ~8 s to ease out. Fine for vibrators, possibly too slow for a stroker. |
 | IntifaceSync | Beat mode untested on hardware. Cock Hero: `Auto`, raise burst ms if slow sections are inaudible. FunGen: `Beat` manually, drop `vibeMaxSpeed` to ~250, tune prominence. |
-| IntifaceSync | Beat level scaling is not normalised per script; tracker scripts need roughly half the `vibeMaxSpeed` of beat scripts. Auto-scaling from picked-script statistics is the obvious follow-up. |
+| IntifaceSync | Beat level scaling is not normalised per script (Flow is, since 1.24). Flow on a beat script with Rhythm near 100% may make Beat mode redundant; check on a Cock Hero file before removing anything. |
+| IntifaceSync | Flow constants (attack/release ranges, `FLOW_CURVE` 0.75, 90th-percentile reference) were tuned on synthetic scripts only. Tune on the user's real files with the signal preview. |
 | IntifaceSync | `BEAT_DENSE_MEDIAN_MS` 150 is a guess. A tracker running at 10fps (100ms) is caught; one at 6fps (167ms) is not and would fire per raw keyframe. |
 | IntifaceSync | Micro pulsing untested on real hardware; may read as a tick rather than a hum at low duty. |
 | IntifaceSync | Graded beat detection tested only on synthetic scripts. Thresholds (`BEAT_ALT_FRAC` 0.90, `BEAT_MIN_MEDIAN_SWING` 25, `BEAT_GRID_FRAC` 0.60, grid tolerance 8%) are guesses. Check that a real "Colors" script classifies as `graded` and a hand-scripted stroker file stays `""`. Swing-based levels apply to graded scripts only; the edge and peak-picked paths are still pace-based and unnormalised. |

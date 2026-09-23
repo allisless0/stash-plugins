@@ -540,16 +540,16 @@ async def _beat():
             assert len(levels) / 10 <= 11, f"{iv}ms: {len(levels)/10:.1f} cmd/s over budget"
             assert abs(on[0] - expect_level) < 0.03, f"{iv}ms: level {on[0]:.2f} != {expect_level}"
             print(f"   {iv:4d}ms beat: {len(on)} bursts @ {on[0]:.2f}, {len(levels)/10:.1f} cmd/s  OK")
-        # non-beat script under auto falls back to speed mode
+        # non-beat script under auto falls back to flow mode (speed before 1.24)
         p.load(wavy)
-        assert p.effective_vibe_mode() == "speed"
+        assert p.effective_vibe_mode() == "flow"
         # explicit beat on a wavy script still runs (user's choice)
         p.apply_settings(vibe_mode="beat")
         assert p.effective_vibe_mode() == "beat"
     finally:
         isync.time.monotonic = real
 asyncio.run(_beat())
-print("   auto falls back to speed on a normal script  OK")
+print("   auto falls back to flow on a normal script  OK")
 
 print("\nFORK 1.11 TESTS PASSED")
 
@@ -1114,3 +1114,94 @@ finally:
     _sh.rmtree(_d, ignore_errors=True)
 
 print("\nFORK 1.23 TESTS PASSED")
+
+
+# ── 45-47. 1.24 flow mode: rendered intensity track ──────────────────────────
+def _strokes(t_from, t_to, iv, lo=0, hi=100):
+    out, k = [], 0
+    for t in range(t_from, t_to, iv):
+        out.append({"at": t, "pos": lo if k % 2 == 0 else hi}); k += 1
+    return out
+# fast 0-10 s, slow 10-20 s, nothing 20-30 s, fast again 30-40 s
+_mixed = (_strokes(0, 10000, 200) + _strokes(10000, 20000, 800)
+          + _strokes(30000, 40000, 200))
+_mixed_half = (_strokes(0, 10000, 200, 25, 75) + _strokes(10000, 20000, 800, 25, 75)
+               + _strokes(30000, 40000, 200, 25, 75))
+
+print("45. flow follows the scene, levels itself per script, fades out, rises on time")
+def _lv(t0_levels, t):
+    t0, lv = t0_levels
+    j = (t - t0) // isync.FLOW_STEP_MS
+    return lv[j] if 0 <= j < len(lv) else 0.0
+def _mean(r, a, b):
+    xs = [_lv(r, t) for t in range(a, b, 25)]
+    return sum(xs) / len(xs)
+r = isync.render_flow(_mixed, isync.extract_peaks(_mixed), rhythm=0.0)
+fast, slow = _mean(r, 3000, 9000), _mean(r, 13000, 19000)
+assert fast > 0.8, f"busy section should be near full, got {fast:.2f}"
+assert 0.1 < slow < 0.6, f"slow section should be clearly lower, got {slow:.2f}"
+assert _lv(r, 25000) == 0.0, f"tail must fade to silence, got {_lv(r, 25000):.3f}"
+assert _lv(r, 30150) > 0.3, f"lookahead: should already be rising at 30.15 s, got {_lv(r, 30150):.2f}"
+r_half = isync.render_flow(_mixed_half, isync.extract_peaks(_mixed_half, 10), rhythm=0.0)
+assert abs(_mean(r_half, 3000, 9000) - fast) < 0.1, "half-amplitude script should level to the same"
+r_gain = isync.render_flow(_mixed, isync.extract_peaks(_mixed), rhythm=0.0, gain=2.0)
+assert _mean(r_gain, 13000, 19000) > slow * 1.5, "sensitivity should lift quiet parts"
+r_sharp = isync.render_flow(_mixed, isync.extract_peaks(_mixed), smooth=0.0, rhythm=0.0)
+r_soft  = isync.render_flow(_mixed, isync.extract_peaks(_mixed), smooth=1.0, rhythm=0.0)
+tail = lambda rr: next(t for t in range(20000, 30000, 25) if _lv(rr, t) == 0.0)
+assert tail(r_sharp) < tail(r_soft), "more smoothness should fade out more slowly"
+print(f"   fast {fast:.2f}, slow {slow:.2f}, half-amp fast {_mean(r_half, 3000, 9000):.2f}, "
+      f"silent by {tail(r)/1000:.1f} s  OK")
+
+print("46. rhythm adds a pulse per stroke and every setting stays inside the BLE budget")
+async def _flow_budget():
+    worst = 0.0
+    for rhythm in (0.0, 0.5, 1.0):
+        for iv in (100, 190, 300, 600):
+            bp = FakeBP([GUSH]); p = isync.FunscriptPlayer(bp)
+            p.load(_strokes(0, 22000, iv))
+            p.apply_settings(vibe_mode="flow", flow_rhythm=rhythm)
+            devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+            try:
+                for k in range(0, 20000, 20):
+                    isync.time.monotonic = lambda: t0 + k / 1000.0
+                    await p._vibe_tick(1000 + k, devs)
+            finally:
+                isync.time.monotonic = real
+            lv = [pl["Scalars"][0]["Scalar"] for m, pl in bp.sent if m == "ScalarCmd"]
+            rate = len(lv) / 20
+            assert rate <= 11.0, f"rhythm {rhythm} @ {iv}ms: {rate:.1f} cmd/s over budget"
+            worst = max(worst, rate)
+            active = lv[5:-5]
+            if rhythm == 1.0 and iv >= 300:
+                assert 0.0 in active, f"rhythm 1 @ {iv}ms should burst with silence between"
+            if rhythm == 0.0:
+                assert 0.0 not in active, f"rhythm 0 @ {iv}ms should never drop out: {active[:12]}"
+    return worst
+print(f"   rhythm 0/0.5/1 x 100-600 ms strokes, worst {asyncio.run(_flow_budget()):.1f} cmd/s  OK")
+
+print("47. auto uses flow, the preview carries the rendered track, tuning re-renders")
+async def _flow_plumb():
+    srv = isync.BackendServer()
+    got = []
+    srv.player.overview_cb = lambda o: got.append(o)
+    srv.player.apply_settings(vibe_mode="auto")
+    srv.player.load(wavy)
+    assert srv.player.effective_vibe_mode() == "flow", "a normal script should get flow"
+    srv.player.load(_mixed)          # 0/100 strokes on a grid: auto calls it a beat script
+    assert srv.player.effective_vibe_mode() == "beat"
+    srv.player.apply_settings(vibe_mode="flow")
+    assert got and len(got[-1]["levels"]) <= isync.FLOW_OVERVIEW_POINTS and max(got[-1]["levels"]) > 0.8
+    before = list(srv.player._flow)
+    await srv._handle(None, {"type": "settings", "flowSmooth": 0.9, "flowRhythm": 0.8, "flowGain": 1.5})
+    assert srv.player.flow_smooth == 0.9 and srv.player.flow_gain == 1.5
+    assert srv.player._flow != before and len(got) >= 2, "tuning must re-render and notify"
+    w = srv.player._preview_script_window(5000)
+    assert w and w.get("flow") and all(0 <= v <= 1 for _, v in w["flow"])
+    # a vibe track wins over flow and the preview then has no flow line
+    srv.player.load_vibe_track([{"at": 0, "pos": 50}, {"at": 40000, "pos": 50}])
+    assert "flow" not in srv.player._preview_script_window(5000)
+asyncio.run(_flow_plumb())
+print("   overview on load and on tuning, flow points in the preview window  OK")
+
+print("\nFORK 1.24 TESTS PASSED")

@@ -195,7 +195,13 @@
   let advancedOpen          = false;
   let hotkeysOn             = true;    // toolbar toggle, per-browser
   let hotkeysAllowed        = true;    // plugin setting; false disables them outright
-  let vibeMode              = "speed";   // "speed" | "position" | "beat" | "auto" | "off"
+  // New installs start on Auto (Flow, or Beat for beat scripts). Saved settings
+  // keep whatever the user chose.
+  let vibeMode              = "auto";    // "auto" | "flow" | "speed" | "position" | "beat" | "off"
+  let flowSmooth            = 50;        // % : 0 follows each stroke, 100 follows the scene
+  let flowRhythm            = 30;        // % : 0 smooth level, 100 a burst per stroke
+  let flowGain              = 1.0;       // sensitivity around the script's own level
+  let flowOverview          = null;      // {t0, t1, levels} whole-scene strip from the backend
   let beatMs                = 120;       // beat mode burst length
   let beatEdge              = "all";     // "all" | "low" | "high"
   let beatProminence        = 20;        // peak picking swing threshold for dense scripts
@@ -237,6 +243,9 @@
       if (typeof s.vibeSmooth   === "number") vibeSmooth   = s.vibeSmooth;
       if (typeof s.vibeSubstep  === "boolean") vibeSubstep = s.vibeSubstep;
       if (typeof s.vibeTrackOn  === "boolean") vibeTrackOn = s.vibeTrackOn;
+      if (typeof s.flowSmooth   === "number") flowSmooth   = s.flowSmooth;
+      if (typeof s.flowRhythm   === "number") flowRhythm   = s.flowRhythm;
+      if (typeof s.flowGain     === "number") flowGain     = s.flowGain;
       if (typeof s.beatMs       === "number") beatMs       = s.beatMs;
       if (typeof s.beatEdge     === "string") beatEdge     = s.beatEdge;
       if (typeof s.beatProminence === "number") beatProminence = s.beatProminence;
@@ -268,7 +277,7 @@
       localStorage.setItem(LS_KEY, JSON.stringify({
         offsetMs, strokeMin, strokeMax, invert, mode, handyKey,
         vibeMode, vibeMaxSpeed, vibeSmooth, vibeSubstep, beatMs, beatEdge, beatProminence,
-        vibeTrackOn,
+        vibeTrackOn, flowSmooth, flowRhythm, flowGain,
         manualLevel, manualShape, manualPeriod,
         manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
         manualBuildAmp, manualAmpFrom,
@@ -295,6 +304,9 @@
       beatEdge:     beatEdge,
       beatProminence: beatProminence,
       vibeTrack:    vibeTrackOn,
+      flowSmooth:   flowSmooth / 100,
+      flowRhythm:   flowRhythm / 100,
+      flowGain:     flowGain,
     });
   }
 
@@ -1008,6 +1020,12 @@
     }
 
 
+    if (msg.type === "overview") {
+      flowOverview = Array.isArray(msg.levels) ? msg : null;
+      if (typeof drawOverview === "function") drawOverview();
+      return;
+    }
+
     if (msg.type === "preview") {
       if (!previewOn || !Array.isArray(msg.samples)) return;
       if (msg.script) previewScript = msg.script;
@@ -1711,6 +1729,7 @@ function injectStyles() {
                            "display:flex;gap:12px;flex-wrap:wrap;";
     legend.innerHTML =
       '<span style="color:#96a0b4">\u2014 script</span>' +
+      '<span style="color:#be8cff">- - flow plan</span>' +
       '<span style="color:#4af">\u2014 target</span>' +
       '<span style="color:#4f8">\u25AE level sent</span>' +
       '<span style="color:#fa4">| command</span>' +
@@ -1776,6 +1795,21 @@ function injectStyles() {
         if (i) g.lineTo(x, y); else g.moveTo(x, y);
       });
       g.stroke();
+
+      // Flow: the rendered intensity the toy is following, including what
+      // is coming next. Drawn before the live traces so they sit on top.
+      if (previewScript.flow?.length > 1) {
+        g.strokeStyle = "rgba(190,140,255,0.8)";
+        g.lineWidth = 1.2 * dpr;
+        g.setLineDash([5 * dpr, 3 * dpr]);
+        g.beginPath();
+        previewScript.flow.forEach(([at, lv], i) => {
+          const x = mediaToX(at), y = Y(lv);
+          if (i) g.lineTo(x, y); else g.moveTo(x, y);
+        });
+        g.stroke();
+        g.setLineDash([]);
+      }
 
       // Beat markers: where beat mode will actually fire.
       if (previewScript.beats?.length) {
@@ -2680,7 +2714,8 @@ function injectStyles() {
   // These used to be bare number boxes whose meaning lived in a tooltip. Each
   // now has a visible name and a readout that says what the number does.
   const VIBE_MODE_NOTES = {
-    auto:     "Beat for Cock Hero style scripts, Speed for everything else.",
+    auto:     "Beat for Cock Hero style scripts, Flow for everything else. Start here.",
+    flow:     "Follows how busy the scene is, levelled to this script. Tune with Smoothness and Rhythm.",
     speed:    "Faster strokes buzz harder. Works for most scripts.",
     position: "Follows where the stroke is. The top of a stroke is strongest.",
     beat:     "One short burst per stroke turn. Suits music-synced scripts.",
@@ -2727,7 +2762,8 @@ function injectStyles() {
     sel.id = `${PLUGIN_ID}-vibe-mode`;
     sel.style.cssText = "background:#222;color:#fff;border:1px solid #555;" +
                         "border-radius:3px;padding:2px 4px;font-size:11px;";
-    [["auto", "Auto"], ["speed", "Speed"], ["position", "Position"], ["beat", "Beat"], ["off", "Off"]]
+    [["auto", "Auto"], ["flow", "Flow"], ["beat", "Beat"], ["speed", "Speed (classic)"],
+     ["position", "Position"], ["off", "Off"]]
       .forEach(([v, t]) => {
         const o = document.createElement("option");
         o.value = v; o.textContent = t;
@@ -2834,17 +2870,57 @@ function injectStyles() {
       "that track as written and the modes below only apply if you turn it off.",
       trackBtn);
 
+    // Flow: three sliders, each read back in words
+    const mkPct = (id, get, set, words, label, title) => {
+      const sl = advSlider(id, 90);
+      const rd = advRead();
+      const show = () => { sl.value = String(get() * 10); rd.textContent = words(get()); };
+      sl.addEventListener("input", () => { set(Math.round(parseInt(sl.value, 10) / 10)); show(); });
+      sl.addEventListener("change", sendSettings);
+      return { grp: advGroup(label, title, sl, rd), show };
+    };
+    const fSmooth = mkPct(`${PLUGIN_ID}-flow-smooth`, () => flowSmooth, (v) => { flowSmooth = v; },
+      (v) => v < 25 ? "follows each stroke" : v < 70 ? "balanced" : "follows the scene",
+      "Smoothness",
+      "Left: the level moves with every stroke. Right: it follows how busy the scene is and " +
+      "rises and fades gently.");
+    const fRhythm = mkPct(`${PLUGIN_ID}-flow-rhythm`, () => flowRhythm, (v) => { flowRhythm = v; },
+      (v) => v === 0 ? "smooth" : v < 40 ? "light pulse" : v < 85 ? "strong pulse" : "bursts only",
+      "Rhythm",
+      "How much each stroke pulses on top of the level. 0 is a smooth buzz, all the way right " +
+      "is one burst per stroke with silence between.");
+    const GAIN_LO = 0.25, GAIN_HI = 4;
+    const gSl = advSlider(`${PLUGIN_ID}-flow-gain`, 90);
+    const gRd = advRead();
+    const showGain = () => {
+      gSl.value = String(logPos(flowGain, GAIN_LO, GAIN_HI));
+      gRd.textContent = Math.abs(flowGain - 1) < 0.05 ? "as scripted"
+                      : flowGain > 1 ? `${flowGain.toFixed(1)}x livelier` : `${(1 / flowGain).toFixed(1)}x calmer`;
+    };
+    gSl.addEventListener("input", () => {
+      flowGain = Math.round(logVal(parseInt(gSl.value, 10), GAIN_LO, GAIN_HI) * 20) / 20;
+      showGain();
+    });
+    gSl.addEventListener("change", sendSettings);
+    const fGainGrp = advGroup("Sensitivity", "Flow levels itself to each script, so the busiest " +
+      "parts reach full power. Move right to make quieter parts stronger, left to calm it down.",
+      gSl, gRd);
+
     refreshVibeControls = () => {
       const hasTrack = !!(statusData && statusData.vibeTrack);
       trackGrp.style.display = hasTrack ? "" : "none";
       trackBtn.textContent = vibeTrackOn ? "Used" : "Ignored";
       trackBtn.classList.toggle("is-on", vibeTrackOn);
-      const beat = vibeMode === "beat" || vibeMode === "auto";
+      const eff  = vibeMode === "auto" ? ((statusData && statusData.vibeEffective) || "flow") : vibeMode;
+      const flow = eff === "flow";
+      const beat = eff === "beat";
+      [fSmooth.grp, fRhythm.grp, fGainGrp].forEach((g) => { g.style.display = flow ? "" : "none"; });
+      fSmooth.show(); fRhythm.show(); showGain();
       if (sel.value !== vibeMode) sel.value = vibeMode;
       modeNote.textContent = VIBE_MODE_NOTES[vibeMode] || "";
       // Sensitivity also sets beat level (burst strength comes from beat pace
       // through the same mapping), so keep it visible in the beat modes.
-      sensGrp.style.display = (vibeMode === "speed" || beat) ? "" : "none";
+      sensGrp.style.display = (eff === "speed" || beat) ? "" : "none";
       beatGrp.style.display = beat ? "" : "none";
       edgeGrp.style.display = beat ? "" : "none";
       promGrp.style.display = (beat && statusData && statusData.beatPicked) ? "" : "none";
@@ -2861,6 +2937,9 @@ function injectStyles() {
 
     wrap.appendChild(trackGrp);
     wrap.appendChild(modeGrp);
+    wrap.appendChild(fSmooth.grp);
+    wrap.appendChild(fRhythm.grp);
+    wrap.appendChild(fGainGrp);
     wrap.appendChild(sensGrp);
     wrap.appendChild(beatGrp);
     wrap.appendChild(edgeGrp);
