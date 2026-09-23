@@ -29,6 +29,12 @@ filter**. Anything already in your default filter is kept. Things to know:
 
 ## Round scores (Cock Hero)
 
+**How to play:** open a scene from the Cock Hero tab. A small indicator
+appears in the top-left corner of the player saying **Round ready**. Press
+play from the start; it turns into **● Hardcore**. When you lose, press Stash's
+**O** button (the O counter under the player). The indicator shows how far you
+got and whether it is a new best, and the gold line on the timeline moves.
+
 A round is one go at a video. Your score is **how far you got before pressing
 O**. Watch to the end without pressing it and the round is **Cleared**.
 
@@ -66,8 +72,9 @@ would have passed Easy's rules too.
 Pressing O on a scene with no round running just counts an O, as Stash always
 does. Taking an O back from its dropdown never touches a score.
 
-Scores need a Stash version with scene custom fields. On older versions the
-tab and hiding still work and the plugin logs why scores are off.
+Records are stored on the scene as custom fields on Stash v0.31 and later.
+Older Stash has no scene custom fields, so there the plugin keeps the same
+records in its own settings instead; everything else works the same.
 
 ## Settings
 

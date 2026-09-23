@@ -1,14 +1,12 @@
 # ScriptBadges
 
-A small badge on every scene card, bottom left, saying whether the scene has a
-funscript:
+A small badge, bottom left, on every scene card that has a funscript:
+**Script · 250**. The number is Stash's measure of how busy the script is, the
+same number Stash shows on its own for interactive scenes.
 
-- **Script · 250**: it has one. The number is Stash's measure of how busy the
-  script is, the same number Stash shows on its own for interactive scenes.
-- **No script**: it does not.
-
-Turn on **Only mark scenes without a funscript** in the plugin settings and
-only the ones that need work get a badge.
+Scenes without a funscript get no badge, so the ones without one are the ones
+that need work. Turn on **Also mark scenes without a funscript** in the plugin
+settings if you want those to say **No script** as well.
 
 ## How it knows
 

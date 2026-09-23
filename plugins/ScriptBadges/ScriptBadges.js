@@ -22,11 +22,12 @@
     return String(href || "").match(/\/scenes\/(\d+)/)?.[1] ?? null;
   }
 
-  // What a card shows. null means no badge.
-  function badgeFor(info, onlyMissing) {
+  // What a card shows. null means no badge. Scenes without a script get
+  // nothing unless showMissing is on: the badge marks what is there, and its
+  // absence is the "needs a script" signal.
+  function badgeFor(info, showMissing) {
     if (!info) return null;
     if (info.interactive) {
-      if (onlyMissing) return null;
       return {
         cls: "has",
         text: info.speed ? `Script · ${info.speed}` : "Script",
@@ -35,6 +36,7 @@
           : "Has a funscript.",
       };
     }
+    if (!showMissing) return null;
     return {
       cls: "none",
       text: "No script",
@@ -58,7 +60,7 @@
     return json?.data ?? null;
   }
 
-  let onlyMissing = false;
+  let showMissing = false;
   const cache = new Map();          // scene id -> {interactive, speed, ts}
   let timer = null;
   let queued = false;
@@ -66,7 +68,7 @@
   async function loadSettings() {
     try {
       const d = await gql(`query { configuration { plugins } }`);
-      onlyMissing = d?.configuration?.plugins?.[PLUGIN_ID]?.onlyMissing === true;
+      showMissing = d?.configuration?.plugins?.[PLUGIN_ID]?.showMissing === true;
     } catch (e) { log(`Settings read failed: ${e.message}`); }
   }
 
@@ -120,7 +122,7 @@
     }
     injectStyles();
     for (const [card, id] of ids) {
-      const b = badgeFor(cache.get(id), onlyMissing);
+      const b = badgeFor(cache.get(id), showMissing);
       const host = card.querySelector(".scene-card-preview") || card;
       let el = host.querySelector(":scope > .sb-badge");
       if (!b) { el?.remove(); card.classList.remove("sb-done"); continue; }

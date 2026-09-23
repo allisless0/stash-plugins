@@ -1,6 +1,6 @@
 name: Collections
 description: "Give a studio its own tab in the top bar, sorted by O count, and keep it out of the main Scenes list. Optional round scores for Cock Hero videos: how far you got before pressing O, as Hardcore and Easy records."
-version: 1.0.1
+version: 1.1.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:

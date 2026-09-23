@@ -87,6 +87,30 @@
     return `/scenes?c=${c}&sortby=${encodeURIComponent(sort)}&sortdir=${dir}`;
   }
 
+  // Is this list URL the collection's tab? Only a studios INCLUDES rule with
+  // this id counts. Checking for the id anywhere lit the tab on the plain
+  // Scenes page, because Stash writes the default filter (which EXCLUDES the
+  // same studio) into that URL.
+  function isTabUrl(search, id) {
+    let params;
+    try { params = new URLSearchParams(search).getAll("c"); } catch { return false; }
+    for (const raw of params) {
+      let inString = false, escaped = false, json = "";
+      for (const ch of raw) {
+        if (escaped) { escaped = false; json += ch; continue; }
+        if (ch === "\\" && inString) { escaped = true; json += ch; continue; }
+        if (ch === '"') inString = !inString;
+        json += (!inString && ch === "(") ? "{" : (!inString && ch === ")") ? "}" : ch;
+      }
+      try {
+        const c = JSON.parse(json);
+        if (c.type === "studios" && (c.modifier === "INCLUDES" || c.modifier === "INCLUDES_ALL") &&
+            (c.value?.items || []).some((it) => String(it.id) === String(id))) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
   // Add "studio is not X" to the Scenes default filter for every wanted
   // studio, and take back exclusions this plugin added earlier that are no
   // longer wanted. Everything else in the filter rides through untouched
@@ -252,7 +276,11 @@
   // ═══ State ═════════════════════════════════════════════════════════════════
 
   let collections = [];          // parsed, each gets .id once its studio resolves
-  let customFields = false;      // does this Stash have scene custom fields?
+  let customFields = false;      // does this Stash have scene custom fields? (v0.31+)
+  // Where records live. Scene custom fields arrived in Stash v0.31; before
+  // that they are kept in this plugin's own config under `scores`,
+  // {sceneId: {round_best_hardcore: ...}}, in the same shape.
+  let configScores = null;       // cached `scores` map when custom fields are missing
   let ready = null;              // promise: settings read and studios resolved
 
   async function start() {
@@ -281,11 +309,67 @@
       customFields = (d?.__type?.inputFields ?? []).some((f) => f.name === "custom_fields");
     } catch (_) { customFields = false; }
     if (!customFields && collections.some((c) => c.score)) {
-      log("This Stash has no scene custom fields, so round scores are off", "error");
+      log("No scene custom fields (Stash before v0.31): keeping scores in the plugin config");
     }
 
     await syncHidden(cfg);
     log(`Collections: ${collections.map((c) => `${c.name}${c.id ? "" : " (studio missing)"}`).join(", ")}`);
+  }
+
+  // ═══ Score storage ═════════════════════════════════════════════════════════
+
+  async function readConfigScores(force) {
+    if (configScores && !force) return configScores;
+    try {
+      const d = await gql(`query { configuration { plugins } }`);
+      configScores = JSON.parse(d?.configuration?.plugins?.[PLUGIN_ID]?.scores || "{}") || {};
+    } catch (e) { log(`Score read failed: ${e.message}`); configScores = configScores || {}; }
+    return configScores;
+  }
+
+  async function recordsFor(ids) {
+    const out = {};
+    if (customFields) {
+      const d = await gql(`query ($ids: [ID!]) { findScenes(ids: $ids, filter: { per_page: -1 }) {
+                             scenes { id custom_fields files { duration } } } }`, { ids });
+      for (const s of d?.findScenes?.scenes ?? []) {
+        out[s.id] = { fields: s.custom_fields || {}, duration: s.files?.[0]?.duration || 0 };
+      }
+    } else {
+      const all = await readConfigScores();
+      const d = await gql(`query ($ids: [ID!]) { findScenes(ids: $ids, filter: { per_page: -1 }) {
+                             scenes { id files { duration } } } }`, { ids });
+      for (const s of d?.findScenes?.scenes ?? []) {
+        out[s.id] = { fields: all[s.id] || {}, duration: s.files?.[0]?.duration || 0 };
+      }
+    }
+    return out;
+  }
+
+  // Only the changed keys, for one scene. Custom fields: a partial update, so
+  // other fields on the scene survive. Config: read-merge-write of the whole
+  // plugin map, so the setting and other scenes' records survive (rule 5).
+  let writeChain = Promise.resolve();
+  function writeRecord(id, partial) {
+    const run = writeChain.then(async () => {
+      if (customFields) {
+        await gql(`mutation ($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+                  { input: { id, custom_fields: { partial } } });
+        return;
+      }
+      const d = await gql(`query { configuration { plugins } }`);
+      const plugins = d?.configuration?.plugins;
+      if (!plugins || typeof plugins !== "object") throw new Error("could not read the plugin config");
+      const mine = plugins[PLUGIN_ID] || {};
+      let scores = {};
+      try { scores = JSON.parse(mine.scores || "{}") || {}; } catch (_) {}
+      scores[id] = { ...(scores[id] || {}), ...partial };
+      await gql(`mutation ($id: ID!, $input: Map!) { configurePlugin(plugin_id: $id, input: $input) }`,
+                { id: PLUGIN_ID, input: { ...mine, scores: JSON.stringify(scores) } });
+      configScores = scores;
+    });
+    writeChain = run.catch(() => {});
+    return run;
   }
 
   // ═══ Keeping collections out of the main Scenes list ═══════════════════════
@@ -369,6 +453,10 @@
 .scene-card-preview { position: relative; }
 .coll-nav svg { width: 1em; height: 1em; }
 .coll-nav a.coll-missing { opacity: .5; }
+/* a tab that is not the current page never keeps a pressed/focus look */
+.coll-nav a.btn:not(.active):not(:hover) {
+  background-color: transparent !important; border-color: transparent !important; box-shadow: none !important;
+}
 `;
     document.head.appendChild(st);
   }
@@ -402,6 +490,7 @@
         a.querySelector("span").textContent = c.name;
         a.addEventListener("click", (ev) => {
           ev.preventDefault();
+          a.blur();            // focus would keep the highlight after leaving
           if (c.id) navigate(tabUrl({ id: c.id, name: c.studioName }, c.sort));
           else alert(`Collections: no studio named "${c.studio}" was found in Stash.`);
         });
@@ -413,8 +502,7 @@
       a.classList.toggle("coll-missing", !c.id);
       a.title = c.id ? `${c.studioName} scenes, by ${c.sort === "o_counter" ? "O count" : c.sort}`
                      : `No studio named "${c.studio}" in Stash`;
-      const active = !!c.id && location.pathname === "/scenes" &&
-                     decodeURIComponent(location.search).includes(`"id":"${c.id}"`);
+      const active = !!c.id && location.pathname === "/scenes" && isTabUrl(location.search, c.id);
       a.classList.toggle("active", active);
     }
   }
@@ -425,7 +513,7 @@
   let cardTimer = null;
 
   function scheduleBadges() {
-    if (!customFields || !collections.some((c) => c.score)) return;
+    if (!collections.some((c) => c.score)) return;
     clearTimeout(cardTimer);
     cardTimer = setTimeout(renderBadges, 250);
   }
@@ -442,11 +530,8 @@
     }
     if (need.length) {
       try {
-        const d = await gql(`query ($ids: [ID!]) { findScenes(ids: $ids, filter: { per_page: -1 }) {
-                               scenes { id custom_fields files { duration } } } }`, { ids: [...new Set(need)] });
-        for (const s of d?.findScenes?.scenes ?? []) {
-          cardCache.set(String(s.id), { fields: s.custom_fields || {}, duration: s.files?.[0]?.duration || 0, ts: Date.now() });
-        }
+        const recs = await recordsFor([...new Set(need)]);
+        for (const [id, r] of Object.entries(recs)) cardCache.set(String(id), { ...r, ts: Date.now() });
       } catch (e) { log(`Badge lookup failed: ${e.message}`); return; }
     }
     for (const card of cards) {
@@ -499,13 +584,14 @@
       sceneInfo.set(id, (async () => {
         await ready;
         const cf = customFields ? "custom_fields" : "";
+        const stored = customFields ? null : (await readConfigScores(fresh))[id];
         const d = await gql(`query ($id: ID!) { findScene(id: $id) { id o_counter ${cf} files { duration }
           studio { id parent_studio { id parent_studio { id parent_studio { id } } } } } }`, { id });
         const s = d?.findScene;
         const chain = [];
         for (let st = s?.studio; st; st = st.parent_studio) chain.push(String(st.id));
         const collection = collections.find((c) => c.id && chain.includes(c.id)) || null;
-        return { id, collection, fields: s?.custom_fields || {}, o: s?.o_counter || 0,
+        return { id, collection, fields: (customFields ? s?.custom_fields : stored) || {}, o: s?.o_counter || 0,
                  duration: s?.files?.[0]?.duration || 0 };
       })().catch((e) => { sceneInfo.delete(id); throw e; }));
     }
@@ -527,7 +613,7 @@
   function forget(id) { try { localStorage.removeItem(ROUND_KEY + id); } catch (_) {} }
 
   function scoring() {
-    return !!(scene && scene.collection && scene.collection.score && customFields);
+    return !!(scene && scene.collection && scene.collection.score);
   }
 
   function onVideoEvent(ev) {
@@ -566,8 +652,7 @@
     renderChip();
     if (!Object.keys(rec.out).length) return;
     try {
-      await gql(`mutation ($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
-                { input: { id: scene.id, custom_fields: { partial: rec.out } } });
+      await writeRecord(scene.id, rec.out);
       Object.assign(scene.fields, rec.out);
       cardCache.delete(scene.id);
       renderLines();
@@ -745,7 +830,7 @@
   };
 
   if (window.__COLL_TEST__) {
-    window.__CollectionsTest = { parseCollections, encodeCriterion, tabUrl, mergeHide,
+    window.__CollectionsTest = { parseCollections, encodeCriterion, tabUrl, isTabUrl, mergeHide,
       roundNew, roundTime, roundScore, roundCleared, roundRecord, fmt };
   }
 

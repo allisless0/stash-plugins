@@ -34,7 +34,7 @@ const sandbox = {
   performance: { now: () => 0 }, requestAnimationFrame: () => 0,
   setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0,
   console: { log() {}, error() {}, warn() {} },
-  encodeURI, encodeURIComponent, decodeURIComponent,
+  encodeURI, encodeURIComponent, decodeURIComponent, URLSearchParams,
 };
 windowStub.dispatchEvent = () => {};
 const file = path.join(__dirname, "..", "plugins", "Collections", "Collections.js");
@@ -70,6 +70,16 @@ check("parentheses inside strings are kept literal", enc.includes("Cock%20Hero%2
 check("& is escaped so it cannot split the query", enc.includes("%26") && !enc.includes("&"), enc);
 const url = T.tabUrl({ id: "12", name: "Cock Hero" }, "o_counter");
 check("tab URL sorts by O count, highest first", url.includes("&sortby=o_counter&sortdir=desc"), url);
+
+// ── which tab is lit ────────────────────────────────────────────────────────
+const search = url.slice(url.indexOf("?"));
+check("the tab URL lights the tab", T.isTabUrl(search, "12"));
+check("not for another collection", !T.isTabUrl(search, "13"));
+const scenesPage = "?c=" + T.encodeCriterion({ type: "studios", modifier: "EXCLUDES",
+  value: { items: [{ id: "12", label: "Cock Hero" }], excluded: [], depth: -1 } }) + "&sortby=date";
+check("the plain Scenes page, which excludes the studio, does not (the stuck-gold bug)",
+  !T.isTabUrl(scenesPage, "12"));
+check("no filter at all does not", !T.isTabUrl("", "12") && !T.isTabUrl("?sortby=date", "12"));
 
 // ── hiding: merge into the Scenes default filter (rule 5) ───────────────────
 const ch = { id: "12", name: "Cock Hero" };

@@ -39,10 +39,10 @@ let b = T.badgeFor({ interactive: true, speed: 250 }, false);
 check("scene with a script shows it, with speed", b && b.cls === "has" && b.text === "Script · 250");
 b = T.badgeFor({ interactive: true, speed: 0 }, false);
 check("no speed measured: just Script", b && b.text === "Script");
-b = T.badgeFor({ interactive: false }, false);
-check("scene without a script says so, and how to fix it", b && b.cls === "none" && /rescan/.test(b.title));
-check("only-missing hides scenes that have one", T.badgeFor({ interactive: true, speed: 9 }, true) === null);
-check("only-missing still marks the missing", T.badgeFor({ interactive: false }, true)?.cls === "none");
+check("scene without a script: no badge by default", T.badgeFor({ interactive: false }, false) === null);
+b = T.badgeFor({ interactive: false }, true);
+check("with showMissing it says so, and how to fix it", b && b.cls === "none" && /rescan/.test(b.title));
+check("showMissing does not hide scenes that have one", T.badgeFor({ interactive: true, speed: 9 }, true)?.cls === "has");
 check("unknown scene: no badge", T.badgeFor(undefined, false) === null);
 
 console.log(`\n${passed} passed, ${failed} failed`);

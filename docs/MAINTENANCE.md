@@ -49,8 +49,8 @@ Keep those greps in step with any refactor of the safety chain.
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
 | IntifaceSync (vibe fork) | 1.28-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
-| Collections | 1.0.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
-| ScriptBadges | 1.0.0 | UI only | none | any page with scene cards | ~150 |
+| Collections | 1.1.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
+| ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -941,7 +941,9 @@ has badged (`.scene-card.sb-done`), since the badge carries the number.
 Collections' score badge sits top-centre (moved there in 1.0.1; top-left
 covered the rating ribbon). New card decorations must pick a free spot.
 
-Setting `onlyMissing` shows only "No script". Tests:
+1.1.0: scenes without a script get no badge by default (user request: the
+absence is the signal). Setting `showMissing` brings back "No script". The
+1.0.0 `onlyMissing` setting was never published and is gone. Tests:
 `scripts/test_scriptbadges.js`. Browser-checked against Stash-like card
 markup with both plugins loaded.
 
@@ -1001,11 +1003,22 @@ round runs it also polls every 4 s for O pressed some other way. The O count
 is re-read on every scene open (`loadScene(id, true)`); a cached count made a
 revisit record a loss that never happened, found in review.
 
-**Records.** `roundRecord()` computes only changed keys and they are written as
-`custom_fields: { partial }`, never `full`, so other custom fields on the
-scene survive. Hardcore results also count toward Easy. Needs scene custom
-fields (probed on `SceneUpdateInput`); without them, scoring is off and the
-tab and hiding still work.
+**Records.** `roundRecord()` computes only changed keys, written by
+`writeRecord()`. Scene custom fields only exist from **Stash v0.31** (checked
+against the v0.28-v0.31.1 schemas); 1.0.0 silently disabled scoring without
+them, which is why the user could not find it. 1.1.0 probes
+`SceneUpdateInput` and uses custom fields (`partial`, never `full`) when
+present, else the plugin's own config key `scores`
+(`{sceneId: {round_best_hardcore: ...}}`, same shape), written by
+read-merge-write of the whole plugin map so the settings and other scenes'
+records survive. Writes are chained. Hardcore results also count toward Easy.
+
+**Which tab is lit (1.1.0).** 1.0.0 lit the tab whenever the collection's
+studio id appeared anywhere in the URL, and Stash writes the Scenes default
+filter into the plain Scenes URL, which contains the same id as an EXCLUDES.
+So the tab stayed gold on the main Scenes page. `isTabUrl()` decodes each `c`
+criterion and only a studios INCLUDES/INCLUDES_ALL with the id counts. The
+link also blurs on click and non-active tabs cannot keep a focus background.
 
 **UI.** The round chip lives inside `.video-js` (video.js owns that DOM, not
 React), so it also shows in fullscreen. Best lines go in
@@ -1112,6 +1125,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-24: Collections 1.1.0, ScriptBadges 1.1.0
+
+User reports: the tab stayed gold on other pages (URL check matched the
+default filter's exclusion, see §4.7), and scores could not be found (their
+Stash predates scene custom fields; scores now fall back to the plugin
+config). ScriptBadges no longer marks scenes without a script unless asked.
 
 ### 2026-09-23 (late night): ScriptBadges 1.0.0, Collections 1.0.1
 

@@ -1,6 +1,6 @@
 name: ScriptBadges
 description: "Shows on every scene card whether the scene has a funscript, so you can see at a glance what still needs one."
-version: 1.0.0
+version: 1.1.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
@@ -8,7 +8,7 @@ ui:
     - ScriptBadges.js
 
 settings:
-  onlyMissing:
-    displayName: Only mark scenes without a funscript
-    description: "Off: cards show Script or No script. On: only scenes without a funscript get a badge, so the ones that need work stand out. Reload the page after changing."
+  showMissing:
+    displayName: Also mark scenes without a funscript
+    description: "Off (default): only scenes with a funscript get a badge, and no badge means it needs one. On: scenes without one also say No script. Reload the page after changing."
     type: BOOLEAN
