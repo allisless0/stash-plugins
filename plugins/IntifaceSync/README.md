@@ -102,6 +102,12 @@ pattern panel and give it a name. Click a preset to load it.
   scripts (Cock Hero Colors style), where the height of each stroke sets how
   strong the burst is.
 
+**Vibrator tracks.** Some scripts come with a second file made for vibrators,
+named like `Scene.vib.funscript` next to `Scene.funscript`. When one is there
+the vibrator plays it as written, which is almost always better than anything
+worked out from stroke motion; the toolbar shows `+ vibe track`. A stroker
+still follows the main script. You can turn this off under ⚙.
+
 **Offset** shifts device timing against the video. Positive fires earlier.
 
 ## Keyboard shortcuts

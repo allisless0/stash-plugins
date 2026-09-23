@@ -1032,3 +1032,85 @@ async def _amp_floor():
 asyncio.run(_amp_floor())
 
 print("\nFORK 1.22 TESTS PASSED")
+
+
+# ── 42-44. 1.23 dedicated vibrator tracks ────────────────────────────────────
+import tempfile as _tf, shutil as _sh
+print("42. a sibling vibrator track is found by name, other axes are not")
+_d = _tf.mkdtemp()
+try:
+    def _touch(name, acts=None):
+        with open(os.path.join(_d, name), "w", encoding="utf-8") as f:
+            json.dump({"actions": acts or [{"at": 0, "pos": 0}, {"at": 1000, "pos": 50}]}, f)
+    for n in ("Scene One.funscript", "Scene One.vib.funscript", "Scene One.roll.funscript",
+              "Scene Two.funscript", "Scene Two vibe.funscript", "Scene Three.funscript",
+              "Other.vib.funscript"):
+        _touch(n)
+    j = lambda n: os.path.join(_d, n)
+    assert isync.find_vibe_track(j("Scene One.funscript")) == j("Scene One.vib.funscript")
+    assert isync.find_vibe_track(j("Scene Two.funscript")) == j("Scene Two vibe.funscript")
+    assert isync.find_vibe_track(j("Scene Three.funscript")) is None, "borrowed another scene's track"
+    assert isync.find_vibe_track(j("Scene One.vib.funscript")) is None, "a vibe track has no vibe track"
+    assert isync.is_vibe_track_name("x/Scene One.vib.funscript")
+    assert not isync.is_vibe_track_name("x/Vibes.funscript"), "a one-word title is not a suffix"
+    # the stroker still gets the main script by default
+    files, default = isync.find_funscripts(j("Scene One.mp4"))
+    assert default == j("Scene One.funscript"), default
+    print("   .vib and ' vibe' found, .roll and other scenes ignored, main stays default  OK")
+
+    print("43. the vibrator plays the track as intensity; the stroker keeps the main script")
+    async def _track_play():
+        bp = FakeBP([GUSH, HANDY])
+        p  = isync.FunscriptPlayer(bp)
+        # main script: fast strokes, would be loud in speed mode
+        p.load([{"at": i * 150, "pos": 0 if i % 2 == 0 else 100} for i in range(200)])
+        # track: silent for 2 s, then holds 60% across a 10 s gap
+        p.load_vibe_track([{"at": 0, "pos": 0}, {"at": 2000, "pos": 0},
+                           {"at": 2001, "pos": 60}, {"at": 12000, "pos": 60}])
+        p.apply_settings(vibe_mode="speed", invert=True)
+        assert p.using_vibe_track()
+        devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+        lv = {}
+        try:
+            for k in range(0, 9000, 20):
+                isync.time.monotonic = lambda: t0 + k / 1000.0
+                await p._vibe_tick(k, devs)
+                lv[k] = p._vibe_last_sent
+        finally:
+            isync.time.monotonic = real
+        assert lv[1500] in (0.0, -1.0), f"track is silent at 1.5 s, got {lv[1500]}"
+        assert abs(lv[8000] - 0.60) < 0.03, f"track holds 60% through the gap, got {lv[8000]}"
+        # switched off: back to deriving from the strokes
+        p.apply_settings(vibe_track=False)
+        assert not p.using_vibe_track() and p.effective_vibe_mode() == "speed"
+        # vibe mode off silences the track too
+        p.apply_settings(vibe_track=True, vibe_mode="off")
+        assert not p.using_vibe_track()
+    asyncio.run(_track_play())
+    print("   silent then 60% held across a gap, invert ignored, toggle falls back  OK")
+
+    print("44. loading a script picks up its track and a device connect keeps it")
+    async def _track_load():
+        _touch("Scene Four.funscript", [{"at": i * 300, "pos": i % 2 * 100} for i in range(50)])
+        _touch("Scene Four.vib.funscript", [{"at": 0, "pos": 40}, {"at": 5000, "pos": 40}])
+        srv = isync.BackendServer()
+        await srv._load_script(j("Scene Four.funscript"))
+        assert len(srv.player.vibe_track) == 2 and srv._vibe_track_path.endswith("vib.funscript")
+        # a folder with only a vibe track: it is its own track
+        await srv._load_script(j("Other.vib.funscript"))
+        assert srv.player.vibe_track and srv.player.using_vibe_track()
+        # scripts without one clear the previous track
+        await srv._load_script(j("Scene Three.funscript"))
+        assert srv.player.vibe_track == [] and srv._vibe_track_path is None
+        # the connect handler's carry, done by hand as in test 35
+        await srv._load_script(j("Scene Four.funscript"))
+        carried, carried_track = srv.player.actions, srv.player.vibe_track
+        srv.bp = FakeBP([GUSH]); srv.player = isync.FunscriptPlayer(srv.bp)
+        srv.player.load(carried); srv.player.load_vibe_track(carried_track)
+        assert srv.player.using_vibe_track()
+    asyncio.run(_track_load())
+    print("   track loaded with its script, cleared without one, survives the swap  OK")
+finally:
+    _sh.rmtree(_d, ignore_errors=True)
+
+print("\nFORK 1.23 TESTS PASSED")

@@ -209,6 +209,7 @@
   let vibeMaxSpeed          = 500;       // funscript units/sec = full intensity
   let vibeSmooth            = 0.30;
   let vibeSubstep           = false;    // pulse below the hardware floor
+  let vibeTrackOn           = true;     // play a dedicated .vib track when one exists
 
   function log(msg, level = "info") {
     const prefix = "[IntifaceSync]";
@@ -235,6 +236,7 @@
       if (typeof s.vibeMaxSpeed === "number") vibeMaxSpeed = s.vibeMaxSpeed;
       if (typeof s.vibeSmooth   === "number") vibeSmooth   = s.vibeSmooth;
       if (typeof s.vibeSubstep  === "boolean") vibeSubstep = s.vibeSubstep;
+      if (typeof s.vibeTrackOn  === "boolean") vibeTrackOn = s.vibeTrackOn;
       if (typeof s.beatMs       === "number") beatMs       = s.beatMs;
       if (typeof s.beatEdge     === "string") beatEdge     = s.beatEdge;
       if (typeof s.beatProminence === "number") beatProminence = s.beatProminence;
@@ -266,6 +268,7 @@
       localStorage.setItem(LS_KEY, JSON.stringify({
         offsetMs, strokeMin, strokeMax, invert, mode, handyKey,
         vibeMode, vibeMaxSpeed, vibeSmooth, vibeSubstep, beatMs, beatEdge, beatProminence,
+        vibeTrackOn,
         manualLevel, manualShape, manualPeriod,
         manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
         manualBuildAmp, manualAmpFrom,
@@ -291,6 +294,7 @@
       beatMs:       beatMs,
       beatEdge:     beatEdge,
       beatProminence: beatProminence,
+      vibeTrack:    vibeTrackOn,
     });
   }
 
@@ -1036,6 +1040,7 @@
       }
       updateToolbarStatus();
       refreshVibeControls();
+      updateFunscriptSelector();
       if (msg.error) log(`Backend error: ${msg.error}`, "error");
 
       if (mode === "intiface") {
@@ -2816,7 +2821,24 @@ function injectStyles() {
     });
     prom.addEventListener("change", sendSettings);
 
+    // Dedicated vibrator track, only offered when the script has one
+    const trackBtn = document.createElement("button");
+    trackBtn.addEventListener("click", () => {
+      vibeTrackOn = !vibeTrackOn;
+      sendSettings();
+      refreshVibeControls();
+      updateFunscriptSelector();
+    });
+    const trackGrp = advGroup("Vibrator track",
+      "This script comes with a track made for vibrators. When it is used, the vibrator plays " +
+      "that track as written and the modes below only apply if you turn it off.",
+      trackBtn);
+
     refreshVibeControls = () => {
+      const hasTrack = !!(statusData && statusData.vibeTrack);
+      trackGrp.style.display = hasTrack ? "" : "none";
+      trackBtn.textContent = vibeTrackOn ? "Used" : "Ignored";
+      trackBtn.classList.toggle("is-on", vibeTrackOn);
       const beat = vibeMode === "beat" || vibeMode === "auto";
       if (sel.value !== vibeMode) sel.value = vibeMode;
       modeNote.textContent = VIBE_MODE_NOTES[vibeMode] || "";
@@ -2837,6 +2859,7 @@ function injectStyles() {
       log(`Vibe mode: ${vibeMode}`, "debug");
     });
 
+    wrap.appendChild(trackGrp);
     wrap.appendChild(modeGrp);
     wrap.appendChild(sensGrp);
     wrap.appendChild(beatGrp);
@@ -3195,7 +3218,9 @@ function injectStyles() {
     if (mode === "intiface") {
       const { connected, playing, devices, error } = statusData;
       let devNames = (devices || []).map(d => d.name).join(", ") || "–";
-      if (statusData.beatScript) {
+      if (statusData.vibeEffective === "track") {
+        devNames += " \u266A vibe track";
+      } else if (statusData.beatScript) {
         const kind = statusData.beatKind === "graded" ? "beat/amp" : "beat";
         devNames += statusData.vibeEffective === "beat" ? ` ♩${kind}` : " ♩(beat script, mode not beat)";
       } else if (statusData.beatPicked && statusData.vibeEffective === "beat") {
@@ -3232,12 +3257,18 @@ function injectStyles() {
       } else {
         const name    = baseName(selectedFunscript);
         const pending = funscriptLoaded === "pending";
-        label.textContent   = pending ? `♪ ${name} …` : `♪ ${name}`;
+        const track   = statusData && statusData.vibeTrack;
+        label.textContent   = (pending ? `♪ ${name} …` : `♪ ${name}`) +
+                              (track ? (vibeTrackOn ? "  + vibe track" : "  (vibe track off)") : "");
         label.style.opacity = pending ? "0.6" : "0.85";
-        label.title = funscripts.length > 1
+        label.title = (funscripts.length > 1
           ? `${selectedFunscript}\n\n${funscripts.length} candidates in this folder; ` +
             "switch under ⚙ Advanced."
-          : selectedFunscript;
+          : selectedFunscript) +
+          (track ? `\n\nVibrator track: ${track}. ` +
+                   (vibeTrackOn ? "The vibrator plays this track directly; a stroker still follows the main script."
+                                : "Ignored, the vibrator follows the main script. Turn it back on under ⚙.")
+                 : "");
       }
     }
 

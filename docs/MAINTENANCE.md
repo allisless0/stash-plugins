@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
-| IntifaceSync (vibe fork) | 1.22-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.23-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -610,6 +610,24 @@ set, so a later `manual` message (a slider nudge) could re-arm tease on that
 player. Rule 1 says every stop-type path calls `_panic()`; this one now does
 so first, then disconnects as before. Test 39.
 
+**Dedicated vibrator tracks (1.23).** Some scripts ship a track written
+for vibrators next to the main one (`Scene.vib.funscript`, the multi-axis
+suffix convention; also `vibe`, `vibrate`, `vibration`, `vibrator`, `v0`).
+Its position *is* the intensity, which beats anything derived from stroke
+motion. `find_vibe_track()` matches on the loaded **script's** name, so it
+follows a script the user picked by hand; `_best_match()` is unchanged and
+still gives the stroker the main script. `_load_script()` loads the track
+into `player.vibe_track`; the connect handler carries it with the script.
+
+`_vibe_tick()` checks `using_vibe_track()` first (track present, enabled,
+mode not `off`). Playback differs from stroke scripts on purpose: linear
+interpolation that **holds across long gaps** (50 for ten seconds is a steady
+buzz, not idle), no EMA, and `_shape(allow_invert=False)` because invert
+flips stroke direction and means nothing for an intensity track. A picked
+script that is itself a vibe track (folder with nothing else) is used as its
+own track. Status carries `vibeTrack` (file name) and `vibeEffective:
+"track"`; the setting is `vibeTrack` / `vibeTrackOn`, default on. Tests 42-44.
+
 **Pattern presets (1.22, frontend only).** Named snapshots of the manual
 pattern: shape, period, buzz length, dip, both builds, power limit, micro
 pulse. Deliberately **not** the on-switch (loading a preset can reshape a
@@ -671,7 +689,7 @@ semantics, fake backend socket): save, edit, update, revert, reload, fresh
 browser, two tabs, and a stale-settings-page overwrite. Not tested in a real
 Stash.
 
-**Tests:** `test_vibe.py`, 41 checks, run from the plugin's parent directory:
+**Tests:** `test_vibe.py`, 44 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -763,6 +781,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-23 (later still): IntifaceSync overhaul, four releases
+
+User asked for all of: vibrator-track preference, better funscript-to-vibe
+conversion, reliable multi-tab/multi-browser behaviour, and a clearer
+settings section. Done as 1.23 (vibe tracks), 1.24 (rendered Flow mode),
+1.25 (backend decides which tab drives), 1.26 (script panel, per-script
+memory). Each has its own entry in §4.5.
 
 ### 2026-09-23 (later): presets and UX, IntifaceSync 1.21 → 1.22-vibe
 

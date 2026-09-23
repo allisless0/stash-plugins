@@ -894,6 +894,9 @@ class FunscriptPlayer:
         self._beat_amp_ref      = BEAT_AMP_REF_MAX  # swing that means full intensity
         self._beats_peak_picked = False  # dense script reduced to turnarounds
         self._beats             = []     # keyframes beat mode fires on
+        # dedicated vibrator track, played as intensity when present and enabled
+        self.vibe_track         = []
+        self.vibe_track_enabled = True
         self.vibe_max_speed     = VIBE_DEFAULT_MAXSPEED
         self.vibe_smooth        = VIBE_DEFAULT_SMOOTH
         self._vibe_level        = 0.0
@@ -939,7 +942,7 @@ class FunscriptPlayer:
     def apply_settings(self, offset_ms=None, stroke_min=None, stroke_max=None, invert=None,
                        vibe_mode=None, vibe_max_speed=None, vibe_smooth=None,
                        vibe_substep=None, beat_on_ms=None, beat_edge=None,
-                       beat_prominence=None):
+                       beat_prominence=None, vibe_track=None):
         if offset_ms is not None and int(offset_ms) != self.offset_ms:
             self.offset_ms = int(offset_ms)
             # the stroker index was seated against the old offset
@@ -963,6 +966,8 @@ class FunscriptPlayer:
             self.vibe_max_speed = max(50.0, float(vibe_max_speed))
         if vibe_smooth is not None:
             self.vibe_smooth = max(0.05, min(1.0, float(vibe_smooth)))
+        if vibe_track is not None:
+            self.vibe_track_enabled = bool(vibe_track)
         if vibe_substep is not None:
             self.substep_enabled = bool(vibe_substep)
             if not self.substep_enabled:
@@ -1075,6 +1080,30 @@ class FunscriptPlayer:
             return
         self._beats = self._thin_beats(self._annotate_beats(base))
 
+    def using_vibe_track(self) -> bool:
+        return bool(self.vibe_track_enabled and self.vibe_track and self.vibe_mode != "off")
+
+    def load_vibe_track(self, actions: list) -> None:
+        self.vibe_track = sorted(actions or [], key=lambda a: a["at"])
+        if self.vibe_track:
+            log.info(f"Vibrator track loaded: {len(self.vibe_track)} keyframes")
+
+    def _vibe_track_level(self, t_ms: float) -> float:
+        """Linear interpolation of the vibe track. Unlike a stroke script a long
+        gap is held, not treated as idle: 50 for ten seconds means buzz at 50."""
+        acts = self.vibe_track
+        if not acts or t_ms < acts[0]["at"] or t_ms > acts[-1]["at"]:
+            return 0.0
+        i = self._beat_index(acts, t_ms)
+        a = acts[max(0, i)]
+        if i + 1 >= len(acts):
+            return a["pos"] / 100.0
+        b = acts[i + 1]
+        span = b["at"] - a["at"]
+        if span <= 0:
+            return b["pos"] / 100.0
+        return (a["pos"] + (b["pos"] - a["pos"]) * (t_ms - a["at"]) / span) / 100.0
+
     def effective_vibe_mode(self) -> str:
         if self.vibe_mode == "auto":
             return "beat" if self._script_is_beat else "speed"
@@ -1144,10 +1173,10 @@ class FunscriptPlayer:
         step = self.bp.scalar_step() if hasattr(self.bp, "scalar_step") else VIBE_STEP
         return max(step, target)
 
-    def _shape(self, raw: float) -> float:
+    def _shape(self, raw: float, allow_invert: bool = True) -> float:
         """Intensity limits, invert and master, applied to a 0..1 request."""
         raw = max(0.0, min(1.0, raw))
-        if self.invert:
+        if self.invert and allow_invert:
             raw = 1.0 - raw
         if raw <= 0.001:
             return 0.0                         # true silence, ignore the floor
@@ -1329,7 +1358,13 @@ class FunscriptPlayer:
 
     async def _vibe_tick(self, now_ms: float, devices: list) -> None:
         mode = self.effective_vibe_mode()
-        if mode == "beat":
+        if self.using_vibe_track():
+            mode   = "track"
+            raw    = self._vibe_track_level(now_ms)
+            target = self._shape(raw, allow_invert=False)
+            self._vibe_level = target          # authored edges, no EMA
+            state  = (raw, 0.0)
+        elif mode == "beat":
             target = self._beat_target(now_ms)
             self._vibe_level = target          # no EMA: bursts must have sharp edges
             state  = (1.0 if target > 0 else 0.0, 0.0)
@@ -1786,6 +1821,48 @@ class FunscriptPlayer:
 # axis suffixes used by multi-axis scripts; these should never win over the main script
 AXIS_SUFFIXES = ("roll", "pitch", "yaw", "twist", "sway", "surge", "suck", "vib",
                  "l0", "l1", "l2", "r0", "r1", "r2", "alpha", "beta")
+# A dedicated vibrator track ("video.vib.funscript", the multi-axis convention,
+# plus the spellings people actually use). Its position IS the intensity, so it
+# beats anything derived from stroke motion. Never the main script: a stroker
+# still follows the main one.
+VIBE_TRACK_SUFFIXES = ("vib", "vibe", "vibes", "vibrate", "vibration", "vibrator", "v0")
+
+
+def _tail_after(base: str, stem: str) -> str | None:
+    """The suffix of `base` after `stem`, or None if base does not start with it."""
+    if len(base) <= len(stem) or not base.lower().startswith(stem.lower()):
+        return None
+    return base[len(stem):].strip(" ._-").lower()
+
+
+def is_vibe_track_name(script_path: str) -> bool:
+    stem  = os.path.splitext(os.path.basename(script_path or ""))[0]
+    parts = [x for x in re.split(r"[ ._-]+", stem) if x]
+    return len(parts) > 1 and parts[-1].lower() in VIBE_TRACK_SUFFIXES
+
+
+def find_vibe_track(script_path: str) -> str | None:
+    """The vibrator track that belongs to `script_path`, if there is one.
+
+    Matched on the script's own name, not the video's, so it follows whatever
+    script the user picked. A script that is itself a vibe track has none."""
+    if not script_path:
+        return None
+    d    = os.path.dirname(script_path)
+    stem = os.path.splitext(os.path.basename(script_path))[0]
+    if is_vibe_track_name(script_path):
+        return None
+    try:
+        names = sorted(os.listdir(d))
+    except Exception:
+        return None
+    for name in names:
+        if not name.lower().endswith(".funscript"):
+            continue
+        base = os.path.splitext(name)[0]
+        if _tail_after(base, stem) in VIBE_TRACK_SUFFIXES:
+            return os.path.join(d, name)
+    return None
 
 
 def _norm_name(s: str) -> str:
@@ -1898,6 +1975,7 @@ class BackendServer:
         self._mode            = "intiface"   # "intiface" | "handy_wifi"
         self._pending_actions = None
         self._current_script_path: str | None = None
+        self._vibe_track_path: str | None = None
         self._output          = True
         self._manual          = {"enabled": False, "level": MANUAL_DEFAULT_LEVEL,
                                  "shape": MANUAL_DEFAULT_SHAPE,
@@ -2025,7 +2103,11 @@ class BackendServer:
                 "previewOn": self._preview_on,
                 "rate": (self.player.rate if self.player else 1.0),
                 "beatPicked": bool(self.player and self.player._beats_peak_picked),
-                "vibeEffective": (self.player.effective_vibe_mode() if self.player else "speed"),
+                "vibeEffective": ("track" if self.player and self.player.using_vibe_track()
+                                  else self.player.effective_vibe_mode() if self.player else "speed"),
+                "vibeTrack": (os.path.basename(self._vibe_track_path)
+                              if self._vibe_track_path and self.player and self.player.vibe_track
+                              else ""),
                 "devices":   [
                     {"index": idx, "name": dev.get("DeviceName", "?"),
                      "kind": device_kind(dev)}
@@ -2124,7 +2206,9 @@ class BackendServer:
                 except Exception as e:
                     log_debug(f"Disconnect before reconnect failed (ignored): {e}")
 
-            carried = self.player.actions if self.player else None
+            carried       = self.player.actions if self.player else None
+            carried_track = self.player.vibe_track if self.player else []
+            carried_track_on = self.player.vibe_track_enabled if self.player else True
 
             self.bp     = ButtplugClient(url)
             self.player = FunscriptPlayer(self.bp)
@@ -2133,6 +2217,8 @@ class BackendServer:
             # device would silently unload it.
             if carried and self._pending_actions is None:
                 self.player.load(carried)
+                self.player.load_vibe_track(carried_track)
+            self.player.vibe_track_enabled = carried_track_on
             if self._pending_actions is not None:
                 log.info(f"Loading buffered funscript ({len(self._pending_actions)} actions)")
                 self.player.load(self._pending_actions)
@@ -2284,6 +2370,7 @@ class BackendServer:
                         beat_on_ms     = msg.get("beatMs"),
                         beat_edge      = msg.get("beatEdge"),
                         beat_prominence = msg.get("beatProminence"),
+                        vibe_track     = msg.get("vibeTrack"),
                     )
             else:
                 # Handy-Mode
@@ -2530,6 +2617,15 @@ class BackendServer:
                 return
             self.player.load(actions)
             self._pending_actions = None
+            # Never inverted: invert flips stroke direction, and a vibe track's
+            # position is already an intensity.
+            # The picked script may itself be the vibe track (a folder with
+            # nothing else in it); then it is its own track.
+            track = path if is_vibe_track_name(path) else find_vibe_track(path)
+            track_actions = (load_funscript_file(track) if track and track != path
+                             else [dict(a) for a in actions] if track else None)
+            self.player.load_vibe_track(track_actions or [])
+            self._vibe_track_path = track if track_actions else None
 
         else:  # handy_wifi
             if self._handy and self._tunnel_url:
