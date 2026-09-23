@@ -413,15 +413,18 @@ async def _substep():
     print(f"   duty={p._substep_duty:.2f}  {len(levels)} cmds in 1.2s "
           f"({len(levels)/1.2:.1f}/s)  OK")
 
-    # command rate must stay inside the BLE budget at every duty
+    # command rate must stay inside the BLE budget at every duty. Divide by
+    # measured time, not 100 x 20ms: Windows timers round each sleep up to
+    # ~31ms, which inflated the rate by half and failed a correct emitter.
     for frac in (0.05, 0.2, 0.5, 0.85):
         p._reset_vibe()
         bp.sent.clear()
+        t_start = time.monotonic()
         for _ in range(100):
             await asyncio.sleep(0.02)
             await p._emit_vibe(step * frac, devs)
         n = len([1 for m, _ in bp.sent if m == "ScalarCmd"])
-        rate = n / 2.0
+        rate = n / (time.monotonic() - t_start)
         assert rate <= 11.0, f"duty {frac}: {rate:.1f} cmd/s exceeds BLE budget"
 
     # silence still wins instantly, mid-pulse
@@ -850,3 +853,182 @@ async def _carry():
 asyncio.run(_carry())
 
 print("\nFORK 1.19 TESTS PASSED")
+
+
+# ── 36-39. 1.21 graded beat scripts, thinning, stop routes through panic ─────
+import random
+print("36. graded beat detection: tempo grid separates it from a stroker script")
+_PAIRS = [(11, 90), (34, 81), (20, 70), (5, 95), (40, 75)]
+def _graded(n, iv, pairs=_PAIRS):
+    out = []
+    for i in range(n):
+        lo, hi = pairs[(i // 16) % len(pairs)]
+        out.append({"at": i * iv, "pos": lo if i % 2 == 0 else hi})
+    return out
+_rng = random.Random(7)
+_t, _hand = 0, []
+for i in range(400):                         # same shape, human timing
+    _hand.append({"at": _t, "pos": 10 if i % 2 == 0 else 90})
+    _t += _rng.randint(230, 1100)
+assert isync.detect_beat_script(_graded(400, 400)) == "graded", "graded script missed"
+assert isync.detect_beat_script(_square(400, 468)) == "edge", "0/100 script not edge"
+assert isync.detect_beat_script(_hand) == "", \
+    f"off-grid stroker misread as beat (grid {isync.tempo_grid_score(_hand):.2f})"
+assert isync.detect_beat_script(dense30fps) == "", "tracker script misread as graded"
+assert isync.detect_beat_script(wavy) == "", "wavy script misread as graded"
+print(f"   graded=graded, square=edge, stroker/dense/wavy=none "
+      f"(stroker grid {isync.tempo_grid_score(_hand):.2f})  OK")
+
+print("37. graded scripts take burst level from swing height, not pace")
+async def _graded_level():
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    # first half swings 80, second half swings 30, identical tempo throughout
+    acts = [{"at": i * 400, "pos": (10 if i % 2 == 0 else 90) if i < 200
+             else (35 if i % 2 == 0 else 65)} for i in range(400)]
+    p.load(acts)
+    p.apply_settings(vibe_mode="auto")
+    assert p._script_beat_kind == "graded" and p.effective_vibe_mode() == "beat"
+    assert p._beat_level_src == "amp"
+    devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+    def levels_between(a, b):
+        p._reset_vibe(); bp.sent.clear()
+        async def run():
+            for k in range(a, b, 20):
+                isync.time.monotonic = lambda: t0 + k / 1000.0
+                await p._vibe_tick(k, devs)
+        return run
+    try:
+        await levels_between(10000, 20000)()
+        big = [pl["Scalars"][0]["Scalar"] for m, pl in bp.sent if m == "ScalarCmd" and pl["Scalars"][0]["Scalar"] > 0]
+        await levels_between(110000, 120000)()
+        small = [pl["Scalars"][0]["Scalar"] for m, pl in bp.sent if m == "ScalarCmd" and pl["Scalars"][0]["Scalar"] > 0]
+    finally:
+        isync.time.monotonic = real
+    assert big and small, "no bursts fired"
+    assert max(big) > 0.9, f"largest swing should reach full: {max(big):.2f}"
+    assert abs(max(small) - 30 / 80) < 0.08, f"30/80 swing gave {max(small):.2f}"
+    print(f"   swing 80 -> {max(big):.2f}, swing 30 -> {max(small):.2f}  OK")
+asyncio.run(_graded_level())
+
+print("38. beats too fast for the device are merged, loudest swing kept")
+# 160ms apart: not dense (so not peak-picked) but inside the thinning window
+fast = [{"at": i * 160, "pos": (0 if i % 2 == 0 else (40 if i % 7 else 100))} for i in range(300)]
+assert not isync.is_dense_script(fast)
+ann  = isync.FunscriptPlayer._annotate_beats(fast)
+thin = isync.FunscriptPlayer._thin_beats([dict(b) for b in ann])
+gaps = [thin[i + 1]["at"] - thin[i]["at"] for i in range(len(thin) - 1)]
+assert min(gaps) >= isync.BEAT_THIN_MIN_MS, f"thinned beats still {min(gaps)}ms apart"
+assert len(thin) < len(fast), "nothing was thinned"
+# every kept beat carries the loudest swing of the run it swallowed
+for i, b in enumerate(thin):
+    end = thin[i + 1]["at"] if i + 1 < len(thin) else float("inf")
+    run = [a["_amp"] or 0 for a in ann if b["at"] <= a["at"] < end]
+    assert b["_amp"] == max(run), f"beat @{b['at']}: kept {b['_amp']}, run max {max(run)}"
+print(f"   160ms beats -> {len(thin)} kept of {len(fast)}, loudest swing carried  OK")
+
+# The budget sweep that caught 1.20-dev at 13.3 cmd/s: every beat is an on and
+# an off, so any tempo the thinning lets through has to fit in ~11/s.
+async def _beat_rate(acts):
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    p.load(acts)
+    p.apply_settings(vibe_mode="beat")
+    devs = bp.scalar_devices(); real = time.monotonic; t0 = real()
+    try:
+        for k in range(0, 20000, 20):
+            isync.time.monotonic = lambda: t0 + k / 1000.0
+            await p._vibe_tick(k, devs)
+    finally:
+        isync.time.monotonic = real
+    return len([1 for m, _ in bp.sent if m == "ScalarCmd"]) / 20, p
+worst = 0.0
+for iv in (100, 140, 150, 160, 170, 180, 190, 200, 233):
+    for acts in (_square(600, iv), _graded(600, iv)):
+        rate, pl = asyncio.run(_beat_rate(acts))
+        assert rate <= 11.0, f"{iv}ms {pl._script_beat_kind or 'dense'}: {rate:.1f} cmd/s over budget"
+        worst = max(worst, rate)
+_, pl = asyncio.run(_beat_rate(fast))
+assert not pl._beats_peak_picked, "thinned is not the same as peak-picked"
+print(f"   100-233ms edge and graded beats, worst {worst:.1f} cmd/s  OK")
+p_empty = isync.FunscriptPlayer(FakeBP([GUSH]))
+p_empty.load(dense30fps); assert p_empty._beats_peak_picked
+p_empty.load([]);         assert not p_empty._beats_peak_picked, "stale beatPicked after empty load"
+print("   empty load clears the peak-picked flag  OK")
+
+print("39. the stop message goes through _panic and clears app-level manual")
+async def _stop_msg():
+    bp = FakeBP([GUSH])
+    srv = isync.BackendServer()
+    srv.bp = bp
+    srv.player = isync.FunscriptPlayer(bp)
+    srv._manual["enabled"] = True
+    srv.player.set_manual(enabled=True, level=0.5, shape="tease")
+    bp.sent.clear()
+    await srv._handle(None, {"type": "stop"})
+    await asyncio.sleep(0.05)
+    assert not srv._manual["enabled"], "stop left the app-level manual flag armed"
+    assert not srv.player.manual_enabled
+    assert ("StopAllDevices", {}) in bp.sent, f"no StopAllDevices: {bp.sent}"
+asyncio.run(_stop_msg())
+print("   manual disarmed at both levels, StopAllDevices sent  OK")
+
+print("\nFORK 1.21 TESTS PASSED")
+
+
+# ── 40-41. 1.22 tease strength build-up ──────────────────────────────────────
+print("40. tease strength builds from the starting level to full over N buzzes")
+async def _amp_build():
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    p.set_manual(shape="tease", period=1.0, on_ms=400, build=0,
+                 build_amp=4, amp_from=0.25)
+    # sample mid-buzz and mid-gap of each cycle, in order, so the cycle
+    # counter sees every wrap the way the real loop does
+    on, off = [], []
+    for k in range(7):
+        on.append(p._manual_shape_value(100.0 + k + 0.1))
+        off.append(p._manual_shape_value(100.0 + k + 0.7))
+    want = [0.25, 0.4375, 0.625, 0.8125, 1.0, 1.0, 1.0]
+    assert all(abs(a - b) < 1e-9 for a, b in zip(on, want)), f"strength ramp {on}"
+    assert all(v == 0.0 for v in off), f"gaps must stay silent: {off}"
+    # off by default: every buzz at full strength, as before
+    q = isync.FunscriptPlayer(FakeBP([GUSH]))
+    q.set_manual(shape="tease", period=1.0, on_ms=400)
+    assert [q._manual_shape_value(200.0 + k + 0.1) for k in range(3)] == [1.0, 1.0, 1.0]
+    # length and strength build independently and together
+    r = isync.FunscriptPlayer(FakeBP([GUSH]))
+    r.set_manual(shape="tease", period=1.0, on_ms=400, build=4, build_amp=2, amp_from=0.5)
+    assert r._manual_shape_value(300.1) == 0.5
+    assert r._manual_shape_value(300.3) == 0.0, "first buzz should be short with length build"
+    # the frontend's field names reach the player
+    srv = isync.BackendServer()
+    srv.bp = FakeBP([GUSH]); srv.player = isync.FunscriptPlayer(srv.bp)
+    await srv._handle(None, {"type": "manual", "shape": "tease", "buildAmp": 6, "ampFrom": 0.3})
+    assert srv.player.manual_build_amp == 6 and abs(srv.player.manual_amp_from - 0.3) < 1e-9
+    assert srv._manual["build_amp"] == 6, "app-level copy must survive a reconnect"
+    assert not srv.player.manual_enabled, "setting a build must not switch manual on"
+    print(f"   {', '.join(f'{v:.2f}' for v in on)}; default full; plumbing OK")
+asyncio.run(_amp_build())
+
+print("41. a weak buzz under the motor floor is held at one step, not chopped")
+async def _amp_floor():
+    bp = FakeBP([GUSH])
+    p  = isync.FunscriptPlayer(bp)
+    p.apply_settings(vibe_substep=True)
+    p.set_manual(enabled=True, level=0.5, shape="tease", period=2.0, on_ms=800,
+                 build_amp=10, amp_from=0.02)   # first buzz asks for 1% of motor
+    devs = bp.scalar_devices(); step = bp.scalar_step()
+    real = time.monotonic; t0 = real(); bp.sent.clear()
+    try:
+        for k in range(0, 700, 20):              # inside the first 800 ms buzz
+            isync.time.monotonic = lambda: t0 + k / 1000.0
+            await p._manual_tick(devs)
+    finally:
+        isync.time.monotonic = real
+    lv = [pl["Scalars"][0]["Scalar"] for m, pl in bp.sent if m == "ScalarCmd"]
+    assert lv and all(abs(x - step) < 1e-9 for x in lv), f"buzz was chopped: {lv}"
+    print(f"   {len(lv)} command(s), all at one step ({step:.2f})  OK")
+asyncio.run(_amp_floor())
+
+print("\nFORK 1.22 TESTS PASSED")

@@ -4,7 +4,7 @@ Written to be handed to an LLM alongside the source when requesting changes.
 It records what exists, why it is built the way it is, and which decisions are
 load-bearing. Read this before editing anything.
 
-Last updated: 2026-09-15 (safety sweep, see §6b)
+Last updated: 2026-09-23 (1.22: pattern presets, tease strength build, knob UI, see §6b)
 
 ---
 
@@ -47,15 +47,17 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.0.0 | UI only | `R` `M` dbl-click | `/scenes/<id>` | ~1010 |
-
-
+| QuickTools | 1.2.1 | UI only | `R` `M` `D` dbl-click | `/scenes/<id>` | ~1430 |
+| IntifaceSync (vibe fork) | 1.22-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
-| IntifaceSync (vibe fork) | 1.20-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~1850 JS + ~2230 PY |
 
-`R` is bound by two plugins. They never collide because QuickRate only binds on
-`/scenes/<id>` and QuickCriteria only on `/performers/<id>`. **Any new plugin
-binding `R` must check its path guard first.**
+**Both shipped plugins listen for keys on the scene page**, and the rating
+panel takes digits while IntifaceSync binds `0`. QuickTools listens on
+`window` (capture) so it always runs first, and its `stopPropagation()` keeps
+a handled key away from everything on `document`. IntifaceSync also skips any
+key that arrives `defaultPrevented`. Two capture listeners on `document` run
+in registration order, which is plugin load order, so do not move QuickTools
+back. **Any new hotkey must check its path guard and the other plugin's keys.**
 
 ---
 
@@ -134,8 +136,8 @@ controls stay clickable. QuickCriteria is a centred modal because it is longer.
 ```js
 localStorage.setItem("quickRateDebug", "1");      // etc.
 ```
-Per-plugin: `quickRateDebug`, `quickNavDebug`, `quickMarkDebug`,
-`quickCriteriaDebug`. IntifaceSync logs to
+QuickTools: `quickToolsDebug`. The old per-plugin keys (`quickRateDebug`,
+`quickNavDebug`, `quickMarkDebug`, `quickCriteriaDebug`) are dead. IntifaceSync logs to
 `/root/.stash/plugins/IntifaceSync/intiface_sync.log`.
 
 ---
@@ -309,9 +311,38 @@ script → raw 0-1 → intensity limits (floor/ceiling) → × master → quanti
   sensitivity value that Cock Hero scripts do. A future version could scale
   this automatically from the picked-script statistics.
 
-  **`auto`** = `beat` when `detect_beat_script()` says so (≥95% of keyframes
-  within 5 of 0 or 100, alternating on ≥90% of them, ≥40 keyframes), else
-  `speed`. The UI default is still `speed`; the user opts into `auto`.
+  **`auto`** = `beat` when `detect_beat_script()` says so, else `speed`. It
+  returns `"edge"`, `"graded"` or `""` (it used to return a bool; callers that
+  test truthiness still work).
+  - `edge`: ≥95% of keyframes within 5 of 0 or 100, alternating on ≥90% of
+    them, ≥40 keyframes. Classic Cock Hero. Burst level comes from pace.
+  - `graded` (added in the "Fixes to Auto mode" commit, documented and tested
+    in 1.21): scripts like "Cock Hero Colors" alternate on every keyframe but
+    never reach 0/100 (11↔90, 34↔81), because the swing height carries the
+    intensity. Detected on shape, not position: not dense, ≥90% of moves
+    reverse, median swing ≥25, and `tempo_grid_score()` ≥0.60. The grid score
+    is the part that matters. A hand-made stroker script has the same shape,
+    but its intervals are not simple multiples of the modal interval. Burst
+    level is `swing / _beat_amp_ref`, where the reference is the script's own
+    90th-percentile swing clamped to 40-100, so a script that tops out at 70
+    still reaches full. Pace is deliberately not used here: in these scripts
+    pace and swing move together, so dividing one by the other cancels out.
+  - **Thinning.** `_annotate_beats()` stores each beat's pace and swing on the
+    beat (`_ref`, `_amp`), then `_thin_beats()` keeps one beat per
+    `BEAT_THIN_MIN_MS` window and carries the loudest swing of the merged run
+    onto it. `_beat_target()` prefers the stored values, which is how they
+    survive thinning. Runs for graded scripts and for anything with beats
+    closer than the window; otherwise `_beats` stays the same object as
+    `actions`.
+  - **BLE budget (1.21 fix).** Every beat costs two commands, on and off, and
+    the off edge is never rate-limited, so beat spacing *is* the command rate:
+    150 ms measured 13.3 cmd/s, 180 ms 11.1. `BEAT_THIN_MIN_MS` and
+    `BEAT_PEAK_MIN_SEP_MS` are both 190 (10.5/s max). Test 38 sweeps
+    100-233 ms for edge and graded scripts; worst case is 10.6/s. Do not lower
+    either constant without rerunning that sweep.
+  - `_beats_peak_picked` is the real "was this peak-picked" flag and drives
+    `beatPicked` in status. `_beats is not actions` no longer means that,
+    because thinning also builds a new list. The UI default is still `speed`; the user opts into `auto`.
   Status carries `beatScript` and `vibeEffective` so the toolbar can show
   `♩beat`. Measured on the real file: 1.3 → 8.6 cmd/s across tempo tiers,
   levels 0.10 → 0.85. Tests 22-23.
@@ -572,7 +603,75 @@ remains as best-effort; the deadman is the real guarantee.
 **Hardware caveat, say it plainly:** none of this helps if the Python process
 itself hangs. Know where the Gush 2 power button is.
 
-**Tests:** `test_vibe.py`, 35 checks, run from the plugin's parent directory:
+**`stop` goes through `_panic()` (1.21).** Tab close (`pagehide`) and
+Disconnect both send `stop`. It used to call `player.stop()` only, which
+cleared the player's manual flag but left `BackendServer._manual["enabled"]`
+set, so a later `manual` message (a slider nudge) could re-arm tease on that
+player. Rule 1 says every stop-type path calls `_panic()`; this one now does
+so first, then disconnects as before. Test 39.
+
+**Pattern presets (1.22, frontend only).** Named snapshots of the manual
+pattern: shape, period, buzz length, dip, both builds, power limit, micro
+pulse. Deliberately **not** the on-switch (loading a preset can reshape a
+running session but can never start one) and not the intensity slider (the
+live knob).
+
+- **Storage.** Stash plugin config key `patternPresets`, a JSON string
+  `{v, rev, active, presets[]}`, not declared in the `.yml` so Stash's settings
+  page does not render it. Mirrored in localStorage `IntifaceSync.presets`.
+  Stash was chosen over localStorage alone because it survives plugin updates
+  and cleared browser data and is shared by every browser. localStorage is
+  allowed here: presets are UI preferences, nothing safety-related.
+- **Rule 5 on write.** `configurePlugin` replaces the plugin's whole map, so
+  `writeStashStore()` re-reads the config and spreads it. If that read fails
+  it throws and **does not write**; the generic `loadPluginConfig()` returns
+  `{}` on failure and must never feed a write. The status line in the
+  popover says "Saved in this browser only" when Stash refused.
+- **Why the mirror.** Stash's settings page spreads the config it loaded
+  into every save (checked in `SettingsPluginsPanel.tsx` / `context.tsx`,
+  develop, 2026-09). A settings tab left open while presets change elsewhere
+  therefore writes back an old list. On load the copy with the higher `rev`
+  wins and the loser is overwritten, which repairs that.
+- **Active preset.** `active` lives in the shared store; `presetBase` (in the
+  per-browser settings) records which preset this browser's values came from.
+  On load or a `storage` event, if `active !== presetBase` the preset's values
+  are applied; otherwise local values are kept because they may be edits.
+  "Edited" is computed, never stored: `samePattern()` over only the fields
+  the shape reads (`patternFieldsFor()`), so a hidden field cannot mark it.
+  Shape is compared separately; putting it in the numeric list made every
+  preset permanently "edited" during development.
+- Old presets without `buildAmp`/`ampFrom` load with strength build off.
+
+**Tease strength build (1.22).** `manual_build_amp` (cycles, 0 = off) and
+`manual_amp_from` (0-1) scale each buzz from `amp_from` to full over that many
+cycles, on the same `_manual_cycle` counter as the length build but
+independent of it. Plumbed through `set_manual`, the `manual` message
+(`buildAmp`, `ampFrom`), `BackendServer._manual` (so reconnects keep it) and
+status. **Floor interaction:** a partial-strength buzz can ask for less than
+one step while the peak is above the floor, which used to route to the
+sub-step pulser and chop the buzz into ticks. `_manual_tick` now holds any
+non-zero gate target at one step, like beat mode. Tests 40-41 (41 fails if
+the clamp is removed; checked).
+
+**Knob UI (1.22).** The pattern popover draws the pattern with
+`patternSamples()`, a JS copy of `_manual_shape_value()`. **Keep the two in
+step**: if a shape changes in Python and not here, the picture lies.
+`patternSummary()` restates the settings in words. `knobRow()` replaced
+`numRow()`: slider plus number box, log scale for period/buzz/micro, square
+scale for the builds. Buzz length is shown in seconds but stored in ms. The
+advanced row's bare number boxes became named sliders with word readouts
+(sensitivity reads gentle/balanced/lively/very buzzy and runs right = more
+sensitive, the inverse of `vibeMaxSpeed`). `refreshVibeControls()` now runs
+on every status, which also fixes the beat-detail control never appearing
+when `beatPicked` arrived after the row was built. The popover repositions on
+every update because switching pattern changes its height.
+
+Browser-tested against a harness (fake GraphQL with Stash's replace-on-write
+semantics, fake backend socket): save, edit, update, revert, reload, fresh
+browser, two tabs, and a stale-settings-page overwrite. Not tested in a real
+Stash.
+
+**Tests:** `test_vibe.py`, 41 checks, run from the plugin's parent directory:
 
 ```bash
 python3 test_vibe.py
@@ -581,6 +680,35 @@ python3 test_vibe.py
 It stubs `ButtplugClient` — it verifies wire format, mapping maths, rate limits
 and state machines, **not** real hardware behaviour. Motor response to pulsing
 is unmodelled and untestable here.
+
+Rate assertions must divide by **measured** elapsed time. Test 18 used to
+assume 100 × `sleep(0.02)` = 2.0 s; on Windows each sleep rounds up to ~31 ms,
+so it reported 12.5 cmd/s for an emitter really doing 8.3 and failed
+`validate.sh` on the maintainer's machine while passing in Linux CI. Tests
+that fake `time.monotonic` are immune.
+
+### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
+
+Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
+current scene. **The plugin never deletes anything**; the user filters by the
+tag later.
+
+- **Not a panel.** It never joins the `setActive()` registry, so it does not
+  take the keyboard or close on the next click. The keyboard router lets `D`
+  through the rating panel on purpose: `R` then `D` saves the rating and marks.
+- **Rule 5.** `sceneUpdate` replaces `tag_ids`, so `applyToggle()` reads the
+  scene's full tag list and writes it back with the one id added or removed.
+  Never send a partial list.
+- **Tag id cache.** `quickToolsDeleteTag` in localStorage holds `{name, id}`;
+  renaming the tag in settings invalidates it. The page-load path
+  (`ensureTag(false)`) never creates the tag. A failed toggle forgets the
+  cache, re-resolves and retries exactly once (covers a tag deleted in Stash).
+- **Overlay and toast live in `document.body`**, placed from the video's rect
+  on a 500 ms poll plus resize/scroll, and moved into
+  `document.fullscreenElement` on fullscreen because a fixed body child is not
+  painted over it. The tint stops above `.vjs-control-bar` so the timeline
+  stays readable. Appending into the player DOM would be simpler and would be
+  wiped by React's next render.
 
 ---
 
@@ -619,6 +747,11 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Beat level scaling is not normalised per script; tracker scripts need roughly half the `vibeMaxSpeed` of beat scripts. Auto-scaling from picked-script statistics is the obvious follow-up. |
 | IntifaceSync | `BEAT_DENSE_MEDIAN_MS` 150 is a guess. A tracker running at 10fps (100ms) is caught; one at 6fps (167ms) is not and would fire per raw keyframe. |
 | IntifaceSync | Micro pulsing untested on real hardware; may read as a tick rather than a hum at low duty. |
+| IntifaceSync | Graded beat detection tested only on synthetic scripts. Thresholds (`BEAT_ALT_FRAC` 0.90, `BEAT_MIN_MEDIAN_SWING` 25, `BEAT_GRID_FRAC` 0.60, grid tolerance 8%) are guesses. Check that a real "Colors" script classifies as `graded` and a hand-scripted stroker file stays `""`. Swing-based levels apply to graded scripts only; the edge and peak-picked paths are still pace-based and unnormalised. |
+| IntifaceSync | Beat spacing raised to 190 ms in 1.21 for the BLE budget. Scripts faster than ~5 beats/s now merge beats (loudest swing kept). Check that fast Cock Hero sections still feel like a beat, not a blur. |
+| IntifaceSync | Presets and knob UI tested only in a harness, not a real Stash. Check: save a preset, reload, open Stash Settings > Plugins and change an IntifaceSync setting, reload the scene: the preset list must survive. Check the popover position when the player is fullscreen. |
+| IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
+| QuickTools / IntifaceSync | Key-clash fix (QuickTools on `window`) follows from DOM event order but is untested in a live Stash. Check: IntifaceSync manual on, press `R`, type `10`, manual stays on. |
 | IntifaceSync | Funscript discovery uses `files[0].path`; multi-file scenes may resolve the wrong directory. |
 | IntifaceSync | Spectator tabs show a greyed toolbar but their manual/hotkey controls silently do nothing. Could disable the controls visually. |
 | QuickRate / QuickMark | `isVideoSurface()` selector list is a guess at Stash's video.js DOM. If a video click still pauses, inspect `ev.target` and extend the selector. |
@@ -630,6 +763,43 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-23 (later): presets and UX, IntifaceSync 1.21 → 1.22-vibe
+
+User asked for saved manual presets that stay active across tabs and visits,
+friendlier knobs, and mid-session a strength build for Tease. See §4.5
+"Pattern presets", "Tease strength build", "Knob UI". Tests 40-41.
+
+### 2026-09-23: catch-up on Auto mode and mark-for-delete
+
+The last three commits (`b13a981` D mark-for-delete, `fefc5d0` overlay,
+`a222a31` Fixes to Auto mode) went in without docs or tests, and Auto mode
+without a version bump. This session caught up and fixed what turned up.
+
+**Validation was red locally for two non-bugs.** PyYAML was not installed for
+Python 3.14 (fixed with `pip install pyyaml`), and test 18 divided by an
+assumed 2.0 s (see §4.5 Tests). Neither affected CI.
+
+**IntifaceSync 1.20 → 1.21-vibe.**
+- Graded beat detection, amplitude levels and thinning from `a222a31`
+  documented (§4.5 Beat mode) and covered by tests 36-38.
+- **Beat mode exceeded the BLE budget** at beat spacings under ~182 ms: two
+  commands per beat, off edge unlimited. Measured 13.3 cmd/s at 150 ms. This
+  predates `a222a31`, which made it easier to reach by thinning to 150.
+  `BEAT_THIN_MIN_MS` and `BEAT_PEAK_MIN_SEP_MS` are both 190 now. Test 38
+  sweeps it.
+- `stop` routes through `_panic()` (rule 1). Test 39.
+- `_beats_peak_picked` was not reset on an empty load, and the load log called
+  a thinned non-beat script "dense".
+- JS hotkeys ignore keys that arrive `defaultPrevented`.
+
+**QuickTools 1.2.0 → 1.2.1.** Keyboard router moved from `document` to
+`window` capture, so the rating panel's `0` no longer also turns off
+IntifaceSync manual mode. Still exactly one keydown listener. §4.6 written for
+`D`, which had no maintenance notes at all.
+
+**Not done / next session:** everything in §6 marked untested. The "stop
+everything" hotkey idea below is still open.
 
 ### 2026-09-15 — safety sweep
 

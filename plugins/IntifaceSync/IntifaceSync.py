@@ -135,12 +135,15 @@ BEAT_AMP_PCT          = 0.90    # swing percentile mapped to full intensity
 BEAT_AMP_REF_MIN      = 40.0    # ...clamped, so a timid script still reaches the top
 BEAT_AMP_REF_MAX      = 100.0   # ...and a spiky one is not normalised into a drone
 BEAT_AMP_FLOOR        = 0.15    # smallest swing still worth a burst
-BEAT_THIN_MIN_MS      = 150     # beats closer than this get merged, see _thin_beats
+BEAT_THIN_MIN_MS      = 190     # beats closer than this get merged, see _thin_beats.
+                                # Each beat costs two commands (on, off), so this
+                                # is what holds beat mode under ~11 cmd/s: 150
+                                # measured 13.3/s, 180 measured 11.1/s.
 # Peak picking: FunGen and other trackers emit at a fixed frame rate (33ms at
 # 30fps), so most keyframes are interpolation points, not stroke turnarounds.
 # Beat mode runs on extracted turning points instead of the raw list.
 BEAT_PEAK_PROMINENCE  = 20      # minimum swing (pos units) for a turn to count
-BEAT_PEAK_MIN_SEP_MS  = 180     # never two peaks closer than this
+BEAT_PEAK_MIN_SEP_MS  = 190     # never two peaks closer than this; 180 was 11.1 cmd/s
 BEAT_DENSE_MEDIAN_MS  = 150     # median gap below this = dense script, peak-pick it
 # Clock sync. The backend extrapolates media time from a monotonic clock, which
 # drifts against the browser's video clock (buffering, dropped frames, rate
@@ -176,6 +179,8 @@ MANUAL_DEFAULT_ON_MS   = 400    # burst length for pulse / tease, milliseconds
 MANUAL_MIN_ON_MS       = 60     # shorter than this and the motor never spins up
 MANUAL_DEFAULT_DEPTH   = 0.15   # how far wave / ramp dip, as a fraction of peak
 MANUAL_DEFAULT_BUILD   = 0      # tease: cycles spent escalating, 0 = no build
+MANUAL_DEFAULT_BUILD_AMP = 0    # tease: cycles spent growing buzz strength, 0 = off
+MANUAL_DEFAULT_AMP_FROM  = 0.20 # tease: strength of the first buzz, as a share of peak
 DEADMAN_S              = 15     # stop device after this many seconds without a frontend message
 DEADMAN_TICK_S         = 2      # watchdog poll interval
 WS_PING_INTERVAL_S     = 5      # detect dead browser sockets quickly
@@ -911,6 +916,8 @@ class FunscriptPlayer:
         self.manual_on_ms       = MANUAL_DEFAULT_ON_MS
         self.manual_depth       = MANUAL_DEFAULT_DEPTH
         self.manual_build       = MANUAL_DEFAULT_BUILD
+        self.manual_build_amp   = MANUAL_DEFAULT_BUILD_AMP
+        self.manual_amp_from    = MANUAL_DEFAULT_AMP_FROM
         self.manual_ceiling     = MANUAL_DEFAULT_CEILING
         self.manual_smooth      = MANUAL_DEFAULT_SMOOTH
         self.manual_micro_ms    = MANUAL_DEFAULT_MICROMS
@@ -1040,10 +1047,10 @@ class FunscriptPlayer:
         turnarounds, so it is used as-is; a densely sampled tracker script gets
         peak-picked first. Graded scripts, and anything beating faster than the
         device can follow, get annotated and thinned on top."""
-        if not self.actions:
+        self._beats_peak_picked = False     # before the early return, or an
+        if not self.actions:                # empty load keeps the last flag
             self._beats = self.actions
             return
-        self._beats_peak_picked = False
         if self._script_is_beat or not is_dense_script(self.actions):
             base = self.actions
         else:
@@ -1397,7 +1404,16 @@ class FunscriptPlayer:
                 this_on = min_s + (on_s - min_s) * frac
             else:
                 this_on = on_s
-            return 1.0 if phase_s < this_on else 0.0
+            if phase_s >= this_on:
+                return 0.0
+            # Strength builds on its own count, so a tease can grow louder,
+            # longer, or both. Same cycle counter as the length build.
+            build_amp = max(0, int(self.manual_build_amp))
+            if build_amp > 0:
+                start = max(0.0, min(1.0, float(self.manual_amp_from)))
+                frac  = min(1.0, self._manual_cycle / float(build_amp))
+                return start + (1.0 - start) * frac
+            return 1.0
 
         if shape == "random":
             if now_s >= self._manual_rand_next:
@@ -1479,6 +1495,11 @@ class FunscriptPlayer:
             target = step
         else:
             target = max(0.0, min(1.0, shaped * peak))
+            # A tease strength build can ask for a buzz below the motor floor
+            # while the peak is above it. The pulser would chop that buzz into
+            # ticks, so hold it at one step instead, as beat mode does.
+            if self._manual_is_gate() and shaped > 0.0 and 0.0 < target < step:
+                target = step
         level = await self._emit_manual(target, devices)
         self._preview_sample(target, self._vibe_last_sent)
         if now_s - self._vibe_last_log_s > 30.0:
@@ -1505,7 +1526,8 @@ class FunscriptPlayer:
 
     def set_manual(self, enabled=None, level=None, shape=None, period=None,
                    on_ms=None, depth=None, build=None, ceiling=None,
-                   smooth=None, micro_ms=None) -> None:
+                   smooth=None, micro_ms=None, build_amp=None,
+                   amp_from=None) -> None:
         if level is not None:
             self.master = max(0.0, min(1.0, float(level)))
         if shape in MANUAL_SHAPES:
@@ -1522,6 +1544,10 @@ class FunscriptPlayer:
             self.manual_depth = max(0.0, min(0.95, float(depth)))
         if build is not None:
             self.manual_build = max(0, min(200, int(build)))
+        if build_amp is not None:
+            self.manual_build_amp = max(0, min(200, int(build_amp)))
+        if amp_from is not None:
+            self.manual_amp_from = max(0.0, min(1.0, float(amp_from)))
         if ceiling is not None:
             self.manual_ceiling = max(0.01, min(1.0, float(ceiling)))
         if smooth is not None:
@@ -1547,6 +1573,7 @@ class FunscriptPlayer:
         log.info(f"Manual: enabled={self.manual_enabled} shape={self.manual_shape} "
                  f"period={self.manual_period_s:.1f}s on={self.manual_on_ms:.0f}ms "
                  f"depth={self.manual_depth:.2f} build={self.manual_build} "
+                 f"build_amp={self.manual_build_amp}/{self.manual_amp_from:.2f} "
                  f"master={self.master:.2f} ceiling={self.manual_ceiling:.2f} "
                  f"peak={peak:.3f} ({'sub-step' if peak < step else 'above floor'})")
 
@@ -1574,9 +1601,14 @@ class FunscriptPlayer:
                 if len(self._beats) < len(self.actions):
                     extra += (f", thinned {len(self.actions)} -> {len(self._beats)} "
                               f"beats for the device")
-            elif self._beats is not self.actions:
+            elif self._beats_peak_picked:
                 extra = (f" [dense, {len(self._beats)} peaks extracted "
                          f"for beat mode]")
+            elif len(self._beats) < len(self.actions):
+                # A fast non-beat script can be thinned without being picked;
+                # calling that "dense" sent debugging the wrong way.
+                extra = (f" [thinned {len(self.actions)} -> {len(self._beats)} "
+                         f"beats for beat mode]")
             log.info(f"Funscript loaded: {len(self.actions)} keyframes "
                      f"({self.actions[0]['at']}ms – {self.actions[-1]['at']}ms)" + extra)
         else:
@@ -1873,6 +1905,8 @@ class BackendServer:
                                  "on_ms": MANUAL_DEFAULT_ON_MS,
                                  "depth": MANUAL_DEFAULT_DEPTH,
                                  "build": MANUAL_DEFAULT_BUILD,
+                                 "build_amp": MANUAL_DEFAULT_BUILD_AMP,
+                                 "amp_from": MANUAL_DEFAULT_AMP_FROM,
                                  "ceiling": MANUAL_DEFAULT_CEILING,
                                  "smooth": MANUAL_DEFAULT_SMOOTH,
                                  "micro_ms": MANUAL_DEFAULT_MICROMS}
@@ -1975,6 +2009,10 @@ class BackendServer:
                                 else self._manual.get("depth", MANUAL_DEFAULT_DEPTH)),
                 "manualBuild": (self.player.manual_build if self.player
                                 else self._manual.get("build", MANUAL_DEFAULT_BUILD)),
+                "manualBuildAmp": (self.player.manual_build_amp if self.player
+                                   else self._manual.get("build_amp", MANUAL_DEFAULT_BUILD_AMP)),
+                "manualAmpFrom": (self.player.manual_amp_from if self.player
+                                  else self._manual.get("amp_from", MANUAL_DEFAULT_AMP_FROM)),
                 "manualCeiling": (self.player.manual_ceiling if self.player
                                   else self._manual.get("ceiling", MANUAL_DEFAULT_CEILING)),
                 "manualMicroMs": (self.player.manual_micro_ms if self.player
@@ -2290,6 +2328,10 @@ class BackendServer:
                 self._manual["depth"] = max(0.0, min(0.95, float(msg.get("depth"))))
             if msg.get("build") is not None:
                 self._manual["build"] = max(0, min(200, int(msg.get("build"))))
+            if msg.get("buildAmp") is not None:
+                self._manual["build_amp"] = max(0, min(200, int(msg.get("buildAmp"))))
+            if msg.get("ampFrom") is not None:
+                self._manual["amp_from"] = max(0.0, min(1.0, float(msg.get("ampFrom"))))
             if msg.get("ceiling") is not None:
                 self._manual["ceiling"] = max(0.01, min(1.0, float(msg.get("ceiling"))))
             if msg.get("smooth") is not None:
@@ -2308,6 +2350,10 @@ class BackendServer:
 
         # ── Stop ──────────────────────────────────────────────────────────────
         if t == "stop":
+            # Tab close and Disconnect both land here. player.stop() alone left
+            # the app-level manual flag set, so a later manual message could
+            # re-arm tease; _panic() is the one path that clears everything.
+            await self._panic("stop requested")
             if self._mode == "intiface":
                 if self.player:
                     self.player.stop()
@@ -2317,7 +2363,6 @@ class BackendServer:
                     except Exception:
                         pass
             else:
-                await self._handy_pause()
                 await self._tunnel.stop()
                 self._tunnel_url = None
                 if self._handy:

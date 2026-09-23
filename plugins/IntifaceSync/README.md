@@ -30,11 +30,13 @@ reaches the toy, script or manual, no exceptions. Use it as a panic button.
 **Manual** drives the toy directly, ignoring the funscript. The slider next to
 it sets intensity, and also scales funscript output when a script is playing.
 
-**The pattern button** shows what manual mode is currently doing and opens the
-pattern panel.
+**The pattern button** shows the active preset (or the pattern, if no preset is
+active) and opens the pattern panel. A `*` after the name means you have
+changed something since loading it.
 
-**⚙** opens the advanced row: vibe mode, timing offset, intensity limits,
-micro pulsing and the signal preview.
+**⚙** opens the advanced row: script vibe mode, sensitivity, timing, script
+range, micro pulsing and the signal preview. Each control says in words what
+its current setting does.
 
 ## Manual patterns
 
@@ -47,6 +49,10 @@ micro pulsing and the signal preview.
 | **Tease** | Buzzes that start short and grow longer. |
 | **Random** | Unpredictable level, changing on its own. |
 
+The panel draws the pattern you have set up, with a sentence underneath
+saying the same thing in words ("One 0.4 s buzz at 60% every 4 s…"), so you
+can see what a setting does as you drag it.
+
 Each pattern shows only the settings it actually uses, so if a field is not on
 screen, that pattern ignores it.
 
@@ -54,7 +60,11 @@ screen, that pattern ignores it.
   buzzes for Pulse and Tease.
 - **Buzz length** — how long each buzz lasts. Short reads as a tap, long as a throb.
 - **Dip to** — how far the level falls between peaks. 0 falls to silence.
-- **Build-up** — cycles Tease spends growing each buzz to full length.
+- **Length build-up** (Tease) — how many buzzes it takes to grow from a flick
+  to the full buzz length.
+- **Strength build-up** (Tease) — how many buzzes it takes to grow from the
+  **Starting strength** to full. Use it on its own, or with the length
+  build-up so buzzes get both longer and stronger.
 - **Power limit** — the strongest the motor may go. Lowering it stretches the
   intensity slider across a gentler range, which is the easiest way to get fine
   control at low levels.
@@ -65,6 +75,21 @@ The line at the bottom of the panel tells you the peak output and whether it is
 above or below your motor's floor. That is the number that decides whether
 micro pulsing does anything.
 
+### Presets
+
+Set a pattern up the way you like it, then **+ Save current** at the top of the
+pattern panel and give it a name. Click a preset to load it.
+
+- The active preset stays active until you pick another one: new tabs, reloads
+  and other browsers all come up with it loaded.
+- Changing a setting keeps the preset active and marks it with `*`. **Update**
+  saves the change into the preset, **Revert** throws it away.
+- **Detach** keeps the current settings but stops following the preset.
+- A preset holds the pattern, its timing and the power limit. It does not hold
+  the intensity slider, and loading one never switches manual mode on.
+- Presets are saved in Stash's plugin settings, so they survive plugin updates
+  and are shared by every browser that uses this Stash.
+
 ## Script playback
 
 **Vibe mode** decides how a stroking script becomes vibration:
@@ -73,7 +98,9 @@ micro pulsing does anything.
 - **Speed** — intensity follows stroke speed.
 - **Position** — intensity follows stroke position.
 - **Beat** — one burst per stroke turnaround. Suits Cock Hero scripts and, with
-  peak picking, tracker-generated ones too.
+  peak picking, tracker-generated ones too. Auto also recognises "graded" beat
+  scripts (Cock Hero Colors style), where the height of each stroke sets how
+  strong the burst is.
 
 **Offset** shifts device timing against the video. Positive fires earlier.
 

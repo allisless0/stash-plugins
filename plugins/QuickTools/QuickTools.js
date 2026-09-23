@@ -1360,8 +1360,14 @@
   // ═══ Keyboard router ═══════════════════════════════════════════════════════
   // One capture-phase listener. Previously each plugin installed its own and
   // both ran on every keystroke, which made behaviour depend on load order.
+  //
+  // On window, not document: window capture runs before any document listener,
+  // so stopPropagation here actually keeps a handled key away from other
+  // plugins. On document it only beat them if QuickTools happened to load
+  // first, and typing 10 or 0.5 into the rating panel also hit IntifaceSync's
+  // 0 (manual off).
 
-  document.addEventListener("keydown", (ev) => {
+  window.addEventListener("keydown", (ev) => {
     // An open panel owns the keyboard.
     if (Rate.isOpen()) {
       if (typingInAField(document.activeElement)) return;

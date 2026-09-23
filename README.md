@@ -82,7 +82,7 @@ device connected to it.
 - Unofficial and community-made. Not affiliated with or endorsed by Stash,
 Intiface, Buttplug.io, TheHandy or any toy manufacturer.
 - Substantially written with AI assistance, as was the upstream plugin. The
-IntifaceSync backend has a stubbed test suite (35 checks, no hardware needed):
+IntifaceSync backend has a stubbed test suite (41 checks, no hardware needed):
 `python3 plugins/IntifaceSync/test_vibe.py`.
 - Issues and pull requests welcome. If a change touches IntifaceSync's stop
 logic, please read `docs/MAINTENANCE.md` §4.5 first.

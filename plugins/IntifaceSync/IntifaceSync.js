@@ -186,6 +186,8 @@
   let manualOnMs            = 400;       // burst length for Pulse / Tease
   let manualDepth           = 15;        // % floor for Wave / Ramp
   let manualBuild           = 0;         // Tease: cycles spent escalating, 0 = off
+  let manualBuildAmp        = 0;         // Tease: cycles spent growing strength, 0 = off
+  let manualAmpFrom         = 20;        // Tease: first buzz strength, % of peak
   let manualCeiling         = 100;       // % of motor output the slider maxes at
   let manualMicroMs         = 120;       // micro on-pulse length
   let scalarStep            = 0.05;      // device floor, refreshed from status
@@ -248,9 +250,12 @@
       if (typeof s.manualOnMs    === "number") manualOnMs    = s.manualOnMs;
       if (typeof s.manualDepth   === "number") manualDepth   = s.manualDepth;
       if (typeof s.manualBuild   === "number") manualBuild   = s.manualBuild;
+      if (typeof s.manualBuildAmp === "number") manualBuildAmp = s.manualBuildAmp;
+      if (typeof s.manualAmpFrom  === "number") manualAmpFrom  = s.manualAmpFrom;
       if (typeof s.manualCeiling === "number") manualCeiling = s.manualCeiling;
       if (typeof s.manualMicroMs === "number") manualMicroMs = s.manualMicroMs;
       if (typeof s.hotkeysOn    === "boolean") hotkeysOn   = s.hotkeysOn;
+      if (typeof s.presetBase   === "string")  presetBase  = s.presetBase;
     } catch (e) {
       log(`Failed to load settings: ${e}`, "error");
     }
@@ -263,7 +268,8 @@
         vibeMode, vibeMaxSpeed, vibeSmooth, vibeSubstep, beatMs, beatEdge, beatProminence,
         manualLevel, manualShape, manualPeriod,
         manualOnMs, manualDepth, manualBuild, manualCeiling, manualMicroMs,
-        outputOn, hotkeysOn,
+        manualBuildAmp, manualAmpFrom,
+        outputOn, hotkeysOn, presetBase,
       }));
     } catch (e) {
       log(`Failed to save settings: ${e}`, "error");
@@ -335,6 +341,8 @@
       onMs:    manualOnMs,
       depth:   manualDepth / 100,
       build:   manualBuild,
+      buildAmp: manualBuildAmp,
+      ampFrom:  manualAmpFrom / 100,
       ceiling: manualCeiling / 100,
       microMs: manualMicroMs,
     });
@@ -351,6 +359,273 @@
   function nudgeManual(delta) {
     // nudging while off turns it on, so one key does the obvious thing
     setManual(true, manualLevel + delta);
+  }
+
+  // ── Pattern presets ────────────────────────────────────────────────────────
+  // A preset is the shape of a pattern: which pattern and its timing and power
+  // limit. It never carries the on-switch, so loading one can change what a
+  // running session feels like but can never start one. The intensity slider
+  // is left out too: it is the live knob and is expected to stay put.
+  //
+  // Stored twice. The copy in Stash's own plugin config is the real one: it
+  // survives plugin updates and cleared browser data, and every browser sees
+  // it. The browser copy exists because Stash's settings page writes back the
+  // whole plugin config it loaded, so a settings tab left open while a preset
+  // is saved elsewhere can put back an older list. Whichever copy has the
+  // newer `rev` wins and the loser is overwritten.
+  const PRESET_STORE_KEY = "IntifaceSync.presets";
+  const PRESET_CFG_KEY   = "patternPresets";
+  const PRESET_MAX       = 40;
+  const PRESET_NAME_MAX  = 40;
+  let presetStore = { v: 1, rev: 0, active: null, presets: [] };
+  // Name of the preset this browser's current values were loaded from. Kept
+  // with the other settings so a new tab knows whether its values are the
+  // active preset (possibly edited) or leftovers that should be replaced.
+  let presetBase  = null;
+
+  function currentPattern() {
+    return {
+      shape: manualShape, period: manualPeriod, onMs: manualOnMs,
+      depth: manualDepth, build: manualBuild, ceiling: manualCeiling,
+      microMs: manualMicroMs, buildAmp: manualBuildAmp, ampFrom: manualAmpFrom,
+    };
+  }
+
+  function cleanPattern(p) {
+    const num = (v, lo, hi, d) => (typeof v === "number" && isFinite(v))
+      ? Math.max(lo, Math.min(hi, v)) : d;
+    return {
+      shape:   MANUAL_SHAPES.some((s) => s[0] === p?.shape) ? p.shape : "constant",
+      period:  num(p?.period, 0.5, 60, 4),
+      onMs:    Math.round(num(p?.onMs, 60, 10000, 400)),
+      depth:   Math.round(num(p?.depth, 0, 95, 15)),
+      build:   Math.round(num(p?.build, 0, 200, 0)),
+      ceiling: Math.round(num(p?.ceiling, 1, 100, 100)),
+      microMs: Math.round(num(p?.microMs, 40, 1000, 120)),
+      // Presets saved before 1.22 have neither; they load as "no strength build".
+      buildAmp: Math.round(num(p?.buildAmp, 0, 200, 0)),
+      ampFrom:  Math.round(num(p?.ampFrom, 0, 100, 20)),
+    };
+  }
+
+  // Only the fields the pattern actually reads decide whether it was edited.
+  // Dragging "Dip to" on a Pulse pattern changes nothing you can feel.
+  function patternFieldsFor(shape) {
+    const f = ["ceiling", "microMs"];      // numeric only; samePattern checks shape
+    if (shape !== "constant") f.push("period");
+    if (shape === "pulse" || shape === "tease") f.push("onMs");
+    if (shape === "wave" || shape === "ramp" || shape === "random") f.push("depth");
+    if (shape === "tease") f.push("build", "buildAmp", "ampFrom");
+    return f;
+  }
+
+  function samePattern(a, b) {
+    if (!a || !b || a.shape !== b.shape) return false;
+    return patternFieldsFor(a.shape).every((k) => Math.abs((a[k] ?? 0) - (b[k] ?? 0)) < 1e-6);
+  }
+
+  function activePreset() {
+    return presetStore.active
+      ? presetStore.presets.find((p) => p.name === presetStore.active) || null
+      : null;
+  }
+
+  function presetEdited() {
+    const p = activePreset();
+    return !!p && !samePattern(cleanPattern(p), currentPattern());
+  }
+
+  function applyPattern(p) {
+    const c = cleanPattern(p);
+    manualShape = c.shape;   manualPeriod  = c.period;  manualOnMs    = c.onMs;
+    manualDepth = c.depth;   manualBuild   = c.build;   manualCeiling = c.ceiling;
+    manualMicroMs = c.microMs; manualBuildAmp = c.buildAmp; manualAmpFrom = c.ampFrom;
+    saveSettingsToStorage();
+    updateManualUI();
+    // Pattern only. sendManual() also carries the current on/off, which is
+    // whatever this tab last heard from the backend, so this never arms it.
+    sendManual();
+  }
+
+  function parseStore(raw) {
+    try {
+      const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!s || !Array.isArray(s.presets)) return null;
+      const seen = new Set();
+      const presets = [];
+      for (const p of s.presets) {
+        const name = String(p?.name ?? "").trim().slice(0, PRESET_NAME_MAX);
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        presets.push({ name, ...cleanPattern(p) });
+      }
+      const active = presets.some((p) => p.name === s.active) ? s.active : null;
+      return { v: 1, rev: Number(s.rev) || 0, active, presets: presets.slice(0, PRESET_MAX) };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readBrowserStore() {
+    try { return parseStore(localStorage.getItem(PRESET_STORE_KEY)); }
+    catch (_) { return null; }
+  }
+
+  function writeBrowserStore() {
+    try { localStorage.setItem(PRESET_STORE_KEY, JSON.stringify(presetStore)); }
+    catch (e) { log(`Could not save presets in this browser: ${e}`, "error"); }
+  }
+
+  // Read-merge-write. configurePlugin replaces the plugin's whole config, so
+  // the URL and other settings have to be carried through untouched. A read
+  // that fails must abort the write: writing a blank map would wipe them.
+  async function writeStashStore(store) {
+    const resp = await fetch("/graphql", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "query { configuration { plugins } }" }),
+    });
+    const json = await resp.json();
+    const plugins = json?.data?.configuration?.plugins;
+    if (json?.errors?.length || !plugins || typeof plugins !== "object") {
+      throw new Error(json?.errors?.[0]?.message || "could not read the plugin config");
+    }
+    const input = { ...(plugins[PLUGIN_ID] || {}), [PRESET_CFG_KEY]: JSON.stringify(store) };
+    const w = await fetch("/graphql", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation ($id: ID!, $input: Map!) { configurePlugin(plugin_id: $id, input: $input) }`,
+        variables: { id: PLUGIN_ID, input },
+      }),
+    });
+    const wj = await w.json();
+    if (wj?.errors?.length) throw new Error(wj.errors[0].message);
+  }
+
+  let presetSyncNote = "";   // shown in the popover when Stash could not be written
+  function persistPresets() {
+    presetStore.rev = Date.now();
+    writeBrowserStore();
+    writeStashStore(presetStore).then(() => {
+      presetSyncNote = "";
+      updatePresetUI();
+    }).catch((e) => {
+      presetSyncNote = "Saved in this browser only. Stash did not accept it: " + e.message;
+      log(`Preset sync to Stash failed: ${e.message}`, "error");
+      updatePresetUI();
+    });
+  }
+
+  // A preset that became active somewhere else (another tab, another browser,
+  // a previous session) replaces this browser's values. One that is already
+  // the base here is left alone, because the values may be deliberate edits.
+  function adoptActivePreset() {
+    const p = activePreset();
+    if (!p) { presetBase = null; saveSettingsToStorage(); return; }
+    if (presetBase === p.name) return;
+    presetBase = p.name;
+    applyPattern(p);
+    log(`Preset "${p.name}" is active, loaded its pattern`);
+  }
+
+  async function loadPresets() {
+    const local = readBrowserStore();
+    let remote = null;
+    try {
+      const cfg = await loadPluginConfig();
+      remote = parseStore(cfg?.[PRESET_CFG_KEY]);
+    } catch (_) {}
+    const best = [local, remote].filter(Boolean).sort((a, b) => b.rev - a.rev)[0];
+    if (best) presetStore = best;
+    if (local && (!remote || local.rev > remote.rev)) {
+      // Stash lost it (see the header comment) or never had it: put it back.
+      writeStashStore(presetStore).catch((e) => log(`Preset sync to Stash failed: ${e.message}`));
+    }
+    if (best && best !== local) writeBrowserStore();
+    adoptActivePreset();
+    updatePresetUI();
+  }
+
+  // Other tabs in this browser learn about changes the moment they happen.
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== PRESET_STORE_KEY) return;
+    const s = parseStore(ev.newValue);
+    if (!s || s.rev <= presetStore.rev) return;
+    presetStore = s;
+    adoptActivePreset();
+    updatePresetUI();
+  });
+
+  function selectPreset(name) {
+    const p = presetStore.presets.find((x) => x.name === name);
+    if (!p) return;
+    presetStore.active = name;
+    presetBase = name;
+    applyPattern(p);
+    persistPresets();
+    updatePresetUI();
+    log(`Preset selected: ${name}`);
+  }
+
+  function savePresetAs(rawName) {
+    const name = String(rawName || "").trim().slice(0, PRESET_NAME_MAX);
+    if (!name) return "Give it a name first.";
+    const existing = presetStore.presets.findIndex((p) => p.name === name);
+    if (existing < 0 && presetStore.presets.length >= PRESET_MAX) {
+      return `That is ${PRESET_MAX} presets already. Delete one first.`;
+    }
+    const entry = { name, ...currentPattern() };
+    if (existing >= 0) presetStore.presets[existing] = entry;
+    else presetStore.presets.push(entry);
+    presetStore.active = name;
+    presetBase = name;
+    saveSettingsToStorage();
+    persistPresets();
+    updatePresetUI();
+    return "";
+  }
+
+  function updateActivePreset() {
+    const p = activePreset();
+    if (p) savePresetAs(p.name);
+  }
+
+  function revertActivePreset() {
+    const p = activePreset();
+    if (p) applyPattern(p);
+    updatePresetUI();
+  }
+
+  function deletePreset(name) {
+    presetStore.presets = presetStore.presets.filter((p) => p.name !== name);
+    if (presetStore.active === name) { presetStore.active = null; presetBase = null; }
+    saveSettingsToStorage();
+    persistPresets();
+    updatePresetUI();
+  }
+
+  function renamePreset(from, rawTo) {
+    const to = String(rawTo || "").trim().slice(0, PRESET_NAME_MAX);
+    if (!to) return "Give it a name first.";
+    if (to === from) return "";
+    if (presetStore.presets.some((p) => p.name === to)) return "A preset with that name exists.";
+    const p = presetStore.presets.find((x) => x.name === from);
+    if (!p) return "";
+    p.name = to;
+    if (presetStore.active === from) { presetStore.active = to; presetBase = to; }
+    saveSettingsToStorage();
+    persistPresets();
+    updatePresetUI();
+    return "";
+  }
+
+  function clearActivePreset() {
+    presetStore.active = null;
+    presetBase = null;
+    saveSettingsToStorage();
+    persistPresets();
+    updatePresetUI();
   }
 
   function updateHotkeyBtn() {
@@ -401,8 +676,6 @@
     const lbl = byId(`${PLUGIN_ID}-manual-val`);
     if (lbl) lbl.textContent = `${manualLevel}%`;
 
-    const patBtn = byId(`${PLUGIN_ID}-pattern-btn`);
-    if (patBtn) patBtn.textContent = `${shapeLabel(manualShape)} \u25BE`;
 
     // Highlight the chosen card.
     if (manualPop) {
@@ -419,6 +692,8 @@
       onms:    burst,
       depth:   manualShape === "wave" || manualShape === "ramp" || manualShape === "random",
       build:   manualShape === "tease",
+      buildamp: manualShape === "tease",
+      ampfrom: manualShape === "tease" && manualBuildAmp > 0,
       ceiling: true,
       microms: vibeSubstep,
     };
@@ -442,24 +717,19 @@
     // The timing section can end up with nothing in it (Steady).
     const timing = byId(`${PLUGIN_ID}-sec-timing`);
     if (timing) {
-      const any = ["period", "onms", "depth", "build"].some(
+      const any = ["period", "onms", "depth", "build", "buildamp"].some(
         (k) => shown[k]
       );
       timing.style.display = any ? "" : "none";
     }
 
-    const sync = (id, v) => {
-      const el = byId(`${PLUGIN_ID}-manual-${id}`);
-      if (el && String(v) !== el.value) el.value = String(v);
-    };
-    sync("period",  manualPeriod);
-    sync("onms",    manualOnMs);
-    sync("depth",   manualDepth);
-    sync("build",   manualBuild);
-    sync("ceiling", manualCeiling);
-    sync("microms", manualMicroMs);
-
+    knobs.forEach((k) => k.refresh());
     updateManualHint();
+    updatePresetUI();
+    drawPatternPreview();
+    // Switching pattern shows or hides whole sections, so the height changes
+    // and the popover would otherwise grow down over the toolbar.
+    if (manualPop?.classList.contains("is-open")) positionManualPopover();
   }
 
   // ── GraphQL ────────────────────────────────────────────────────────────────
@@ -765,6 +1035,7 @@
         updateManualUI();
       }
       updateToolbarStatus();
+      refreshVibeControls();
       if (msg.error) log(`Backend error: ${msg.error}`, "error");
 
       if (mode === "intiface") {
@@ -1286,6 +1557,124 @@ function injectStyles() {
       font-size: 11px; color: #9aa3b0; line-height: 1.45;
     }
 
+    /* ── Pattern popover: pictures, knobs, presets ───────────── */
+    #${PLUGIN_ID}-pattern-pop { width: 380px; max-height: 80vh; }
+    .${PLUGIN_ID}-icon { flex: none; opacity: .85; }
+    .${PLUGIN_ID}-card-top {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card .${PLUGIN_ID}-icon { color: #7f8b99; }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-icon { color: #9ecbff; }
+
+    .${PLUGIN_ID}-pattern-view {
+      margin-top: 10px; padding: 8px 8px 6px;
+      background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 8px;
+    }
+    #${PLUGIN_ID}-pattern-canvas { display: block; width: 100%; height: 96px; }
+    .${PLUGIN_ID}-summary {
+      margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: #cfd6de;
+    }
+
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob {
+      -webkit-appearance: none; appearance: none;
+      display: block; width: 100%; height: 18px; margin: 4px 0 0; padding: 0;
+      background: transparent; cursor: pointer;
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-runnable-track {
+      height: 4px; border-radius: 2px;
+      background: linear-gradient(90deg, #5aa9ff var(--fill, 0%), rgba(255,255,255,0.12) var(--fill, 0%));
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-track {
+      height: 4px; border-radius: 2px; background: rgba(255,255,255,0.12);
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-progress {
+      height: 4px; border-radius: 2px; background: #5aa9ff;
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
+      background: #fff; border: 2px solid #5aa9ff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-thumb {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #fff; border: 2px solid #5aa9ff;
+    }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob:focus-visible { outline: none; }
+    #${PLUGIN_ID}-pattern-pop input[type=range].${PLUGIN_ID}-knob:focus-visible::-webkit-slider-thumb {
+      box-shadow: 0 0 0 3px rgba(90,169,255,.35);
+    }
+
+    .${PLUGIN_ID}-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip {
+      display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+      padding: 5px 10px; border-radius: 999px; cursor: pointer;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+      color: #dfe4ea; font: inherit; font-size: 11.5px;
+      transition: background .12s ease, border-color .12s ease;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip:hover {
+      background: rgba(90,169,255,0.12); border-color: rgba(90,169,255,0.4);
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip.is-sel {
+      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.75); color: #fff;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip .${PLUGIN_ID}-icon { color: #9ecbff; }
+    .${PLUGIN_ID}-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+    .${PLUGIN_ID}-chip-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: #f5b342; flex: none;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-chip-add {
+      border-style: dashed; color: #9aa6b4; background: transparent;
+    }
+    .${PLUGIN_ID}-preset-edit { display: none; gap: 6px; margin-top: 8px; align-items: center; }
+    .${PLUGIN_ID}-preset-edit input[type=text] {
+      flex: 1 1 auto; min-width: 0; background: rgba(0,0,0,0.35); color: #e8eaed;
+      border: 1px solid rgba(90,169,255,0.55); border-radius: 6px;
+      padding: 5px 8px; font: inherit; font-size: 12px; outline: none;
+    }
+    .${PLUGIN_ID}-preset-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px;
+    }
+    .${PLUGIN_ID}-preset-bar:empty { display: none; }
+    .${PLUGIN_ID}-preset-state { font-size: 11px; color: #8e97a3; margin-right: auto; }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-edit button,
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button {
+      background: rgba(255,255,255,0.06); color: #e8eaed;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet {
+      background: transparent; border-color: transparent; color: #8e97a3; padding: 4px 6px;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet:hover { color: #e8eaed; }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.is-on,
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-edit button[data-act=save] {
+      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+    }
+    #${PLUGIN_ID}-pattern-pop .${PLUGIN_ID}-preset-bar button.is-danger {
+      background: rgba(235,80,80,0.2); border-color: rgba(235,80,80,0.6); color: #ffb3b3;
+    }
+    .${PLUGIN_ID}-field-help.is-warn { color: #f5b342; }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-pattern-btn {
+      max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-pattern-btn.has-preset { border-color: rgba(90,169,255,0.45); }
+
+    /* ── Advanced row: every control has a visible name ─────── */
+    .${PLUGIN_ID}-adv {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 0 2px 10px; border-left: 1px solid rgba(255,255,255,0.10);
+    }
+    .${PLUGIN_ID}-adv-label { color: #8e97a3 !important; font-weight: 500; }
+    .${PLUGIN_ID}-adv-read {
+      color: #cfd6de !important; font-variant-numeric: tabular-nums; min-width: 0;
+      font-size: 11px; white-space: nowrap;
+    }
+    .${PLUGIN_ID}-adv-note {
+      color: #7c8593 !important; font-size: 10.5px; max-width: 260px; line-height: 1.3;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       #${PLUGIN_ID}-pattern-pop { transition: none; }
     }
@@ -1465,12 +1854,17 @@ function injectStyles() {
     const wrap = document.createElement("span");
     wrap.style.cssText = "display:inline-flex;align-items:center;gap:3px;margin-left:6px;";
 
+    wrap.className = `${PLUGIN_ID}-adv`;
+    wrap.title = "Shifts the toy against the video. If the toy reacts after the action, " +
+                 "make it fire earlier. Range 2 s either way.";
     const label = document.createElement("span");
-    label.textContent = "Offset:";
+    label.className = `${PLUGIN_ID}-adv-label`;
+    label.textContent = "Timing";
     wrap.appendChild(label);
 
     const minus = document.createElement("button");
     minus.textContent   = "−";
+    minus.title = "Toy fires later";
     minus.style.cssText = "min-width:26px;padding:4px 8px;font-weight:bold;";
     wrap.appendChild(minus);
 
@@ -1488,6 +1882,7 @@ function injectStyles() {
 
     const plus = document.createElement("button");
     plus.textContent   = "+";
+    plus.title = "Toy fires earlier";
     plus.style.cssText = "min-width:26px;padding:4px 8px;font-weight:bold;";
     wrap.appendChild(plus);
 
@@ -1496,11 +1891,21 @@ function injectStyles() {
     unit.style.opacity = "0.7";
     wrap.appendChild(unit);
 
+    const read = document.createElement("span");
+    read.className = `${PLUGIN_ID}-adv-read`;
+    wrap.appendChild(read);
+    const showOffset = () => {
+      read.textContent = offsetMs === 0 ? "in sync with video"
+        : offsetMs > 0 ? `toy fires ${offsetMs} ms earlier` : `toy fires ${-offsetMs} ms later`;
+    };
+    showOffset();
+
     function setOffset(v) {
       let val = parseInt(v, 10) || 0;
       val = Math.max(-2000, Math.min(2000, val));
       offsetMs    = val;
       input.value = String(val);
+      showOffset();
       sendSettings();
     }
     minus.addEventListener("click", () => setOffset(offsetMs - 10));
@@ -1513,8 +1918,13 @@ function injectStyles() {
     const wrap = document.createElement("span");
     wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-left:6px;";
 
+    wrap.className = `${PLUGIN_ID}-adv`;
+    wrap.title = "The weakest and strongest the script may drive the toy. The script's quietest " +
+                 "moment maps to the left handle, its strongest to the right. Manual mode has its " +
+                 "own Power limit in the pattern panel.";
     const label = document.createElement("span");
-    label.textContent = "Intensity limits:";
+    label.className = `${PLUGIN_ID}-adv-label`;
+    label.textContent = "Script range";
     wrap.appendChild(label);
 
     const track = document.createElement("span");
@@ -1618,6 +2028,7 @@ function injectStyles() {
       if (lbl) lbl.textContent = `${manualLevel}%`;
       throttledManual();
       updateManualHint();
+      drawPatternPreview();
     });
     sld.addEventListener("change", () => setManual(manualOn, manualLevel));
     wrap.appendChild(sld);
@@ -1644,14 +2055,223 @@ function injectStyles() {
   // ── Pattern popover ────────────────────────────────────────────────────────
   let manualPop = null;
 
-  function numRow(id, label, help, min, max, step, unit, get, set) {
+  // ── Pattern maths, mirrored from the backend ──────────────────────────────
+  // FunscriptPlayer._manual_shape_value() in IntifaceSync.py is the truth;
+  // this copy only draws pictures. Keep the two in step if a shape changes,
+  // or the preview will show a pattern the toy does not play.
+  const MIN_ON_S = 0.06;          // MANUAL_MIN_ON_MS
+
+  function mulberry32(seed) {
+    return function () {
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // How much time a picture of this pattern should cover to show what it does.
+  function patternWindowS(p) {
+    if (p.shape === "constant") return 10;
+    if (p.shape === "tease" && (p.build > 0 || p.buildAmp > 0)) {
+      return p.period * Math.min(Math.max(p.build, p.buildAmp) + 2, 16);
+    }
+    return p.period * 3;
+  }
+
+  // Waveform value 0-1 at each of n points across `seconds`, before intensity.
+  function patternSamples(p, seconds, n) {
+    const period = Math.max(0.2, p.period);
+    const depth  = Math.max(0, Math.min(0.95, p.depth / 100));
+    const on_s   = Math.min(Math.max(MIN_ON_S, p.onMs / 1000), period * 0.95);
+    const rnd    = mulberry32(7);
+    let randVal = 0, randNext = 0;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1)) * seconds;
+      const phase_s = t % period;
+      const phase   = phase_s / period;
+      let v = 1;
+      switch (p.shape) {
+        case "wave":  v = depth + (1 - depth) * (0.5 - 0.5 * Math.cos(2 * Math.PI * phase)); break;
+        case "pulse": v = phase_s < on_s ? 1 : 0; break;
+        case "ramp":  v = depth + (1 - depth) * phase; break;
+        case "tease": {
+          let this_on = on_s;
+          if (p.build > 0) {
+            const frac = Math.min(1, Math.floor(t / period) / p.build);
+            this_on = MIN_ON_S + (on_s - MIN_ON_S) * frac;
+          }
+          v = phase_s < this_on ? 1 : 0;
+          if (v && p.buildAmp > 0) {
+            const a0 = Math.max(0, Math.min(1, p.ampFrom / 100));
+            v = a0 + (1 - a0) * Math.min(1, Math.floor(t / period) / p.buildAmp);
+          }
+          break;
+        }
+        case "random":
+          if (t >= randNext) {
+            randVal  = Math.max(0.05, depth) + rnd() * (1 - Math.max(0.05, depth));
+            randNext = t + period * (0.5 + rnd());
+          }
+          v = randVal;
+          break;
+        default: v = 1;
+      }
+      out.push(v);
+    }
+    return out;
+  }
+
+  // Small inline sparkline for pattern cards and preset chips.
+  function patternIconSvg(p, w = 46, h = 14) {
+    const secs = p.shape === "tease" && (p.build > 0 || p.buildAmp > 0) ? p.period * 4
+               : p.shape === "constant" ? 1 : p.period * 2;
+    const n = 90;
+    const vals = patternSamples(p, secs, n);
+    const pts = vals.map((v, i) =>
+      `${((i / (n - 1)) * w).toFixed(1)},${(h - 1 - v * (h - 3)).toFixed(1)}`).join(" ");
+    return `<svg class="${PLUGIN_ID}-icon" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" ` +
+           `aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" ` +
+           `stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+  }
+
+  function fmtSecs(s) {
+    if (s < 1)   return `${(Math.round(s * 100) / 100).toFixed(2).replace(/0$/, "")} s`;
+    if (s < 10)  return `${(Math.round(s * 10) / 10)} s`;
+    if (s < 60)  return `${Math.round(s)} s`;
+    const m = Math.floor(s / 60), r = Math.round(s - m * 60);
+    return r ? `${m} min ${r} s` : `${m} min`;
+  }
+
+  // The numbers, said the way a person would say them.
+  function patternSummary(p) {
+    const peak  = (manualLevel / 100) * (p.ceiling / 100);
+    const pk    = `${Math.round(peak * 100)}%`;
+    const low   = `${Math.round(peak * (p.depth / 100) * 100)}%`;
+    const per   = fmtSecs(p.period);
+    const on    = fmtSecs(Math.min(Math.max(MIN_ON_S, p.onMs / 1000), p.period * 0.95));
+    switch (p.shape) {
+      case "constant": return `Holds a steady ${pk}.`;
+      case "wave":     return `Swells from ${low} up to ${pk} and back down, every ${per}.`;
+      case "pulse": {
+        const duty = Math.round(Math.min(p.onMs / 1000, p.period * 0.95) / p.period * 100);
+        return `A ${on} buzz at ${pk} every ${per}, silent in between (on ${duty}% of the time).`;
+      }
+      case "ramp":     return `Climbs from ${low} to ${pk} over ${per}, then drops back and climbs again.`;
+      case "tease": {
+        const start = `${Math.round(peak * p.ampFrom)}%`;
+        const len = p.build > 0
+          ? ` Buzzes grow from ${fmtSecs(MIN_ON_S)} to ${on} long over ${p.build} buzzes (${fmtSecs(p.build * p.period)}).`
+          : "";
+        const str = p.buildAmp > 0
+          ? ` Strength climbs from ${start} to ${pk} over ${p.buildAmp} buzzes (${fmtSecs(p.buildAmp * p.period)}).`
+          : "";
+        if (!len && !str) return `One ${on} buzz at ${pk} every ${per}, silence the rest of the time.`;
+        return `One buzz every ${per}.${len}${str} Then it holds there.`;
+      }
+      case "random":   return `Jumps to a new level between ${low} and ${pk} roughly every ${per}.`;
+      default:         return "";
+    }
+  }
+
+  let patternCanvas = null;
+
+  function drawPatternPreview() {
+    const cv = patternCanvas;
+    if (!cv || !cv.isConnected || !manualPop?.classList.contains("is-open")) return;
+    const p   = currentPattern();
+    const dpr = window.devicePixelRatio || 1;
+    const w   = Math.max(1, Math.round(cv.clientWidth * dpr));
+    const h   = Math.max(1, Math.round(cv.clientHeight * dpr));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, w, h);
+
+    const axisH = 14 * dpr;                        // room for time labels
+    const top   = 6 * dpr;
+    const plotH = h - axisH - top;
+    const Y = (v) => top + plotH - v * plotH;      // v is motor output 0-1
+    const secs = patternWindowS(p);
+    const n    = Math.max(120, Math.min(1200, Math.round(w / dpr * 2)));
+    const peak = (manualLevel / 100) * (p.ceiling / 100);
+    const vals = patternSamples(p, secs, n).map((v) => v * peak);
+    const X = (i) => (i / (n - 1)) * w;
+
+    // 100% line and the motor floor
+    g.lineWidth = dpr;
+    g.strokeStyle = "rgba(255,255,255,0.07)";
+    g.beginPath(); g.moveTo(0, Y(1)); g.lineTo(w, Y(1)); g.stroke();
+    const silent = !vibeSubstep && peak > 0 && peak < scalarStep;
+    if (scalarStep > 0) {
+      g.strokeStyle = "rgba(230,200,90,0.45)";
+      g.setLineDash([4 * dpr, 4 * dpr]);
+      g.beginPath(); g.moveTo(0, Y(scalarStep)); g.lineTo(w, Y(scalarStep)); g.stroke();
+      g.setLineDash([]);
+    }
+
+    // the pattern, filled so on/off shapes read as blocks
+    const col = silent ? "235,90,90" : "90,169,255";
+    const grad = g.createLinearGradient(0, Y(1), 0, Y(0));
+    grad.addColorStop(0, `rgba(${col},0.45)`);
+    grad.addColorStop(1, `rgba(${col},0.06)`);
+    g.fillStyle = grad;
+    g.beginPath(); g.moveTo(0, Y(0));
+    vals.forEach((v, i) => g.lineTo(X(i), Y(v)));
+    g.lineTo(w, Y(0)); g.closePath(); g.fill();
+    g.strokeStyle = `rgb(${col})`; g.lineWidth = 1.5 * dpr;
+    g.beginPath();
+    vals.forEach((v, i) => (i ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v))));
+    g.stroke();
+
+    // time axis: a handful of round-number ticks
+    const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    const tick  = steps.find((s) => secs / s <= 6) || 600;
+    g.fillStyle = "rgba(200,206,214,0.55)";
+    g.font = `${10 * dpr}px -apple-system, "Segoe UI", sans-serif`;
+    g.textBaseline = "bottom";
+    for (let t = 0; t <= secs + 1e-6; t += tick) {
+      const x = (t / secs) * w;
+      g.fillRect(Math.round(x), h - axisH, dpr, 3 * dpr);
+      const lbl = t === 0 ? "0" : fmtSecs(t);
+      const tw  = g.measureText(lbl).width;
+      g.fillText(lbl, Math.min(Math.max(0, x - tw / 2), w - tw), h);
+    }
+
+    // labels on the right edge
+    g.textBaseline = "middle";
+    const label = (txt, v, color) => {
+      const tw = g.measureText(txt).width;
+      g.fillStyle = "rgba(22,25,31,0.85)";
+      g.fillRect(w - tw - 8 * dpr, Y(v) - 7 * dpr, tw + 6 * dpr, 13 * dpr);
+      g.fillStyle = color;
+      g.fillText(txt, w - tw - 5 * dpr, Y(v));
+    };
+    if (peak > 0) label(`peak ${Math.round(peak * 100)}%`, Math.max(peak, 0.12), `rgb(${col})`);
+    if (scalarStep > 0 && Math.abs(peak - scalarStep) > 0.1) {
+      label(`motor floor ${Math.round(scalarStep * 100)}%`, scalarStep, "rgba(230,200,90,0.8)");
+    }
+
+    const sum = byId(`${PLUGIN_ID}-pattern-summary`);
+    if (sum) {
+      sum.textContent = peak <= 0 ? "Intensity is at 0%, so nothing plays."
+        : patternSummary(p) + (silent ? " The peak is under the motor's floor, so turn Micro pulsing on or it stays silent." : "");
+    }
+  }
+
+  // ── Knobs ─────────────────────────────────────────────────────────────────
+  // A slider for feel, a number box for precision, and a sentence saying what
+  // the number does. Wide ranges (half a second to a minute) are logarithmic,
+  // or everything useful would sit in the first few pixels of the track.
+  const knobs = [];
+
+  function knobRow(id, label, help, o, get, set) {
     const row = document.createElement("div");
     row.id = `${PLUGIN_ID}-manual-${id}-box`;
     row.className = `${PLUGIN_ID}-field`;
 
     const head = document.createElement("div");
     head.className = `${PLUGIN_ID}-field-head`;
-
     const lab = document.createElement("label");
     lab.textContent = label;
     lab.setAttribute("for", `${PLUGIN_ID}-manual-${id}`);
@@ -1659,38 +2279,220 @@ function injectStyles() {
 
     const ctl = document.createElement("div");
     ctl.className = `${PLUGIN_ID}-field-ctl`;
-
     const inp = document.createElement("input");
     inp.id   = `${PLUGIN_ID}-manual-${id}`;
     inp.type = "number";
-    inp.min  = String(min); inp.max = String(max); inp.step = String(step);
-    inp.value = String(get());
-    inp.addEventListener("change", () => {
-      const v = parseFloat(inp.value);
-      if (isNaN(v)) { inp.value = String(get()); return; }
-      set(Math.max(min, Math.min(max, v)));
-      inp.value = String(get());
-      saveSettingsToStorage();
-      updateManualUI();
-      sendManual();
-    });
+    inp.step = String(o.inputStep);
     ctl.appendChild(inp);
-
-    if (unit) {
-      const u = document.createElement("span");
-      u.className = `${PLUGIN_ID}-unit`;
-      u.textContent = unit;
-      ctl.appendChild(u);
-    }
+    const unit = document.createElement("span");
+    unit.className = `${PLUGIN_ID}-unit`;
+    unit.textContent = o.unit;
+    ctl.appendChild(unit);
     head.appendChild(ctl);
     row.appendChild(head);
+
+    const sld = document.createElement("input");
+    sld.type = "range"; sld.min = "0"; sld.max = "1000"; sld.step = "1";
+    sld.className = `${PLUGIN_ID}-knob`;
+    sld.setAttribute("aria-label", label);
+    row.appendChild(sld);
 
     const hint = document.createElement("div");
     hint.className = `${PLUGIN_ID}-field-help`;
     hint.textContent = help;
     row.appendChild(hint);
 
+    const { min, max } = o;
+    const toPos = (v) => {
+      const f = o.curve === "log" ? Math.log(v / min) / Math.log(max / min)
+              : o.curve === "sq"  ? Math.sqrt((v - min) / (max - min))
+              : (v - min) / (max - min);
+      return Math.round(Math.max(0, Math.min(1, f)) * 1000);
+    };
+    const fromPos = (pos) => {
+      const f = pos / 1000;
+      return o.curve === "log" ? min * Math.pow(max / min, f)
+           : o.curve === "sq"  ? min + (max - min) * f * f
+           : min + (max - min) * f;
+    };
+    const show = o.show || ((v) => v);
+    const parse = o.parse || ((v) => v);
+
+    function refresh() {
+      const v = get();
+      if (document.activeElement !== inp) inp.value = String(show(v));
+      const pos = toPos(v);
+      if (document.activeElement !== sld) sld.value = String(pos);
+      sld.style.setProperty("--fill", `${pos / 10}%`);
+    }
+    function commit(v, final) {
+      set(Math.max(min, Math.min(max, v)));
+      refresh();
+      saveSettingsToStorage();
+      updateManualUI();
+      if (final) sendManual(); else throttledManual();
+    }
+    sld.addEventListener("input", () => commit(fromPos(parseInt(sld.value, 10)), false));
+    sld.addEventListener("change", () => commit(fromPos(parseInt(sld.value, 10)), true));
+    inp.addEventListener("change", () => {
+      const v = parseFloat(inp.value);
+      if (isNaN(v)) { refresh(); return; }
+      commit(parse(v), true);
+    });
+
+    knobs.push({ id, refresh });
+    refresh();
     return row;
+  }
+
+  // ── Preset section ────────────────────────────────────────────────────────
+  let presetEditMode   = null;    // null | "new" | "rename"
+  let presetDeleteArm  = 0;       // timestamp of the first Delete click
+
+  function buildPresetSection() {
+    const sec = document.createElement("div");
+    sec.className = `${PLUGIN_ID}-section ${PLUGIN_ID}-presets`;
+    sec.id = `${PLUGIN_ID}-sec-presets`;
+    sec.innerHTML = `
+      <div class="${PLUGIN_ID}-sec-title">Presets</div>
+      <div class="${PLUGIN_ID}-chips" id="${PLUGIN_ID}-preset-chips"></div>
+      <div class="${PLUGIN_ID}-preset-edit" id="${PLUGIN_ID}-preset-edit">
+        <input type="text" id="${PLUGIN_ID}-preset-name" maxlength="${PRESET_NAME_MAX}"
+               placeholder="Name, e.g. Slow tease" autocomplete="off">
+        <button type="button" data-act="save">Save</button>
+        <button type="button" data-act="cancel">Cancel</button>
+      </div>
+      <div class="${PLUGIN_ID}-preset-bar" id="${PLUGIN_ID}-preset-bar"></div>
+      <div class="${PLUGIN_ID}-field-help" id="${PLUGIN_ID}-preset-note"></div>`;
+
+    const edit = sec.querySelector(`#${PLUGIN_ID}-preset-edit`);
+    const name = sec.querySelector(`#${PLUGIN_ID}-preset-name`);
+    const note = sec.querySelector(`#${PLUGIN_ID}-preset-note`);
+    const finish = () => {
+      const err = presetEditMode === "rename"
+        ? renamePreset(presetStore.active, name.value)
+        : savePresetAs(name.value);
+      if (err) { note.textContent = err; note.classList.add("is-warn"); return; }
+      presetEditMode = null;
+      updatePresetUI();
+    };
+    edit.querySelector('[data-act="save"]').addEventListener("click", finish);
+    edit.querySelector('[data-act="cancel"]').addEventListener("click", () => {
+      presetEditMode = null; updatePresetUI();
+    });
+    name.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter")  { ev.preventDefault(); finish(); }
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); presetEditMode = null; updatePresetUI(); }
+    });
+    name.addEventListener("input", () => {
+      const clash = presetEditMode === "new" &&
+        presetStore.presets.some((p) => p.name === name.value.trim());
+      note.textContent = clash ? "A preset with this name exists. Saving replaces it." : "";
+      note.classList.toggle("is-warn", clash);
+    });
+    return sec;
+  }
+
+  function updatePresetUI() {
+    // pattern button text depends on the active preset too
+    const patBtn = byId(`${PLUGIN_ID}-pattern-btn`);
+    const act    = activePreset();
+    const edited = presetEdited();
+    if (patBtn) {
+      patBtn.textContent = `${act ? act.name + (edited ? "*" : "") : shapeLabel(manualShape)} ▾`;
+      patBtn.title = act
+        ? `Preset "${act.name}" (${shapeLabel(manualShape)})` +
+          (edited ? ", changed since it was loaded. Open to update or revert." : ".")
+        : "Choose and tune the manual pattern";
+      patBtn.classList.toggle("has-preset", !!act);
+    }
+    if (!manualPop) return;
+
+    const chips = manualPop.querySelector(`#${PLUGIN_ID}-preset-chips`);
+    const edit  = manualPop.querySelector(`#${PLUGIN_ID}-preset-edit`);
+    const bar   = manualPop.querySelector(`#${PLUGIN_ID}-preset-bar`);
+    const note  = manualPop.querySelector(`#${PLUGIN_ID}-preset-note`);
+    const name  = manualPop.querySelector(`#${PLUGIN_ID}-preset-name`);
+
+    chips.innerHTML = "";
+    presetStore.presets.forEach((p) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `${PLUGIN_ID}-chip`;
+      const on = p.name === presetStore.active;
+      b.classList.toggle("is-sel", on);
+      b.innerHTML = patternIconSvg(p, 30, 12) +
+        `<span class="${PLUGIN_ID}-chip-name"></span>` +
+        (on && edited ? `<span class="${PLUGIN_ID}-chip-dot" title="Changed since loaded"></span>` : "");
+      b.querySelector(`.${PLUGIN_ID}-chip-name`).textContent = p.name;
+      b.title = `${shapeLabel(p.shape)}. ${on ? "Active." : "Click to load."}`;
+      b.addEventListener("click", () => {
+        presetEditMode = null;
+        if (!on || edited) selectPreset(p.name);
+      });
+      chips.appendChild(b);
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = `${PLUGIN_ID}-chip ${PLUGIN_ID}-chip-add`;
+    add.textContent = "+ Save current";
+    add.title = "Save the pattern and settings below as a new preset";
+    add.addEventListener("click", () => {
+      presetEditMode = "new";
+      updatePresetUI();
+      name.value = "";
+      name.focus();
+    });
+    chips.appendChild(add);
+
+    edit.style.display = presetEditMode ? "flex" : "none";
+
+    bar.innerHTML = "";
+    if (act && !presetEditMode) {
+      const txt = document.createElement("span");
+      txt.className = `${PLUGIN_ID}-preset-state`;
+      txt.textContent = edited ? "Changed since loaded" : "Active, stays on across tabs and visits";
+      bar.appendChild(txt);
+      const mk = (label, title, fn, cls) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.textContent = label; b.title = title;
+        if (cls) b.className = cls;
+        b.addEventListener("click", fn);
+        bar.appendChild(b);
+        return b;
+      };
+      if (edited) {
+        mk("Update", `Save these changes into "${act.name}"`, updateActivePreset, "is-on");
+        mk("Revert", `Go back to "${act.name}" as saved`, revertActivePreset);
+      }
+      mk("Rename", "Rename this preset", () => {
+        presetEditMode = "rename";
+        updatePresetUI();
+        name.value = act.name;
+        name.focus(); name.select();
+      });
+      const armed = Date.now() - presetDeleteArm < 3000;
+      const del = mk(armed ? "Click again to delete" : "Delete", `Delete "${act.name}"`, () => {
+        if (Date.now() - presetDeleteArm < 3000) {
+          presetDeleteArm = 0;
+          deletePreset(act.name);
+        } else {
+          presetDeleteArm = Date.now();
+          updatePresetUI();
+          setTimeout(updatePresetUI, 3100);
+        }
+      }, armed ? "is-danger" : "");
+      del.classList.add(`${PLUGIN_ID}-quiet`);
+      mk("Detach", "Keep these settings but stop following the preset", clearActivePreset,
+         `${PLUGIN_ID}-quiet`);
+    }
+
+    if (!presetEditMode) {
+      note.classList.toggle("is-warn", !!presetSyncNote);
+      note.textContent = presetSyncNote ||
+        (presetStore.presets.length ? "" :
+          "No presets yet. Shape a pattern below, then save it here to use it again later.");
+    }
   }
 
   function buildManualPopover() {
@@ -1706,17 +2508,30 @@ function injectStyles() {
     const head = document.createElement("div");
     head.className = `${PLUGIN_ID}-pop-head`;
     head.innerHTML = `<strong>Manual pattern</strong>
-      <span class="${PLUGIN_ID}-pop-sub">How the toy behaves when the funscript is not driving it</span>`;
+      <span class="${PLUGIN_ID}-pop-sub">What the toy does in Manual mode, when the funscript is not driving it</span>`;
     pop.appendChild(head);
 
-    // Pattern cards
+    // The popover is appended to the body by the caller, so byId() cannot see
+    // its children yet. Assign manualPop now for updatePresetUI().
+    manualPop = pop;
+    pop.appendChild(buildPresetSection());
+
+    // Pattern cards, each with a sketch of its shape
+    const pat = document.createElement("div");
+    pat.className = `${PLUGIN_ID}-section`;
+    pat.innerHTML = `<div class="${PLUGIN_ID}-sec-title">Pattern</div>`;
     const grid = document.createElement("div");
     grid.className = `${PLUGIN_ID}-cards`;
     MANUAL_SHAPES.forEach(([value, label, blurb]) => {
       const card = document.createElement("button");
+      card.type = "button";
       card.className = `${PLUGIN_ID}-card`;
       card.dataset.shape = value;
-      card.innerHTML = `<span class="${PLUGIN_ID}-card-name">${label}</span>
+      const icon = patternIconSvg(cleanPattern({ shape: value, period: 1, onMs: 250,
+                                                 depth: 15, build: value === "tease" ? 3 : 0 }));
+      card.innerHTML = `<span class="${PLUGIN_ID}-card-top">
+                          <span class="${PLUGIN_ID}-card-name">${label}</span>${icon}
+                        </span>
                         <span class="${PLUGIN_ID}-card-blurb">${blurb}</span>`;
       card.addEventListener("click", () => {
         manualShape = value;
@@ -1727,36 +2542,65 @@ function injectStyles() {
       });
       grid.appendChild(card);
     });
-    pop.appendChild(grid);
+    pat.appendChild(grid);
+
+    // Live picture of the current settings, plus the same thing in words
+    const pv = document.createElement("div");
+    pv.className = `${PLUGIN_ID}-pattern-view`;
+    const cv = document.createElement("canvas");
+    cv.id = `${PLUGIN_ID}-pattern-canvas`;
+    pv.appendChild(cv);
+    patternCanvas = cv;
+    const sum = document.createElement("div");
+    sum.id = `${PLUGIN_ID}-pattern-summary`;
+    sum.className = `${PLUGIN_ID}-summary`;
+    pv.appendChild(sum);
+    pat.appendChild(pv);
+    pop.appendChild(pat);
 
     // Timing, relabelled per pattern by updateManualUI()
     const timing = document.createElement("div");
     timing.className = `${PLUGIN_ID}-section`;
     timing.id = `${PLUGIN_ID}-sec-timing`;
     timing.innerHTML = `<div class="${PLUGIN_ID}-sec-title">Timing</div>`;
-    timing.appendChild(numRow(
+    timing.appendChild(knobRow(
       "period", "Cycle length",
       "How long one full cycle takes.",
-      0.5, 60, 0.5, "sec",
-      () => manualPeriod, (v) => { manualPeriod = Math.round(v * 2) / 2; }
+      { min: 0.5, max: 60, curve: "log", unit: "sec", inputStep: 0.1 },
+      () => manualPeriod,
+      (v) => { manualPeriod = v < 5 ? Math.round(v * 10) / 10 : Math.round(v * 2) / 2; }
     ));
-    timing.appendChild(numRow(
+    timing.appendChild(knobRow(
       "onms", "Buzz length",
-      "How long each buzz lasts. Short reads as a tap, long as a throb.",
-      60, 10000, 20, "ms",
-      () => manualOnMs, (v) => { manualOnMs = Math.round(v); }
+      "How long each buzz lasts. Short feels like a tap, long like a throb.",
+      { min: 60, max: 10000, curve: "log", unit: "sec", inputStep: 0.05,
+        show: (v) => Math.round(v) / 1000, parse: (v) => v * 1000 },
+      () => manualOnMs,
+      (v) => { manualOnMs = v < 1000 ? Math.round(v / 10) * 10 : Math.round(v / 50) * 50; }
     ));
-    timing.appendChild(numRow(
+    timing.appendChild(knobRow(
       "depth", "Dip to",
-      "How far it falls between peaks, as a share of the peak. 0 falls to silence.",
-      0, 95, 5, "%",
+      "How low it falls between peaks, as a share of the peak. 0 falls all the way to silence.",
+      { min: 0, max: 95, curve: "lin", unit: "%", inputStep: 5 },
       () => manualDepth, (v) => { manualDepth = Math.round(v); }
     ));
-    timing.appendChild(numRow(
-      "build", "Build-up",
-      "Cycles spent growing each buzz from its shortest to its full length. 0 turns the build off.",
-      0, 200, 1, "cycles",
+    timing.appendChild(knobRow(
+      "build", "Length build-up",
+      "How many buzzes it takes to grow from a flick to the full buzz length. 0 means every buzz is full length.",
+      { min: 0, max: 200, curve: "sq", unit: "buzzes", inputStep: 1 },
       () => manualBuild, (v) => { manualBuild = Math.round(v); }
+    ));
+    timing.appendChild(knobRow(
+      "buildamp", "Strength build-up",
+      "How many buzzes it takes to grow from the starting strength to full. 0 means every buzz is full strength. Works with or without the length build-up.",
+      { min: 0, max: 200, curve: "sq", unit: "buzzes", inputStep: 1 },
+      () => manualBuildAmp, (v) => { manualBuildAmp = Math.round(v); }
+    ));
+    timing.appendChild(knobRow(
+      "ampfrom", "Starting strength",
+      "How strong the first buzz is, as a share of the peak. Below the motor's floor it is held at the floor rather than going silent.",
+      { min: 0, max: 100, curve: "lin", unit: "%", inputStep: 5 },
+      () => manualAmpFrom, (v) => { manualAmpFrom = Math.round(v); }
     ));
     pop.appendChild(timing);
 
@@ -1764,17 +2608,17 @@ function injectStyles() {
     const limits = document.createElement("div");
     limits.className = `${PLUGIN_ID}-section`;
     limits.innerHTML = `<div class="${PLUGIN_ID}-sec-title">Output limits</div>`;
-    limits.appendChild(numRow(
+    limits.appendChild(knobRow(
       "ceiling", "Power limit",
-      "The strongest the motor may go. Lowering it stretches the whole intensity slider across a gentler range.",
-      1, 100, 1, "%",
+      "The strongest the motor may go. Lowering it spreads the intensity slider over a gentler range.",
+      { min: 1, max: 100, curve: "lin", unit: "%", inputStep: 1 },
       () => manualCeiling, (v) => { manualCeiling = Math.round(v); }
     ));
-    limits.appendChild(numRow(
+    limits.appendChild(knobRow(
       "microms", "Micro pulse",
-      "Length of each pulse used to reach levels below the motor's floor. Short is a tick, long is a purr.",
-      40, 1000, 10, "ms",
-      () => manualMicroMs, (v) => { manualMicroMs = Math.round(v); }
+      "Only used below the motor's floor, with Micro pulsing on. Short feels like ticking, long like purring.",
+      { min: 40, max: 1000, curve: "log", unit: "ms", inputStep: 10 },
+      () => manualMicroMs, (v) => { manualMicroMs = Math.round(v / 10) * 10; }
     ));
     pop.appendChild(limits);
 
@@ -1784,6 +2628,7 @@ function injectStyles() {
     pop.appendChild(foot);
 
     document.body.appendChild(pop);
+    updatePresetUI();
     return pop;
   }
 
@@ -1826,15 +2671,53 @@ function injectStyles() {
     if (manualPop?.classList.contains("is-open")) positionManualPopover();
   });
 
+  // ── Script vibe controls (advanced row) ────────────────────────────────────
+  // These used to be bare number boxes whose meaning lived in a tooltip. Each
+  // now has a visible name and a readout that says what the number does.
+  const VIBE_MODE_NOTES = {
+    auto:     "Beat for Cock Hero style scripts, Speed for everything else.",
+    speed:    "Faster strokes buzz harder. Works for most scripts.",
+    position: "Follows where the stroke is. The top of a stroke is strongest.",
+    beat:     "One short burst per stroke turn. Suits music-synced scripts.",
+    off:      "The script does not drive the vibrator. Manual still works.",
+  };
+  let refreshVibeControls = () => {};
+
+  function advGroup(label, title, ...els) {
+    const g = document.createElement("span");
+    g.className = `${PLUGIN_ID}-adv`;
+    if (title) g.title = title;
+    const l = document.createElement("span");
+    l.className = `${PLUGIN_ID}-adv-label`;
+    l.textContent = label;
+    g.appendChild(l);
+    els.forEach((e) => g.appendChild(e));
+    return g;
+  }
+
+  function advSlider(id, width) {
+    const s = document.createElement("input");
+    s.id = id; s.type = "range"; s.min = "0"; s.max = "1000"; s.step = "1";
+    s.className = `${PLUGIN_ID}-slider`;
+    s.style.width = `${width}px`;
+    return s;
+  }
+
+  function advRead(id) {
+    const r = document.createElement("span");
+    r.className = `${PLUGIN_ID}-adv-read`;
+    if (id) r.id = id;
+    return r;
+  }
+
+  const logPos = (v, lo, hi) => Math.round(Math.log(v / lo) / Math.log(hi / lo) * 1000);
+  const logVal = (p, lo, hi) => lo * Math.pow(hi / lo, p / 1000);
+
   function buildVibeControls() {
     const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;";
+    wrap.style.cssText = "display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;";
 
-    const label = document.createElement("span");
-    label.textContent  = "Script vibe:";
-    label.style.cssText = "opacity:0.8;";
-    wrap.appendChild(label);
-
+    // Mode, with its meaning spelled out next to it
     const sel = document.createElement("select");
     sel.id = `${PLUGIN_ID}-vibe-mode`;
     sel.style.cssText = "background:#222;color:#fff;border:1px solid #555;" +
@@ -1846,107 +2729,119 @@ function injectStyles() {
         sel.appendChild(o);
       });
     sel.value = vibeMode;
-    sel.title = "Auto: Beat for 0/100 square-wave scripts (Cock Hero), Speed for everything else.\n" +
-                "Beat: one short burst per keyframe.\nSpeed: intensity follows stroke speed.\n" +
-                "Position: intensity follows stroke position.";
+    const modeNote = document.createElement("span");
+    modeNote.className = `${PLUGIN_ID}-adv-note`;
+    const modeGrp = advGroup("Script vibe", "How a stroking script is turned into vibration.",
+                             sel, modeNote);
 
-    // Beat controls, visible in Beat and Auto
-    const beatLen = document.createElement("input");
-    beatLen.type  = "number";
-    beatLen.id    = `${PLUGIN_ID}-beat-ms`;
-    beatLen.min   = "60"; beatLen.max = "1000"; beatLen.step = "10";
-    beatLen.value = String(beatMs);
-    beatLen.title = "Beat burst length in ms. Shortened automatically when beats come faster.";
-    beatLen.style.cssText = "width:52px;background:#222;color:#fff;border:1px solid #555;" +
-                            "border-radius:3px;padding:2px 4px;font-size:11px;";
-    beatLen.addEventListener("change", () => {
-      const v = parseInt(beatLen.value, 10);
-      if (!isNaN(v)) {
-        beatMs = Math.max(60, Math.min(1000, v));
-        beatLen.value = String(beatMs);
-        sendSettings();
-      }
+    // Sensitivity. Stored as the stroke speed that means full power, which is
+    // backwards to how people think about it, so the slider runs the other
+    // way: right is more sensitive (full power comes sooner).
+    const SENS_LO = 50, SENS_HI = 2000;
+    const sens = advSlider(`${PLUGIN_ID}-vibe-sens`, 110);
+    const sensRead = advRead();
+    const sensGrp = advGroup("Sensitivity",
+      "How quickly the script reaches full power. If it sits at full most of the time, move it left. " +
+      "If it barely moves, move it right. Tracker scripts (FunGen) usually want it further right " +
+      "than Cock Hero scripts in Beat mode.",
+      sens, sensRead);
+    const showSens = () => {
+      sens.value = String(1000 - logPos(vibeMaxSpeed, SENS_LO, SENS_HI));
+      sensRead.textContent = vibeMaxSpeed >= 1000 ? "gentle"
+                           : vibeMaxSpeed >= 600  ? "balanced"
+                           : vibeMaxSpeed >= 300  ? "lively" : "very buzzy";
+      sensRead.title = `Full power at ${vibeMaxSpeed} funscript units per second`;
+    };
+    sens.addEventListener("input", () => {
+      vibeMaxSpeed = Math.round(logVal(1000 - parseInt(sens.value, 10), SENS_LO, SENS_HI) / 25) * 25;
+      vibeMaxSpeed = Math.max(SENS_LO, Math.min(SENS_HI, vibeMaxSpeed));
+      showSens();
     });
+    sens.addEventListener("change", sendSettings);
 
-    const prom = document.createElement("input");
-    prom.type  = "number";
-    prom.id    = `${PLUGIN_ID}-beat-prom`;
-    prom.min   = "5"; prom.max = "60"; prom.step = "5";
-    prom.value = String(beatProminence);
-    prom.title = "Peak sensitivity for densely sampled scripts (FunGen and other trackers " +
-                 "emit every video frame). Only direction changes with at least this much " +
-                 "swing count as a beat. Lower = more beats.";
-    prom.style.cssText = "width:46px;background:#222;color:#fff;border:1px solid #555;" +
-                         "border-radius:3px;padding:2px 4px;font-size:11px;";
-    prom.addEventListener("change", () => {
-      const v = parseInt(prom.value, 10);
-      if (!isNaN(v)) {
-        beatProminence = Math.max(5, Math.min(60, v));
-        prom.value = String(beatProminence);
-        sendSettings();
-      }
+    // Beat burst length
+    const BL_LO = 60, BL_HI = 1000;
+    const beatLen = advSlider(`${PLUGIN_ID}-beat-ms`, 80);
+    const beatRead = advRead();
+    const beatGrp = advGroup("Burst",
+      "How long each beat buzzes. Raise it if slow sections are too faint to feel. " +
+      "It is shortened automatically when beats come faster than this.",
+      beatLen, beatRead);
+    const showBeat = () => {
+      beatLen.value = String(logPos(beatMs, BL_LO, BL_HI));
+      beatRead.textContent = `${beatMs} ms`;
+    };
+    beatLen.addEventListener("input", () => {
+      beatMs = Math.max(BL_LO, Math.min(BL_HI,
+        Math.round(logVal(parseInt(beatLen.value, 10), BL_LO, BL_HI) / 10) * 10));
+      showBeat();
     });
+    beatLen.addEventListener("change", sendSettings);
 
+    // Which keyframes count as beats
     const beatSel = document.createElement("select");
     beatSel.id = `${PLUGIN_ID}-beat-edge`;
     beatSel.style.cssText = sel.style.cssText;
-    beatSel.title = "Which keyframes fire: every one, only the low (0) ones, or only the high (100) ones. " +
-                    "Halves the tempo if the script marks both beat and off-beat.";
-    [["all", "Every"], ["low", "Low only"], ["high", "High only"]].forEach(([v, t]) => {
-      const o = document.createElement("option");
-      o.value = v; o.textContent = t;
-      beatSel.appendChild(o);
-    });
+    [["all", "every stroke turn"], ["low", "bottom turns only"], ["high", "top turns only"]]
+      .forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = t;
+        beatSel.appendChild(o);
+      });
     beatSel.value = beatEdge;
     beatSel.addEventListener("change", () => {
       beatEdge = beatSel.value;
       sendSettings();
       log(`Beat edge: ${beatEdge}`, "debug");
     });
+    const edgeGrp = advGroup("Fire on",
+      "Pick bottom or top only to halve the tempo, for scripts that mark both the beat and the off-beat.",
+      beatSel);
 
-    const sens = document.createElement("input");
-    sens.type  = "number";
-    sens.id    = `${PLUGIN_ID}-vibe-sens`;
-    sens.min   = "50"; sens.max = "2000"; sens.step = "25";
-    sens.value = String(vibeMaxSpeed);
-    sens.title = "Funscript speed (units/sec) that maps to 100% intensity. " +
-                 "Lower = buzzier. Only used in Speed mode.";
-    sens.style.cssText = "width:56px;background:#222;color:#fff;border:1px solid #555;" +
-                         "border-radius:3px;padding:2px 4px;font-size:11px;";
+    // Peak picking, only for densely sampled tracker scripts
+    const prom = advSlider(`${PLUGIN_ID}-beat-prom`, 80);
+    const promRead = advRead();
+    const promGrp = advGroup("Beat detail",
+      "This script is sampled every video frame (FunGen or another tracker), so beats are picked out " +
+      "of it. Left finds more, smaller beats; right keeps only big strokes.",
+      prom, promRead);
+    const showProm = () => {
+      prom.value = String(Math.round((beatProminence - 5) / 55 * 1000));
+      const n = statusData && statusData.beatPeaks ? ` · ${statusData.beatPeaks} beats` : "";
+      promRead.textContent = (beatProminence <= 15 ? "fine" : beatProminence <= 35 ? "normal" : "coarse") + n;
+    };
+    prom.addEventListener("input", () => {
+      beatProminence = Math.max(5, Math.min(60, Math.round((5 + parseInt(prom.value, 10) / 1000 * 55) / 5) * 5));
+      showProm();
+    });
+    prom.addEventListener("change", sendSettings);
 
-    function refresh() {
+    refreshVibeControls = () => {
       const beat = vibeMode === "beat" || vibeMode === "auto";
-      // Speed sensitivity also sets the beat level (burst intensity comes from
-      // beat pace through the same mapping), so keep it visible in beat modes.
-      sens.style.display    = (vibeMode === "speed" || beat) ? "" : "none";
-      beatLen.style.display = beat ? "" : "none";
-      beatSel.style.display = beat ? "" : "none";
-      // peak picking only applies to dense scripts; hide it otherwise
-      prom.style.display    = (beat && statusData && statusData.beatPicked) ? "" : "none";
-    }
-    refresh();
+      if (sel.value !== vibeMode) sel.value = vibeMode;
+      modeNote.textContent = VIBE_MODE_NOTES[vibeMode] || "";
+      // Sensitivity also sets beat level (burst strength comes from beat pace
+      // through the same mapping), so keep it visible in the beat modes.
+      sensGrp.style.display = (vibeMode === "speed" || beat) ? "" : "none";
+      beatGrp.style.display = beat ? "" : "none";
+      edgeGrp.style.display = beat ? "" : "none";
+      promGrp.style.display = (beat && statusData && statusData.beatPicked) ? "" : "none";
+      showSens(); showBeat(); showProm();
+    };
+    refreshVibeControls();
 
     sel.addEventListener("change", () => {
       vibeMode = sel.value;
-      refresh();
+      refreshVibeControls();
       sendSettings();
       log(`Vibe mode: ${vibeMode}`, "debug");
     });
 
-    sens.addEventListener("change", () => {
-      const v = parseInt(sens.value, 10);
-      if (!isNaN(v)) {
-        vibeMaxSpeed = Math.max(50, Math.min(2000, v));
-        sens.value   = String(vibeMaxSpeed);
-        sendSettings();
-      }
-    });
-
-    wrap.appendChild(sel);
-    wrap.appendChild(sens);
-    wrap.appendChild(beatLen);
-    wrap.appendChild(prom);
-    wrap.appendChild(beatSel);
+    wrap.appendChild(modeGrp);
+    wrap.appendChild(sensGrp);
+    wrap.appendChild(beatGrp);
+    wrap.appendChild(edgeGrp);
+    wrap.appendChild(promGrp);
     return wrap;
   }
 
@@ -2472,6 +3367,9 @@ function injectStyles() {
   function installHotkeys() {
     document.addEventListener("keydown", (e) => {
       if (!hotkeysOn || !hotkeysAllowed) return;
+      // Another plugin already consumed this key (QuickTools' rating panel
+      // takes digits, including 0).
+      if (e.defaultPrevented) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (typingInAField(e.target)) return;
       if (!byId(`${PLUGIN_ID}-toolbar`)) return;
@@ -2500,6 +3398,7 @@ function injectStyles() {
     installHotkeys();
     log(`Plugin initialized (backend: ${BACKEND_URL})`);
     loadSettingsFromStorage();
+    loadPresets();
     connectBackend();
     watchNavigation();
     const sceneId = getSceneIdFromUrl();
