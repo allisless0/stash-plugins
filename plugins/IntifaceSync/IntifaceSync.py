@@ -97,7 +97,7 @@ except ImportError:
 # Kept equal to the manifest and the JS by validate.sh. The page compares it
 # with its own: reloading plugins in Stash does not restart this process, and
 # an old backend behind a new page caused two "the fix does not work" reports.
-PLUGIN_VERSION    = "1.30-vibe"
+PLUGIN_VERSION    = "1.31-vibe"
 BACKEND_PORT      = 7880
 BACKEND_HOST      = "0.0.0.0"
 FUNSCRIPT_PORT    = 7881
@@ -3158,11 +3158,101 @@ def daemonize(ready_fd: int = -1) -> None:
 
 
 
-def _wait_pid_gone(pid: int, timeout: float = 5.0) -> bool:
+# ─── Is that PID really the backend? ────────────────────────────────────────
+# The lock file holds the daemon's PID, but it lives in /tmp, which survives a
+# container restart while PID numbering starts over. Up to 1.30 a stale lock
+# could name a PID that now belonged to Stash: Stop Backend sent it SIGTERM
+# (and SIGKILL) and took Stash down, and Start Backend saw it alive and
+# refused to start ("Backend unreachable"). Nothing is trusted or signalled
+# any more unless its command line shows it is this script.
+
+BACKEND_MARKER = "IntifaceSync.py"
+
+
+def _read_cmdline(pid: int) -> str | None:
+    """The process's command line, or None when it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
+def is_backend_pid(pid: int, read_cmdline=_read_cmdline) -> bool:
+    """True only for a process that is verifiably an IntifaceSync backend.
+
+    Never PID 1 (the container's init, usually Stash), never this process and
+    never its parent (the task runner is spawned by Stash). Unknown means no:
+    a backend that cannot be verified is left alone, which at worst leaves it
+    running; guessing wrong kills Stash."""
+    if pid <= 1 or pid in (os.getpid(), os.getppid()):
+        return False
+    cmd = read_cmdline(pid)
+    return bool(cmd) and BACKEND_MARKER in cmd
+
+
+def find_backend_pids(read_cmdline=_read_cmdline, listdir=os.listdir) -> list:
+    """Every running backend, found by command line, lock file or not."""
+    try:
+        entries = listdir("/proc")
+    except OSError:
+        return []
+    out = []
+    for name in entries:
+        if name.isdigit() and is_backend_pid(int(name), read_cmdline):
+            out.append(int(name))
+    return sorted(out)
+
+
+def _lock_pid() -> int | None:
+    try:
+        with open(LOCK_FILE) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def stop_backend(kill=os.kill, read_cmdline=_read_cmdline, listdir=os.listdir) -> list:
+    """Stop Backend task. Returns the PIDs it signalled."""
+    pids = find_backend_pids(read_cmdline, listdir)
+    locked = _lock_pid()
+    if locked is not None and locked not in pids:
+        if is_backend_pid(locked, read_cmdline):
+            pids.append(locked)
+        else:
+            log.info(f"Lock file named PID {locked}, which is not the backend "
+                     f"(left over from before a restart); ignoring it.")
+    if not pids:
+        log.info("No running backend found.")
+        release_lock()
+        return []
+    for pid in pids:
+        try:
+            kill(pid, signal.SIGTERM)       # the backend's handler panics the toy first
+            log.info(f"Stop signal sent to backend PID {pid}, waiting...")
+        except ProcessLookupError:
+            continue
+        except Exception as e:
+            log.warning(f"Failed to stop backend PID {pid}: {e}")
+            continue
+        if _wait_pid_gone(pid, timeout=5.0, kill=kill):
+            log.info(f"Backend (PID {pid}) stopped cleanly.")
+        elif is_backend_pid(pid, read_cmdline):   # check again right before SIGKILL
+            log.warning(f"Backend (PID {pid}) did not stop in time, sending SIGKILL.")
+            try:
+                kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            _wait_pid_gone(pid, timeout=2.0, kill=kill)
+    release_lock()
+    return pids
+
+
+def _wait_pid_gone(pid: int, timeout: float = 5.0, kill=os.kill) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            os.kill(pid, 0)
+            kill(pid, 0)
         except ProcessLookupError:
             return True
         time.sleep(0.1)
@@ -3187,52 +3277,23 @@ def main() -> None:
         pass
 
     if mode == "stopBackend":
-        if not os.path.exists(LOCK_FILE):
-            log.info("No running backend found.")
-            return
-        try:
-            with open(LOCK_FILE) as f:
-                pid = int(f.read().strip())
-        except Exception as e:
-            log.warning(f"Failed to read lock file: {e}")
-            return
-        try:
-            os.kill(pid, signal.SIGTERM)
-            log.info(f"Stop signal sent to PID {pid}, waiting...")
-        except ProcessLookupError:
-            log.info(f"PID {pid} already gone, cleaning lock.")
-            try: os.remove(LOCK_FILE)
-            except OSError: pass
-            return
-        except Exception as e:
-            log.warning(f"Failed to stop backend: {e}")
-            return
-
-        if _wait_pid_gone(pid, timeout=5.0):
-            log.info(f"Backend (PID {pid}) stopped cleanly.")
-        else:
-            log.warning(f"Backend (PID {pid}) did not stop in time, sending SIGKILL.")
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            _wait_pid_gone(pid, timeout=2.0)
-            log.info(f"Backend (PID {pid}) force-killed.")
-        if os.path.exists(LOCK_FILE):
-            try: os.remove(LOCK_FILE)
-            except OSError: pass
+        stop_backend()
         return
 
     if mode == "startBackend":
-        if os.path.exists(LOCK_FILE):
-            try:
-                with open(LOCK_FILE) as f:
-                    pid = int(f.read().strip())
-                os.kill(pid, 0)
-                log.info(f"Backend already running (PID {pid}), exiting.")
-                return
-            except (ProcessLookupError, ValueError, OSError):
-                log_debug(f"Stale lock file found, will be replaced.")
+        # Already running? Only if a process verifiably is the backend. A lock
+        # file naming some other live process (Stash, after a container
+        # restart) used to stop the backend from ever starting.
+        running = find_backend_pids()
+        locked = _lock_pid()
+        if locked is not None and locked not in running and is_backend_pid(locked):
+            running.append(locked)
+        if running:
+            log.info(f"Backend already running (PID {running[0]}), exiting.")
+            return
+        if locked is not None:
+            log.info(f"Stale lock file (PID {locked} is not the backend), replacing it.")
+            release_lock()
 
         log.info("Starting backend as daemon...")
         r, w = os.pipe()

@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.30-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.31-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -608,6 +608,24 @@ Also: `ws_serve(ping_interval=5, ping_timeout=8)` so leaked browser sockets
 die instead of holding the client count above zero (log showed 122 connects vs
 73 disconnects). `Stop Backend` now panics and disconnects Intiface before
 exiting; before it just killed the process with the toy still running.
+
+**Stop Backend killed Stash (fixed 1.31, load-bearing).** The lock file
+(`/tmp/intiface_sync.lock`) holds the daemon's PID. `/tmp` survives a
+container restart but PID numbering starts over, so after a restart the
+stale lock could name a PID that now belonged to Stash. Stop Backend sent
+it SIGTERM then SIGKILL and **took Stash down** (user report), and Start
+Backend saw that PID alive, logged "already running" and never started, which
+is the "Backend unreachable" the user saw at the same time.
+
+Now nothing is trusted or signalled unless `is_backend_pid()` says so: never
+PID 1, never the task's own PID or its parent (Stash spawns the task), and
+only a process whose `/proc/<pid>/cmdline` contains `IntifaceSync.py`;
+unreadable means no. `stop_backend()` finds running backends by command line
+(`find_backend_pids()`), uses the lock file only as a verified hint, clears a
+stale lock, and re-verifies right before SIGKILL. Start refuses only when a
+verified backend is running. The SIGTERM path is unchanged, so the backend's
+own handler still runs `_panic()` before exit (rule 1). **Never go back to
+killing a PID read from a file without verifying it.** Tests 58-59.
 
 **Backend version check (1.30).** `PLUGIN_VERSION` exists in the manifest,
 the Python and the JS, and `validate.sh` fails if they differ. The backend
@@ -1206,6 +1224,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-29: IntifaceSync 1.31, Stop Backend could kill Stash
+
+User: after updating Intiface Central, "Backend unreachable", and Stop
+Backend stopped the whole of Stash. Both were one bug: a stale lock file
+naming Stash's PID after a container restart (see §4.5). Also checked the
+backend still parses on Python 3.9-3.11 in case the container's Python was
+older than the dev machine's; it does.
 
 ### 2026-09-24 (night): IntifaceSync 1.30
 

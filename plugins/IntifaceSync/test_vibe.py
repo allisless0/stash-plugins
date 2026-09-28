@@ -1435,3 +1435,45 @@ asyncio.run(_version())
 print(f"   {isync.PLUGIN_VERSION} in status and manifest  OK")
 
 print("\nFORK 1.30 TESTS PASSED")
+
+
+# ── 58-59. 1.31 Stop Backend must only ever stop the backend ─────────────────
+import signal as _signal
+print("58. a PID is only the backend if its command line says so")
+cmdlines = {1: "/usr/bin/stash --nobrowser", 23: "/usr/bin/stash --nobrowser",
+            40: "python3 /root/.stash/plugins/IntifaceSync/IntifaceSync.py",
+            41: "ffmpeg -i x.mp4"}
+rc = lambda pid: cmdlines.get(pid)
+assert not isync.is_backend_pid(1, rc), "PID 1 is never the backend"
+assert not isync.is_backend_pid(os.getpid(), lambda p: "IntifaceSync.py"), "never ourselves"
+assert not isync.is_backend_pid(os.getppid(), lambda p: "IntifaceSync.py"), "never our parent (Stash)"
+assert not isync.is_backend_pid(23, rc), "Stash under a reused PID"
+assert not isync.is_backend_pid(99, rc), "unreadable means no"
+assert isync.is_backend_pid(40, rc)
+assert isync.find_backend_pids(rc, lambda _: ["1", "23", "40", "41", "self", "stat"]) == [40]
+print("   PID 1, self, parent, Stash and unknown PIDs refused; the backend found  OK")
+
+print("59. a stale lock naming Stash is ignored, not killed (the 'stop kills Stash' bug)")
+_lock_d = _tf.mkdtemp()
+_old_lock = isync.LOCK_FILE
+isync.LOCK_FILE = os.path.join(_lock_d, "intiface_sync.lock")
+try:
+    sent = []
+    def fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError      # gone as soon as it is asked
+        sent.append((pid, sig))
+    # after a container restart: the lock names PID 23, which is now Stash
+    open(isync.LOCK_FILE, "w").write("23")
+    pids = isync.stop_backend(fake_kill, rc, lambda _: ["1", "23", "41"])
+    assert sent == [] and pids == [], f"signalled a process that is not the backend: {sent}"
+    assert not os.path.exists(isync.LOCK_FILE), "stale lock should be cleared"
+    # a real backend, lock file or not, is stopped with SIGTERM (its handler panics)
+    pids = isync.stop_backend(fake_kill, rc, lambda _: ["1", "23", "40", "41"])
+    assert sent == [(40, _signal.SIGTERM)] and pids == [40], sent
+finally:
+    isync.LOCK_FILE = _old_lock
+    _sh.rmtree(_lock_d, ignore_errors=True)
+print("   Stash left alone and the lock cleared; the real backend gets SIGTERM  OK")
+
+print("\nFORK 1.31 TESTS PASSED")
