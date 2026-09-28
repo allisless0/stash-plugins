@@ -11,7 +11,7 @@
   const BACKEND_HOST    = window.location.hostname;
   const BACKEND_URL     = `ws://${BACKEND_HOST}:7880`;
   const PLUGIN_ID       = "IntifaceSync";
-  const PLUGIN_VERSION  = "1.31-vibe";   // must match the backend; see updateToolbarStatus
+  const PLUGIN_VERSION  = "1.32-vibe";   // must match the backend; see updateToolbarStatus
   const MIN_STROKE_GAP  = 5;
   const LS_KEY          = "IntifaceSync.settings";
 
@@ -1148,10 +1148,17 @@
       if (!msg.error && funscriptLoaded === "pending") {
         funscriptLoaded = true;
         updateFunscriptSelector();
-        if (pendingPlay !== null) {
+        // The video kept going while the script loaded: start from where it
+        // is now, not from where it was when play was pressed. And start even
+        // with no play queued: a queued next scene can keep one element
+        // playing across the change, so no play event ever arrives for it.
+        const v = liveVideo();
+        if (v && !v.paused && !v.ended) {
+          sendMsg({ type: "play", time: v.currentTime * 1000, rate: v.playbackRate });
+        } else if (pendingPlay !== null) {
           sendMsg({ type: "play", time: pendingPlay.time, rate: pendingPlay.rate ?? 1 });
-          pendingPlay = null;
         }
+        pendingPlay = null;
       }
       return;
     }
@@ -1160,6 +1167,7 @@
       funscripts = msg.files ?? [];
       const defaultScript = msg.default ?? null;
       log(`Funscripts received: ${funscripts.length} file(s)`);
+      sceneScriptPending = false;
 
       if (funscripts.length === 0) {
         pendingPlay = null;
@@ -1169,7 +1177,11 @@
         // the previous scene's script must not play against this video
         if (isOwner) sendMsg({ type: "unloadScript" });
         autoManualCheck();
+        autoManualSettle();     // a pattern carried over from the last scene keeps going only if playing
       } else {
+        // This scene has a script, so a pattern carried over from a scriptless
+        // one ends now, before the script starts.
+        autoManualStop();
         sceneHasNoScript = false;
         selectedFunscript = defaultScript || funscripts[0];
         // this script's remembered tuning, before the script itself loads
@@ -1209,10 +1221,57 @@
   }
 
   function autoManualStop() {
+    if (autoManualTimer) { clearTimeout(autoManualTimer); autoManualTimer = null; }
+    autoManualDeadline = 0;
     if (!autoManualActive) return;
     autoManualActive = false;
     autoManualInternal = true;
     try { setManual(false); } finally { autoManualInternal = false; }
+  }
+
+  // A click on the timeline is a pause and a play 100 ms apart, a drag holds
+  // the video paused, and a queued scene ends just before the next one starts.
+  // Up to 1.31 each of those stopped the pattern and the play started it
+  // again, from the top, opening buzz included: a buzz on every seek and every
+  // next video. So a stop only counts once it has lasted
+  // AUTO_MANUAL_GRACE_MS, a drag or a scene whose script is still being looked
+  // up holds it (up to AUTO_MANUAL_HOLD_MAX_MS), and a pattern that is still
+  // wanted afterwards just keeps running.
+  const AUTO_MANUAL_GRACE_MS    = 700;
+  const AUTO_MANUAL_HOLD_MAX_MS = 8000;
+  let autoManualTimer    = null;
+  let autoManualDeadline = 0;
+  let sceneScriptPending = false;
+
+  function liveVideo() {
+    if (videoEl && videoEl.isConnected) return videoEl;
+    return document.querySelector("video");
+  }
+
+  function videoScrubbing(v) {
+    const player = v && v.closest ? v.closest(".video-js") : null;
+    return !!(player && player.classList.contains("vjs-scrubbing"));
+  }
+
+  function autoManualSettle() {
+    if (!autoManualActive) return;
+    if (autoManualTimer) clearTimeout(autoManualTimer);
+    if (!autoManualDeadline) autoManualDeadline = Date.now() + AUTO_MANUAL_HOLD_MAX_MS;
+    autoManualTimer = setTimeout(() => {
+      autoManualTimer = null;
+      if (!autoManualActive) { autoManualDeadline = 0; return; }
+      const v       = liveVideo();
+      const playing = !!(v && !v.paused && !v.ended);
+      if (playing && sceneHasNoScript && isOwner && autoManual && !autoManualVeto) {
+        autoManualDeadline = 0;                // still wanted: never interrupted
+        return;
+      }
+      if ((videoScrubbing(v) || sceneScriptPending) && Date.now() < autoManualDeadline) {
+        autoManualSettle();
+        return;
+      }
+      autoManualStop();
+    }, AUTO_MANUAL_GRACE_MS);
   }
 
   // ── Stop-Helper ────────────────────────────────────────────────────────────
@@ -1222,9 +1281,16 @@
   }
 
   // ── Video events ───────────────────────────────────────────────────────────
+  // Stash keeps one <video> across scenes. Changing scene clears videoEl, so
+  // the same element came back here and got a second set of listeners, then a
+  // third: every pause went out N times, each one a stop command over BLE.
+  const hookedVideos = new WeakSet();
+
   function attachVideoEvents(video) {
     if (videoEl === video) return;
     videoEl = video;
+    if (hookedVideos.has(video)) return;
+    hookedVideos.add(video);
 
     video.addEventListener("play", () => {
       setTimeout(autoManualCheck, 0);
@@ -1253,9 +1319,19 @@
 
     video.addEventListener("pause", () => {
       log("Video pause", "debug");
-      autoManualStop();
+      autoManualSettle();                 // a seek looks like a pause; see autoManualSettle
       pendingPlay = null;
       sendPresence();                     // let other tabs see we are idle right away
+      sendMsg({ type: "pause" });
+    });
+
+    // A seek while playing: silence the script until the new position is
+    // known, instead of running on from the old one for as long as the seek
+    // takes (seconds on a transcoded stream). The backend's pause leaves a
+    // manual pattern running. Not while paused: a timeline drag seeks on every
+    // mouse move, and each pause would be another stop command over BLE.
+    video.addEventListener("seeking", () => {
+      if (video.paused) return;
       sendMsg({ type: "pause" });
     });
 
@@ -1271,7 +1347,7 @@
 
     video.addEventListener("ended", () => {
       log("Video ended", "debug");
-      autoManualStop();
+      autoManualSettle();                 // a queue may start the next scene right away
       pendingPlay = null;
       sendMsg({ type: "pause" });
     });
@@ -1294,6 +1370,9 @@
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
       if (!/^\/scenes\/\d+/.test(lastPath)) {
+        // Left the scene pages. The backend's pause keeps manual running, so an
+        // automatic pattern has to be ended here or it outlives the scene.
+        autoManualStop();
         stopPlayback("route-change");
         videoEl = null;
         funscriptLoaded = false;
@@ -3771,10 +3850,13 @@ function injectStyles() {
 
   async function onSceneLoad(sceneId) {
     log(`Scene loaded: ${sceneId}`);
-    // A new scene starts clean: an automatic manual session from the last one
-    // ends, and nothing plays until this scene's script (or its absence) is
-    // known.
-    autoManualStop();
+    // A new scene starts clean: the last scene's script is dropped and nothing
+    // from it plays until this scene's script (or its absence) is known. An
+    // automatic manual pattern is the exception: it is held until then, and
+    // keeps going without a restart if this scene has no script either (the
+    // funscripts reply decides; autoManualSettle stops it if no answer comes).
+    sceneScriptPending = true;
+    autoManualSettle();
     autoManualVeto   = false;
     sceneHasNoScript = false;
     if (isOwner) sendMsg({ type: "unloadScript" });
@@ -3785,7 +3867,7 @@ function injectStyles() {
     selectedFunscript     = null;
 
     const scene = await getSceneDetails(sceneId);
-    if (!scene) return;
+    if (!scene) { sceneScriptPending = false; return; }
 
     const videoPath  = scene.files?.[0]?.path ?? null;
     currentScenePath = videoPath;
@@ -3811,6 +3893,8 @@ function injectStyles() {
     if (videoPath) {
       if (wsReady) sendMsg({ type: "findFunscripts", videoPath });
       else         pendingFindFunscripts = { videoPath };
+    } else {
+      sceneScriptPending = false;         // nothing to look up, no answer coming
     }
 
     toolbarInjected = false;
@@ -3838,6 +3922,8 @@ function injectStyles() {
     const sceneId = getSceneIdFromUrl();
     if (!sceneId) {
       lastSceneId = null;
+      sceneScriptPending = false;
+      autoManualStop();                   // off the scene pages: nothing to carry it to
       return;
     }
     if (sceneId === lastSceneId) return;

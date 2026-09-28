@@ -97,7 +97,7 @@ except ImportError:
 # Kept equal to the manifest and the JS by validate.sh. The page compares it
 # with its own: reloading plugins in Stash does not restart this process, and
 # an old backend behind a new page caused two "the fix does not work" reports.
-PLUGIN_VERSION    = "1.31-vibe"
+PLUGIN_VERSION    = "1.32-vibe"
 BACKEND_PORT      = 7880
 BACKEND_HOST      = "0.0.0.0"
 FUNSCRIPT_PORT    = 7881

@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.31-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.32-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -666,7 +666,7 @@ through `_route`. Test 54.
 **Manual on scenes without a script (1.29, frontend).** User request. When the
 driver plays a scene whose script lookup came back empty, `autoManualCheck()`
 turns manual on with the current pattern; pause, end and scene change turn it
-off again (`autoManualStop()`), but only a session the plugin started
+off again (through `autoManualSettle()` since 1.32, see below), but only a session the plugin started
 (`autoManualActive`). A manual session the user started is never touched.
 Turning manual off during the scene sets `autoManualVeto` until the next
 scene. Switch in the ⚙ row ("No script: manual on / silent"), default on.
@@ -675,6 +675,46 @@ manual is off (sent before the manual message was processed); clearing
 `autoManualActive` on that made pause leave manual running. The status
 handler must not clear it. Turning manual off from pause is an ordinary
 manual-off, which is always safe; the deadman covers a tab that dies mid-scene.
+
+**No buzz on seek or next video (1.32, frontend, load-bearing).** User
+report: seeking made the toy buzz, and so did the next video. Cause, found in
+the harness: on a scene without a script, auto manual stopped on every
+`pause` and started again on `play`. video.js turns a timeline click into
+pause, seek, play about 100 ms apart, and a queued scene ends just before
+the next starts, so each one restarted the pattern from the top, opening
+buzz included. Now `pause` and `ended` call `autoManualSettle()`: the stop
+only happens if, `AUTO_MANUAL_GRACE_MS` (700 ms) later, the video is still
+not playing a scene without a script. A video.js drag (`vjs-scrubbing` on
+the player) and a scene whose script lookup has not answered yet
+(`sceneScriptPending`) hold the pattern, up to `AUTO_MANUAL_HOLD_MAX_MS`
+(8 s). A scene change no longer stops it outright: the funscripts reply
+decides. No script means it keeps running without a restart; a script
+stops it before the script loads. Leaving the scene pages still stops it at
+once. The cost: a real pause stops the pattern 0.7 s late. **Do not go back
+to `autoManualStop()` on pause.**
+
+Found alongside it:
+- **Duplicate listeners.** Stash keeps one `<video>` across scenes, and
+  `onUrlChange` clears `videoEl`, so the same element was hooked again on
+  every scene change. After a few scenes every pause went out 6-8 times as
+  stop commands over BLE. `hookedVideos` (a WeakSet) now hooks each element
+  once.
+- **`seeking` handler.** A seek while playing sends `pause` so the script
+  does not run on from the old position for the length of the seek. The
+  backend's pause leaves manual alone. It is skipped while paused, because
+  a drag seeks on every mouse move.
+- **Script load starts playback itself.** When the element keeps playing
+  across a scene change, no play event arrives. The script used to load and
+  sit idle until the next seek or pause; the load reply now sends `play`
+  from the live position whenever the video is playing, and a queued play
+  also uses the live position instead of the one from when play was pressed.
+
+No backend behaviour changed; the version bump is for the page-backend
+check. Verified in the harness against the real backend and fake Intiface.
+One `ScalarCmd` for the whole of a click-seek, a 2.5 s drag and a keyboard
+seek; one stop 0.7 s after a real pause. Scriptless to scriptless: no
+restart. Scriptless to scripted: stop, then the script from the right
+position. Not tested in a real Stash with video.js.
 
 **Tease starting buzz length (1.29).** `manual_on_from_ms` / `onFromMs`: the
 length build grows from this to Buzz length (now labelled "Final buzz length"
@@ -1204,6 +1244,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Graded beat detection tested only on synthetic scripts. Thresholds (`BEAT_ALT_FRAC` 0.90, `BEAT_MIN_MEDIAN_SWING` 25, `BEAT_GRID_FRAC` 0.60, grid tolerance 8%) are guesses. Check that a real "Colors" script classifies as `graded` and a hand-scripted stroker file stays `""`. Swing-based levels apply to graded scripts only; the edge and peak-picked paths are still pace-based and unnormalised. |
 | IntifaceSync | Beat spacing raised to 190 ms in 1.21 for the BLE budget. Scripts faster than ~5 beats/s now merge beats (loudest swing kept). Check that fast Cock Hero sections still feel like a beat, not a blur. |
 | IntifaceSync | Presets and knob UI tested only in a harness, not a real Stash. Check: save a preset, reload, open Stash Settings > Plugins and change an IntifaceSync setting, reload the scene: the preset list must survive. Check the popover position when the player is fullscreen. |
+| IntifaceSync | 1.32 seek and next-video handling tested in a harness, not real video.js. Check in Stash: a scene with no script, manual pattern running; click the timeline and drag it; the pattern must not restart. Play a queue of scenes without scripts; the pattern must not restart between them. Pause; it stops within a second. |
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M and D are keyboard-only. |
@@ -1224,6 +1265,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-09-29 (later): IntifaceSync 1.32, buzz on seek and next video
+
+User: "when I seek in the player it buzzes a bit", and the same when the next
+video plays. Not a feature. Reproduced in the harness: auto manual was
+restarting on video.js's pause-seek-play. Also fixed duplicate video listeners
+and a script that stayed idle when the video was already playing. See §4.5.
 
 ### 2026-09-29: IntifaceSync 1.31, Stop Backend could kill Stash
 
