@@ -8,3 +8,4 @@ intiface_sync.log
 .claude/settings.local.json
 _site/
 *.log.*
+_deps/

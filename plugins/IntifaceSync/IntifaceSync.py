@@ -71,33 +71,59 @@ def log_debug(msg):
 
 
 
+# ─── Python dependencies ────────────────────────────────────────────────────
+# Installed into the plugin folder, not the container's Python. The Stash
+# container is rebuilt on every image update and every template edit, which
+# wiped a system-wide install; the plugin folder sits in the mapped config
+# directory and survives. --target also sidesteps PEP 668: up to 1.32 the
+# first attempt was a plain `pip install`, which Alpine refuses as an
+# "externally-managed-environment", and that refusal filled the Stash log with
+# 25 lines of red errors on every rebuild before the retry quietly worked.
+DEPS_DIR = os.path.join(PLUGIN_DIR, "_deps")
+if DEPS_DIR not in sys.path:
+    sys.path.insert(0, DEPS_DIR)
+
+
+def ensure_package(module: str, package: str, run=subprocess.run, importer=None):
+    """Import `module`, installing `package` into DEPS_DIR first if needed.
+
+    pip's output is captured: on success nothing reaches the Stash log but one
+    line, on failure the tail of the real error does."""
+    import importlib
+    importer = importer or importlib.import_module
+    try:
+        return importer(module)
+    except ImportError:
+        pass
+    log.info(f"Installing {package} into the plugin folder "
+             f"(first start, or the Stash container was rebuilt)...")
+    env = dict(os.environ, PIP_ROOT_USER_ACTION="ignore", PIP_DISABLE_PIP_VERSION_CHECK="1")
+    # --upgrade replaces a copy built for an older Python after an image update
+    r = run([sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+             "--target", DEPS_DIR, package],
+            capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip().splitlines()[-5:]
+        log.error(f"Could not install {package}: " + " | ".join(tail))
+        raise ImportError(f"{package} is not installed and pip failed")
+    importlib.invalidate_caches()
+    mod = importer(module)
+    log.info(f"Installed {package}.")
+    return mod
+
+
+websockets = ensure_package("websockets", "websockets")
 try:
-    import websockets
     from websockets.asyncio.server import serve as ws_serve
 except ImportError:
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "websockets", "--quiet"])
-    except subprocess.CalledProcessError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "websockets", "--quiet", "--break-system-packages"])
-    import websockets
-    try:
-        from websockets.asyncio.server import serve as ws_serve
-    except ImportError:
-        from websockets.server import serve as ws_serve
+    from websockets.server import serve as ws_serve
 
-try:
-    import aiohttp
-except ImportError:
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp", "--quiet"])
-    except subprocess.CalledProcessError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp", "--quiet", "--break-system-packages"])
-    import aiohttp
+aiohttp = ensure_package("aiohttp", "aiohttp")
 
 # Kept equal to the manifest and the JS by validate.sh. The page compares it
 # with its own: reloading plugins in Stash does not restart this process, and
 # an old backend behind a new page caused two "the fix does not work" reports.
-PLUGIN_VERSION    = "1.32-vibe"
+PLUGIN_VERSION    = "1.33-vibe"
 BACKEND_PORT      = 7880
 BACKEND_HOST      = "0.0.0.0"
 FUNSCRIPT_PORT    = 7881

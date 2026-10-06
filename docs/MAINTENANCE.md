@@ -48,7 +48,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
 | QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
-| IntifaceSync (vibe fork) | 1.32-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -676,6 +676,23 @@ manual is off (sent before the manual message was processed); clearing
 handler must not clear it. Turning manual off from pause is an ordinary
 manual-off, which is always safe; the deadman covers a tab that dies mid-scene.
 
+**Python dependencies go to `_deps/` in the plugin folder (1.33).**
+`ensure_package()` imports `websockets` and `aiohttp`, and if either is
+missing runs one `pip install --target <plugin>/_deps` with output captured.
+Two reasons. First, the Stash container is rebuilt on every image update and
+every template edit (user hit this adding CPU limits), which wiped a
+system-wide install, while the plugin folder lives in the mapped config
+directory and survives. Second, the official image is Alpine, whose Python
+is PEP 668 "externally managed". The old code tried a plain `pip install`
+first, Alpine refused it, and the refusal went to the Stash log as about 25
+red error lines per package before the `--break-system-packages` retry
+worked. `--target` skips the PEP 668 check (pip does not apply it to
+--target, --prefix or --root), so the system Python is never touched.
+`--upgrade` replaces a copy built for an older Python after an image update.
+On failure, one error line with pip's last lines, then ImportError. An
+existing system-wide install still wins the import, so nothing reinstalls
+for users who have one. `_deps/` is in `.gitignore`. Test 60.
+
 **No buzz on seek or next video (1.32, frontend, load-bearing).** User
 report: seeking made the toy buzz, and so did the next video. Cause, found in
 the harness: on a scene without a script, auto manual stopped on every
@@ -1244,6 +1261,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Graded beat detection tested only on synthetic scripts. Thresholds (`BEAT_ALT_FRAC` 0.90, `BEAT_MIN_MEDIAN_SWING` 25, `BEAT_GRID_FRAC` 0.60, grid tolerance 8%) are guesses. Check that a real "Colors" script classifies as `graded` and a hand-scripted stroker file stays `""`. Swing-based levels apply to graded scripts only; the edge and peak-picked paths are still pace-based and unnormalised. |
 | IntifaceSync | Beat spacing raised to 190 ms in 1.21 for the BLE budget. Scripts faster than ~5 beats/s now merge beats (loudest swing kept). Check that fast Cock Hero sections still feel like a beat, not a blur. |
 | IntifaceSync | Presets and knob UI tested only in a harness, not a real Stash. Check: save a preset, reload, open Stash Settings > Plugins and change an IntifaceSync setting, reload the scene: the preset list must survive. Check the popover position when the player is fullscreen. |
+| IntifaceSync | 1.33 `_deps` install untested inside the real Alpine Stash image (tested with a stubbed pip). Check after a container rebuild: one "Installing websockets into the plugin folder" line, no PEP 668 errors, backend starts; then rebuild again and confirm nothing reinstalls. |
 | IntifaceSync | 1.32 seek and next-video handling tested in a harness, not real video.js. Check in Stash: a scene with no script, manual pattern running; click the timeline and drag it; the pattern must not restart. Play a queue of scenes without scripts; the pattern must not restart between them. Pause; it stops within a second. |
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
@@ -1265,6 +1283,15 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-06: IntifaceSync 1.33, dependency install
+
+User's Stash log filled with red pip "externally-managed-environment"
+errors after they edited the container template (Unraid help: Generate was
+freezing the server; added `--cpus=6 --memory=6g`, found the official image
+has no NVENC ffmpeg). The rebuild wiped the pip-installed packages, and the
+reinstall printed Alpine's PEP 668 refusal before the retry worked. Now one
+quiet `--target` install into the plugin folder that survives rebuilds.
 
 ### 2026-09-29 (later): IntifaceSync 1.32, buzz on seek and next video
 

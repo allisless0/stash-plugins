@@ -1477,3 +1477,36 @@ finally:
 print("   Stash left alone and the lock cleared; the real backend gets SIGTERM  OK")
 
 print("\nFORK 1.31 TESTS PASSED")
+
+
+# ── 60. 1.33 dependencies install quietly into the plugin folder ─────────────
+print("60. a missing package installs with --target into the plugin folder, never system-wide")
+calls = []
+class _R:
+    def __init__(self, rc, err=""): self.returncode, self.stderr, self.stdout = rc, err, ""
+_have = {"present": object()}
+def _imp(name):
+    if name in _have: return _have[name]
+    raise ImportError(name)
+# already importable: pip is never run
+assert isync.ensure_package("present", "present", run=lambda *a, **k: calls.append(a), importer=_imp) is _have["present"]
+assert calls == [], "pip ran for a package that was already there"
+# missing: one quiet pip run with --target DEPS_DIR, no --break-system-packages
+def _run_ok(cmd, **kw):
+    calls.append(cmd)
+    _have["newpkg"] = object()
+    return _R(0)
+assert isync.ensure_package("newpkg", "newpkg", run=_run_ok, importer=_imp) is _have["newpkg"]
+cmd = calls[-1]
+assert "--target" in cmd and cmd[cmd.index("--target") + 1] == isync.DEPS_DIR, cmd
+assert "--break-system-packages" not in cmd and len(calls) == 1, calls
+assert isync.DEPS_DIR in sys.path, "the plugin folder's deps must be importable"
+# pip fails: ImportError carrying the reason, not a pile of pip output
+try:
+    isync.ensure_package("nope", "nope", run=lambda c, **k: _R(1, "x\nERROR: no network"), importer=_imp)
+    raise AssertionError("should have raised")
+except ImportError:
+    pass
+print("   present: no pip; missing: one --target install; failure: ImportError  OK")
+
+print("\nFORK 1.33 TESTS PASSED")

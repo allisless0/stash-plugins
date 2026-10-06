@@ -11,7 +11,7 @@
   const BACKEND_HOST    = window.location.hostname;
   const BACKEND_URL     = `ws://${BACKEND_HOST}:7880`;
   const PLUGIN_ID       = "IntifaceSync";
-  const PLUGIN_VERSION  = "1.32-vibe";   // must match the backend; see updateToolbarStatus
+  const PLUGIN_VERSION  = "1.33-vibe";   // must match the backend; see updateToolbarStatus
   const MIN_STROKE_GAP  = 5;
   const LS_KEY          = "IntifaceSync.settings";
 
