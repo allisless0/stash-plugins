@@ -31,8 +31,8 @@ handlers fighting over the same keys. Recent marker tags carry over.
 
 ## QuickTools in brief
 
-Shortcuts limited to `/scenes/<id>` pages (`T` also works on performer
-pages), none of them firing while you are typing in a field.
+Shortcuts for the scene page (`T` and `D` also work on cards in any scene or
+performer list), none of them firing while you are typing in a field.
 
 - **`R`** — a rating panel at your cursor. Type a number, drag the bar, or use
 the arrow keys. Auto-saves, and `Esc` is a real undo.
@@ -43,6 +43,8 @@ tint while the tag is on, so the state of a scene is obvious the moment you
 open it.
 - **`T`** — add or remove tags on the scene, or on the performer on a
 performer page. Search, Enter, and the panel stays open for the next one.
+- **In the library**, `T` and `D` act on the scene or performer card under the
+mouse, so you can tag and mark scenes straight from a grid or list.
 - **double-click** or **middle-click** — next or previous scene in the
 queue. Off by default, because it replaces double-click-to-fullscreen.
 

@@ -9,12 +9,26 @@ Shortcuts for the Stash scene player, plus quick tags on performer pages. Each c
 | `M` | on | Add a marker at the current position |
 | `Shift+M` | on | Mark a range: press at the start, again at the end |
 | `U` | on | Undo the marker you just added (for 8 s) |
-| `D` | on | Toggle the "Marked for Delete" tag |
-| `T` | on | Add or remove tags on the scene, or on the performer on a performer page |
+| `D` | on | Toggle the "Marked for Delete" tag (scene page, or the scene card under the mouse) |
+| `T` | on | Add or remove tags on the scene or performer: the page's own, or the card under the mouse |
 | double-click / middle-click | **off** | Jump through the scene queue |
 
-All of them act on `/scenes/<id>` pages (`T` also on `/performers/<id>`) and
-never fire while you are typing in a field.
+All of them act on `/scenes/<id>` pages and never fire while you are typing in
+a field. `T` and `D` also work in your library: see below.
+
+## In the library: the card under the mouse
+
+In any scene or performer grid or list (the Scenes and Performers pages, a
+performer's or studio's scenes tab, the wall, the list view), point at a card
+and press:
+
+- **`T`** to tag that scene or performer. The card gets an orange outline and
+  the panel title names it, so you can see what you are tagging.
+- **`D`** to mark that scene for delete. The card flashes a red outline.
+
+The card under the mouse always wins; with no card under it, `T` and `D` act
+on the page's own scene or performer as before. On a scene card it is always
+the scene, even if the mouse is over a performer's name on that card.
 
 ## Rating — `R`
 
@@ -96,8 +110,9 @@ the scene list can already filter, bulk-select and delete by.
 
 ## Quick tags — `T`
 
-On a scene page it tags the scene; on a performer page, the performer. A panel
-opens at your cursor showing the current tags, with a search box underneath.
+On a scene page it tags the scene; on a performer page, the performer; over a
+card, that card. A panel opens at your cursor showing the current tags, with a
+search box underneath.
 
 | Key | |
 |---|---|

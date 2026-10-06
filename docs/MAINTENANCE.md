@@ -47,7 +47,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.5.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`, `T` also `/performers/<id>` | ~2050 |
+| QuickTools | 1.6.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere | ~2130 |
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
@@ -1265,6 +1265,26 @@ the marker recents). **Enter never creates a tag while an existing one
 matches** (harness caught "out" creating a tag instead of picking "Outdoor");
 the create row is last and only highlighted when nothing exists.
 
+**Hovered cards (1.6.0, user request).** "The one my mouse is hovering":
+`T` (scenes and performers) and `D` (scenes only) act on the card under the
+pointer in any grid or list, before falling back to the page. No new
+listener: at key time `hoveredCard()` calls `elementFromPoint` at the
+position the existing mousemove tracker already records, so a scroll under a
+still mouse is also right. `closest(".performer-card, .scene-card,
+.wall-item, tr")`, then the pure `cardTarget()` (tested) decides: a
+performer card is the performer, a scene card or wall item is the scene even
+when the pointer is on a performer link inside it, and a table row takes the
+kind of the list page so the scene list's performer column does not win. The
+card being tagged gets `.qt-card-target` (orange outline) while the panel is
+open and the header names it; `D` gives the card `.qt-card-del` and toasts at
+the card. A card target has no `sceneId` on its registry entry, or the
+close-on-leaving-the-scene check would shut the panel at once on a list
+page; it closes on navigation through `entry.page`. `playerRect()` and the
+panel's control-bar dodge only look for a player on scene pages: a list's
+hover previews are `<video>`s and the toast had latched onto one.
+**Harness gotcha:** with the browser pane hidden the viewport is 0x0 and
+`elementFromPoint` finds nothing; set a viewport size before testing.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1338,6 +1358,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M, D and T are keyboard-only. |
+| QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
 | Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
 | QuickTools | 1.4.0 middle click tested with script-dispatched events only (the harness browser cannot press a real middle button). Check in Stash: middle-click the right half of the player, it goes to the next scene and does not start autoscroll or pause the video. |
@@ -1358,6 +1379,12 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-06 (night): QuickTools 1.6.0, T and D on hovered cards
+
+User: tag performers from the performer library by hovering and pressing T,
+same for D and scene tags on scene cards. Done through the existing keydown
+router and mousemove tracker; see §4.10.
 
 ### 2026-10-06 (evening): Todo 1.0.0, QuickTools 1.5.0 (`T`)
 

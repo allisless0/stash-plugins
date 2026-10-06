@@ -7,6 +7,8 @@
  *   Shift+M      mark a range: once at the start, once at the end
  *   D            toggle the "Marked for Delete" tag
  *   T            add or remove tags (scene and performer pages)
+ *   T and D also act on the scene or performer card under the pointer, in
+ *   any grid or list, so a library can be tagged without opening anything.
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -77,6 +79,26 @@
     const m = /^\/(scenes|performers)\/(\d+)(?:\/|$)/.exec(pathname || "");
     if (!m) return null;
     return { kind: m[1] === "scenes" ? "scene" : "performer", id: m[2], page: pathname };
+  }
+
+  // What a hovered card or list row stands for, from its class and links:
+  // {kind: "scene"|"performer", id} or null. Performer cards are performers
+  // and scene cards and wall items are scenes, whatever else they link to (a
+  // scene card links its performers too). A table row takes the kind of the
+  // list it is in, so a scene row's performer column does not win.
+  function cardTarget(className, hrefs, pathname) {
+    const cls = " " + (className || "") + " ";
+    let kind;
+    if (cls.includes(" performer-card "))                              kind = "performer";
+    else if (cls.includes(" scene-card ") || cls.includes(" wall-item ")) kind = "scene";
+    else kind = /^\/performers(\/|$)/.test(pathname || "") ? "performer" : "scene";
+    const re = kind === "scene" ? /^(?:https?:\/\/[^/]+)?\/scenes\/(\d+)(?:[/?#]|$)/
+                                : /^(?:https?:\/\/[^/]+)?\/performers\/(\d+)(?:[/?#]|$)/;
+    for (const h of hrefs || []) {
+      const m = re.exec(h || "");
+      if (m) return { kind, id: m[1] };
+    }
+    return null;
   }
 
   // The full tag list after adding or removing one, for the fallback write
@@ -153,6 +175,7 @@
   }
 
   function playerRect() {
+    if (!onScenePage()) return null;      // card hover previews are videos too
     const v = videoEl();
     if (!v) return null;
     const r = v.getBoundingClientRect();
@@ -162,7 +185,7 @@
   // One toast for every feature: short confirmations over the player.
   let toastEl    = null;
   let toastTimer = null;
-  function toast(text, cls, tipHtml, ms) {
+  function toast(text, cls, tipHtml, ms, at) {
     injectStyles();
     if (!toastEl) {
       toastEl = document.createElement("div");
@@ -171,9 +194,9 @@
     mount(toastEl);
     toastEl.innerHTML = escapeHtml(text) + (tipHtml ? `<span class="qt-tip">${tipHtml}</span>` : "");
     toastEl.className = cls || "";
-    const r = playerRect();
-    toastEl.style.left = r ? Math.round(r.left + r.width / 2) + "px" : "50%";
-    toastEl.style.top  = r ? Math.round(r.top + r.height / 2) + "px" : "50%";
+    const r = at ? null : playerRect();
+    toastEl.style.left = at ? Math.round(at.x) + "px" : r ? Math.round(r.left + r.width / 2) + "px" : "50%";
+    toastEl.style.top  = at ? Math.round(at.y) + "px" : r ? Math.round(r.top + r.height / 2) + "px" : "50%";
     // Reflow so a repeat restarts the transition instead of being ignored.
     void toastEl.offsetWidth;
     toastEl.classList.add("qt-on");
@@ -244,6 +267,25 @@
     mouseX = ev.clientX; mouseY = ev.clientY;
   }, true);
 
+  // The card under the pointer when a key is pressed. Read at that moment
+  // with elementFromPoint rather than tracked on hover, so scrolling under a
+  // still mouse is right and no extra listener is needed.
+  const CARD_SEL = ".performer-card, .scene-card, .wall-item, tr";
+  function hoveredCard() {
+    if (mouseX === null || typeof document.elementFromPoint !== "function") return null;
+    const el = document.elementFromPoint(mouseX, mouseY);
+    const card = el && el.closest ? el.closest(CARD_SEL) : null;
+    if (!card || (active && active.el && active.el.contains(card))) return null;
+    const hrefs = Array.from(card.querySelectorAll("a[href]")).map((a) => a.getAttribute("href"));
+    const t = cardTarget(card.className, hrefs, window.location.pathname);
+    return t ? { ...t, card } : null;
+  }
+
+  function cardCentre(card) {
+    const r = card.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
   // Anchor to the cursor, stay inside the viewport, and keep off the player's
   // control bar so next, prev and seek stay clickable.
   function positionPanel(el) {
@@ -261,7 +303,7 @@
     x = Math.max(pad, Math.min(x, vw - r.width  - pad));
     y = Math.max(pad, Math.min(y, vh - r.height - pad));
 
-    const v = videoEl();
+    const v = onScenePage() ? videoEl() : null;
     if (v) {
       const vr = v.getBoundingClientRect();
       if (vr.width > 0 && vr.height > 0) {
@@ -393,6 +435,10 @@
 #qt-toast kbd { background: #2e3944; border: 1px solid #44525f; border-radius: 3px;
   padding: 0 4px; font-size: 10px; font-family: inherit; color: #e6e9ec; }
 #qt-mark .qt-dur { font-size: 12px; font-weight: 400; color: #8b97a3; margin-left: 6px; }
+
+/* the card T is tagging, and a card D just marked */
+.qt-card-target { outline: 2px solid #f5a623 !important; outline-offset: 2px; border-radius: 4px; }
+.qt-card-del { box-shadow: 0 0 0 2px #e2574c, 0 0 14px rgba(226,87,76,.55) !important; }
 
 /* tags */
 #qt-tag { width: 360px; }
@@ -1227,7 +1273,7 @@
 
     let panel       = null;
     let open        = false;
-    let target      = null;    // {kind: "scene"|"performer", id, page}
+    let target      = null;    // {kind: "scene"|"performer", id, page, card?}
     let current     = [];      // [{id, name}] on the target now
     let added       = [];      // ids added since the panel opened, for Backspace
     let results     = [];      // [{id, name, isNew}]
@@ -1240,21 +1286,30 @@
     const entry = {
       id: "tag",
       get el() { return panel; },
-      get sceneId() { return target && target.kind === "scene" ? target.id : null; },
+      // Only the scene page's own scene: a card's scene is never the page's,
+      // and the close-on-leaving check would shut the panel at once.
+      get sceneId() { return target && target.kind === "scene" && !target.card ? target.id : null; },
       get page() { return target ? target.page : null; },
       close: () => closePanel(),
     };
 
     const label = () => (target && target.kind === "performer" ? "Performer tags" : "Scene tags");
 
-    async function readTags(t) {
+    // The target's tags, and its name for the header: from a card the panel
+    // has to say which scene or performer it is about.
+    async function readTarget(t) {
       const q = t.kind === "scene"
-        ? `query ($id: ID!) { findScene(id: $id) { id tags { id name } } }`
-        : `query ($id: ID!) { findPerformer(id: $id) { id tags { id name } } }`;
+        ? `query ($id: ID!) { findScene(id: $id) { id title files { basename } tags { id name } } }`
+        : `query ($id: ID!) { findPerformer(id: $id) { id name tags { id name } } }`;
       const d = await gql(q, { id: t.id });
       const obj = t.kind === "scene" ? d?.findScene : d?.findPerformer;
       if (!obj) throw new Error(`${t.kind} ${t.id} not found`);
-      return (obj.tags ?? []).map((x) => ({ id: String(x.id), name: x.name }));
+      const name = t.kind === "scene" ? (obj.title || obj.files?.[0]?.basename || `Scene ${t.id}`) : obj.name;
+      return { name, tags: (obj.tags ?? []).map((x) => ({ id: String(x.id), name: x.name })) };
+    }
+
+    async function readTags(t) {
+      return (await readTarget(t)).tags;
     }
 
     async function writeTag(t, tagId, add) {
@@ -1475,11 +1530,15 @@
       return targetFromPath(window.location.pathname);
     }
 
-    async function openPanel() {
-      const t = targetHere();
+    // t: the hovered card's target, or nothing for the page's own scene or
+    // performer.
+    async function openPanel(t) {
+      t = t ? { ...t, page: window.location.pathname } : targetHere();
       if (!t) return;
       setActive(entry);
+      if (target && target.card) target.card.classList.remove("qt-card-target");
       target  = t;
+      if (t.card) t.card.classList.add("qt-card-target");
       current = [];
       added   = [];
       if (!panel) panel = build();
@@ -1496,9 +1555,10 @@
 
       const seq = ++loadSeq;
       try {
-        const tags = await readTags(t);
+        const info = await readTarget(t);
         if (seq !== loadSeq || target !== t) return;
-        current = tags;
+        current = info.tags;
+        if (t.card || t.kind === "performer") q("title").textContent = `${label()} \u00b7 ${info.name}`;
         status("");
         renderChips();
         renderList();                    // tick the ones already on
@@ -1517,10 +1577,15 @@
       if (panel) panel.classList.remove("qt-open");
       clearActive(entry);
       if (panel && panel.contains(document.activeElement)) document.activeElement.blur();
-      const player = videoEl()?.closest?.(".video-js");
-      if (player && player.tabIndex >= -1) player.focus?.({ preventScroll: true });
+      const card = target && target.card;
+      if (card) card.classList.remove("qt-card-target");
+      if (onScenePage()) {
+        const player = videoEl()?.closest?.(".video-js");
+        if (player && player.tabIndex >= -1) player.focus?.({ preventScroll: true });
+      }
       if (added.length) {
-        toast(`${added.length} tag${added.length === 1 ? "" : "s"} added`, "qt-info");
+        toast(`${added.length} tag${added.length === 1 ? "" : "s"} added`, "qt-info", "", 0,
+              card && card.isConnected ? cardCentre(card) : null);
       }
     }
 
@@ -1827,8 +1892,9 @@
       return !has;
     }
 
-    async function toggle() {
-      const id = currentSceneId();
+    // forId/card: a hovered scene card; nothing means the scene page's own.
+    async function toggle(forId, card) {
+      const id = forId || currentSceneId();
       if (!id || busy) return;
       busy = true;
       try {
@@ -1848,11 +1914,16 @@
           now = await applyToggle(id, tid);
         }
 
-        sceneId = id;
-        marked  = now;
-        renderOverlay();
+        // The player overlay is for the scene being watched, not a card.
+        if (id === currentSceneId()) {
+          sceneId = id;
+          marked  = now;
+          renderOverlay();
+        }
+        if (card) card.classList.toggle("qt-card-del", now);
         toast(now ? "Marked for delete" : "Unmarked", now ? "" : "qt-off",
-              now ? "Press <kbd>D</kbd> to unmark" : "");
+              now ? "Press <kbd>D</kbd> to unmark" : "", 0,
+              card && card.isConnected ? cardCentre(card) : null);
         refetch(["FindScene", "FindScenes"]);
       } catch (e) {
         log(`Delete mark failed: ${e.message}`, "error");
@@ -2036,12 +2107,26 @@
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (typingInAField(document.activeElement)) return;
 
-    // T is the one key that also works off the scene page: performers.
-    if (!settings.disableTags && (ev.key === "t" || ev.key === "T") && Tag.targetHere()) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      Tag.openPanel();
-      return;
+    // T and D act on the scene or performer card under the pointer when there
+    // is one (any grid or list, including a performer's scenes tab), and
+    // otherwise on the page's own scene or performer.
+    if (!settings.disableTags && (ev.key === "t" || ev.key === "T")) {
+      const card = hoveredCard();
+      if (card || Tag.targetHere()) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        Tag.openPanel(card || undefined);
+        return;
+      }
+    }
+    if (!settings.disableDelete && (ev.key === "d" || ev.key === "D")) {
+      const card = hoveredCard();
+      if (card && card.kind === "scene") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        Del.toggle(card.id, card.card);
+        return;
+      }
     }
     if (!currentSceneId()) return;
 
@@ -2090,7 +2175,7 @@
   // scripts/test_quicktools.js sets this before loading the file.
   if (window.__QT_TEST__) {
     window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
-                                targetFromPath, nextTagIds };
+                                targetFromPath, nextTagIds, cardTarget };
   }
 
   loadSettings().then(() => {

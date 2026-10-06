@@ -115,6 +115,23 @@ check("fallback add keeps every other tag", JSON.stringify(T.nextTagIds(["1", "2
 check("fallback add of a tag already there changes nothing", JSON.stringify(T.nextTagIds(["1", 2], 2, true)) === '["1","2"]');
 check("fallback remove takes only that tag", JSON.stringify(T.nextTagIds(["1", "2", "3"], "2", false)) === '["1","3"]');
 
+// ── hovered cards (T and D in grids and lists) ─────────────────────────────
+const eqj = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+check("performer card is the performer",
+  eqj(T.cardTarget("card performer-card grid-card", ["/performers/12?sortby=x", "/tags/3"], "/performers"), { kind: "performer", id: "12" }));
+check("scene card is the scene, not a performer it links",
+  eqj(T.cardTarget("scene-card grid-card", ["/performers/9", "/scenes/77", "/studios/2"], "/scenes"), { kind: "scene", id: "77" }));
+check("scene card on a performer's scenes tab is still the scene",
+  eqj(T.cardTarget("scene-card", ["/scenes/5"], "/performers/9/scenes"), { kind: "scene", id: "5" }));
+check("scene wall item is the scene", eqj(T.cardTarget("wall-item", ["/scenes/31"], "/scenes"), { kind: "scene", id: "31" }));
+check("scene list row: the scene, not its performer column",
+  eqj(T.cardTarget("", ["/performers/4", "/scenes/88"], "/scenes"), { kind: "scene", id: "88" }));
+check("performer list row is the performer",
+  eqj(T.cardTarget("", ["/performers/4"], "/performers"), { kind: "performer", id: "4" }));
+check("absolute links work", eqj(T.cardTarget("scene-card", ["http://tower:6969/scenes/6"], "/scenes"), { kind: "scene", id: "6" }));
+check("scene markers link is not a scene", T.cardTarget("scene-card", ["/scenes/markers"], "/scenes") === null);
+check("a row with no matching link is nothing", T.cardTarget("", ["/tags/1"], "/scenes") === null);
+
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
 check("range pressed end-first", JSON.stringify(T.orderRange(20, 10)) === "[10,20]");
