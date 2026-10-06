@@ -101,6 +101,12 @@
     return null;
   }
 
+  // Tags the Advanced Rating plugin writes ("Body \u2605: 5"). The T panel can
+  // hide them; they are never removed by being hidden.
+  function isRatingTag(name) {
+    return /[\u2605\u2606]/.test(String(name || ""));
+  }
+
   // The full tag list after adding or removing one, for the fallback write
   // that has to send every tag. Never drops any other id (rule 5).
   function nextTagIds(ids, tagId, add) {
@@ -450,6 +456,9 @@
 #qt-tag .qt-chip b { cursor: pointer; color: #8b97a3; font-weight: 400; font-size: 14px; padding: 0 3px; }
 #qt-tag .qt-chip b:hover { color: #e2574c; }
 #qt-tag .qt-none { font-size: 12px; color: #7f8b97; }
+#qt-tag .qt-chip-toggle { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 11px;
+  border: 1px dashed #4a5865; color: #8b97a3; font-size: 12px; line-height: 18px; cursor: pointer; }
+#qt-tag .qt-chip-toggle:hover { color: #e6e9ec; border-color: #8b97a3; }
 #qt-tag input {
   width: 100%; box-sizing: border-box; background: #1b2229; color: #e6e9ec;
   border: 1px solid #44525f; border-radius: 4px; padding: 6px 8px;
@@ -1270,6 +1279,15 @@
     const RECENT_KEY   = "quickToolsRecentTags";
     const RECENT_MAX   = 9;                       // one per number key
     const SEARCH_LIMIT = 8;
+    const RATING_KEY   = "quickToolsShowRatingTags";   // UI preference only
+
+    // Rating tags (Advanced Rating's "Body \u2605: 5") crowd the panel, so they
+    // are hidden by default, from the chips and from search and recents. Hidden
+    // only: every write here changes one tag by id, so a tag nobody can see is
+    // never touched (rule 5; the archived QuickCriteria lost hidden tags on
+    // save, which is why this matters).
+    let showRating = (() => { try { return localStorage.getItem(RATING_KEY) === "1"; } catch (_) { return false; } })();
+    const visible = (t) => showRating || !isRatingTag(t.name);
 
     let panel       = null;
     let open        = false;
@@ -1333,7 +1351,8 @@
     async function searchTags(term) {
       const d = await gql(
         `query ($f: FindFilterType) { findTags(filter: $f) { tags { id name } } }`,
-        { f: { q: term, per_page: SEARCH_LIMIT, sort: "name", direction: "ASC" } }
+        // extra, so hiding rating tags still leaves a full list
+        { f: { q: term, per_page: SEARCH_LIMIT * 4, sort: "name", direction: "ASC" } }
       );
       return (d?.findTags?.tags ?? []).map((x) => ({ id: String(x.id), name: x.name }));
     }
@@ -1393,17 +1412,37 @@
     function renderChips() {
       const box = q("chips");
       box.innerHTML = "";
-      if (!current.length) {
+      const shown  = current.filter(visible);
+      const rating = current.filter((t) => isRatingTag(t.name)).length;
+      if (!shown.length && !rating) {
         box.innerHTML = `<span class="qt-none">No tags yet</span>`;
         return;
       }
-      for (const t of current) {
+      for (const t of shown) {
         const c = document.createElement("span");
         c.className = "qt-chip" + (added.includes(t.id) ? " qt-chip-new" : "");
         c.innerHTML = `${escapeHtml(t.name)}<b title="Remove">&times;</b>`;
         c.querySelector("b").addEventListener("click", () => apply(t, false));
         box.appendChild(c);
       }
+      if (rating) {
+        const tg = document.createElement("span");
+        tg.className = "qt-chip-toggle";
+        tg.textContent = showRating ? "hide rating tags" : `+${rating} rating tag${rating === 1 ? "" : "s"}`;
+        tg.title = showRating ? "Hide the \u2605 tags set by Advanced Rating"
+                              : "Show the \u2605 tags set by Advanced Rating";
+        tg.addEventListener("click", () => setShowRating(!showRating));
+        box.appendChild(tg);
+      }
+    }
+
+    function setShowRating(on) {
+      showRating = on;
+      try { localStorage.setItem(RATING_KEY, on ? "1" : "0"); } catch (_) {}
+      renderChips();
+      onSearchInput();                   // re-filter recents or the search
+      if (panel) positionPanel(panel);
+      q("search").focus();
     }
 
     function renderList() {
@@ -1437,7 +1476,7 @@
     }
 
     function showRecent() {
-      results = loadRecent();
+      results = loadRecent().filter(visible);
       highlight = 0;
       renderList();
     }
@@ -1454,7 +1493,9 @@
       try {
         const tags = await searchTags(term);
         if (seq !== searchSeq || !open) return;
-        results = tags.slice();
+        // a rating tag typed out in full still shows, hidden or not
+        const lc = term.toLowerCase();
+        results = tags.filter((t) => visible(t) || t.name.toLowerCase() === lc).slice(0, SEARCH_LIMIT);
         if (!tags.some((t) => t.name.toLowerCase() === term.toLowerCase())) {
           results.push({ id: null, name: term, isNew: true });
         }
@@ -2175,7 +2216,7 @@
   // scripts/test_quicktools.js sets this before loading the file.
   if (window.__QT_TEST__) {
     window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
-                                targetFromPath, nextTagIds, cardTarget };
+                                targetFromPath, nextTagIds, cardTarget, isRatingTag };
   }
 
   loadSettings().then(() => {

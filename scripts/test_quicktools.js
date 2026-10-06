@@ -132,6 +132,10 @@ check("absolute links work", eqj(T.cardTarget("scene-card", ["http://tower:6969/
 check("scene markers link is not a scene", T.cardTarget("scene-card", ["/scenes/markers"], "/scenes") === null);
 check("a row with no matching link is nothing", T.cardTarget("", ["/tags/1"], "/scenes") === null);
 
+// ── Advanced Rating tags can be hidden in the T panel ──────────────────────
+check("Advanced Rating tag is a rating tag", T.isRatingTag("Body \u2605: 5") && T.isRatingTag("Range \u2606: 4"));
+check("ordinary tags are not", !T.isRatingTag("Blonde") && !T.isRatingTag("5 stars") && !T.isRatingTag(null));
+
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
 check("range pressed end-first", JSON.stringify(T.orderRange(20, 10)) === "[10,20]");

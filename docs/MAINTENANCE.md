@@ -47,7 +47,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.6.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere | ~2130 |
+| QuickTools | 1.7.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere | ~2130 |
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
@@ -1285,6 +1285,18 @@ hover previews are `<video>`s and the toast had latched onto one.
 **Harness gotcha:** with the browser pane hidden the viewport is 0x0 and
 `elementFromPoint` finds nothing; set a viewport size before testing.
 
+**Rating tags hidden (1.7.0, user request).** Advanced Rating's performer
+tags ("Body ★: 5", one per criterion) filled the T panel. `isRatingTag()`
+(any ★ or ☆ in the name, tested) hides them from the chips, recents and
+search by default; a dashed "+N rating tags" chip toggles them, remembered in
+localStorage `quickToolsShowRatingTags` (a UI preference). A rating tag typed
+out in full still appears in search. Search asks for 4x the limit so the
+filtered list is not short. **Rule 5:** hidden means not rendered, nothing
+more. Every write changes one tag by id, so a hidden tag is never part of a
+write; harness-checked by removing a visible tag next to three hidden ones.
+This is the exact failure the archived QuickCriteria shipped (saving dropped
+hidden level tags), so do not add any "save the visible list" path here.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1379,6 +1391,11 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-07: QuickTools 1.7.0, hide rating tags in the T panel
+
+User: T on performers works; wanted a toggle to hide the Advanced Rating
+★ tags. Hidden by default, chip to show; see §4.10.
 
 ### 2026-10-06 (night): QuickTools 1.6.0, T and D on hovered cards
 

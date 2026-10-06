@@ -130,6 +130,13 @@ name is part of an existing tag's name, press `↓` to the "create" row.
 Only the one tag changes each time: the rest of the scene's or performer's tags
 are never rewritten.
 
+**Rating tags are hidden.** Tags with a ★ in the name (the ones the Advanced
+Rating plugin sets, like "Body ★: 5") are left out of the panel, its search
+and its recents, so they do not crowd it. A "+7 rating tags" chip shows them;
+"hide rating tags" puts them away again, and the panel remembers which you
+chose. Hidden tags stay on the performer: nothing here ever removes a tag you
+did not click.
+
 ## Queue navigation — double-click or middle-click
 
 **Off by default**, because it replaces double-click-to-fullscreen. Turn it on
