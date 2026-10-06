@@ -10,7 +10,7 @@ Four shortcuts for the Stash scene player. Each can be turned off in
 | `Shift+M` | on | Mark a range: press at the start, again at the end |
 | `U` | on | Undo the marker you just added (for 8 s) |
 | `D` | on | Toggle the "Marked for Delete" tag |
-| double-click | **off** | Jump through the scene queue |
+| double-click / middle-click | **off** | Jump through the scene queue |
 
 All of them only act on `/scenes/<id>` pages and never fire while you are
 typing in a field.
@@ -93,14 +93,18 @@ is on it are left alone.
 A tag rather than a custom field or a reserved rating, because the tag is what
 the scene list can already filter, bulk-select and delete by.
 
-## Queue navigation — double-click
+## Queue navigation — double-click or middle-click
 
 **Off by default**, because it replaces double-click-to-fullscreen. Turn it on
 in the plugin settings if you want it.
 
-Double-click the right half of the video for the next scene in the queue, the
-left half for the previous one. Hold **Shift** while double-clicking for the
-normal fullscreen toggle.
+Double-click or middle-click the right half of the video for the next scene
+in the queue, the left half for the previous one. Hold **Shift** while
+double-clicking for the normal fullscreen toggle.
+
+Rate and move on in one go: with the rating panel open, a double-click (or a
+middle click) saves the rating to the scene you are leaving and goes to the
+next one. A single click still just closes the panel.
 
 It triggers Stash's own queue navigation rather than changing the URL, so
 continue-play and history behave exactly as they do with the queue buttons.

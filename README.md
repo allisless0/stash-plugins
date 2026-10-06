@@ -17,7 +17,7 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 
 | Plugin | Keys | What it does |
 |---|---|---|
-| **QuickTools** | `R` `M` `Shift+M` `U` `D` double-click | Four scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, and double-click queue navigation. Each can be turned off. |
+| **QuickTools** | `R` `M` `Shift+M` `U` `D` double-click / middle-click | Four scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, and double-click or middle-click queue navigation. Each can be turned off. |
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 | **Collections** | top-bar tab | Gives a studio (Cock Hero by default) its own tab sorted by O count, keeps it out of the main Scenes list, and scores Cock Hero rounds: how far you got before pressing O, as Hardcore and Easy records. |
 | **ScriptBadges** | none | A badge on every scene card saying whether the scene has a funscript, so you can see what still needs one. |
@@ -40,8 +40,8 @@ pick from your last nine tags.
 - **`D`** — toggles a **Marked for Delete** tag. The player goes under a red
 tint while the tag is on, so the state of a scene is obvious the moment you
 open it.
-- **double-click** — next or previous scene in the queue. Off by default,
-because it replaces double-click-to-fullscreen.
+- **double-click** or **middle-click** — next or previous scene in the
+queue. Off by default, because it replaces double-click-to-fullscreen.
 
 **`D` never deletes anything.** It only puts a tag on. Clearing scenes out is
 still a deliberate trip to the scene list: filter by the tag, select all, and

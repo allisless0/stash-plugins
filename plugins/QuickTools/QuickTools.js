@@ -62,6 +62,15 @@
     return /\/scenes\/\d+/.test(window.location.pathname);
   }
 
+  // Queue direction for a click at `rel` (0 = left edge, 1 = right edge of the
+  // video): right half next, left half previous, null outside the video or in
+  // a centred dead zone of that width.
+  function sideOf(rel, deadZone) {
+    if (!(rel >= 0 && rel <= 1)) return null;
+    if (deadZone > 0 && Math.abs(rel - 0.5) < deadZone / 2) return null;
+    return rel >= 0.5 ? "next" : "previous";
+  }
+
   function videoEl() {
     const vids = Array.from(document.querySelectorAll("video"));
     return vids.find((v) => v.duration > 0) || vids[0] || null;
@@ -396,6 +405,7 @@
   // never swallowed, so play, next and seek keep working and the rating panel
   // still commits on the way through.
   let swallowUntil = 0;
+  let swallowedDismiss = false;   // the swallow window was opened by a panel dismiss
 
   function isVideoSurface(el) {
     if (!(el instanceof Element)) return false;
@@ -404,21 +414,38 @@
   }
 
   document.addEventListener("pointerdown", (ev) => {
-    if (!active) return;
-    if (active.el && active.el.contains(ev.target)) return;
+    // Middle click on the player is queue navigation (when it is on). An open
+    // panel closes first and commits, so a rating typed a moment ago is saved
+    // against the scene being left. The rest of the click is swallowed, or
+    // Chrome starts autoscroll on the mousedown.
+    const inPanel = !!(active && active.el && active.el.contains(ev.target));
+    if (ev.button === 1 && !inPanel && Nav.directionFor(ev)) {
+      if (active) active.close(true);
+      Nav.onMiddleClick(ev);
+      swallowUntil = performance.now() + 400;
+      swallowedDismiss = false;
+      return;
+    }
+    if (!active || inPanel) return;
     const onVideo = isVideoSurface(ev.target);
     active.close(true);
     if (onVideo) {
       swallowUntil = performance.now() + 600;
+      swallowedDismiss = true;
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
     }
   }, true);
 
-  for (const type of ["mousedown", "mouseup", "pointerup", "click", "dblclick", "touchstart", "touchend"]) {
+  for (const type of ["mousedown", "mouseup", "pointerup", "click", "auxclick", "dblclick", "touchstart", "touchend"]) {
     document.addEventListener(type, (ev) => {
       if (performance.now() >= swallowUntil) return;
+      // The click that dismissed a panel is often the first half of a
+      // double-click meant for the queue (rate, then move on). Until 1.4.0 it
+      // was eaten with the rest, so rating and moving on took three clicks.
+      // Navigation still runs; only video.js is kept from seeing the click.
+      if (type === "dblclick" && swallowedDismiss) Nav.onDblClick(ev);
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
@@ -1227,7 +1254,7 @@
       setTimeout(() => {
         if (location.href !== before) return;
         toast(`No ${direction} scene`, "qt-off",
-              "Double-click moves through a queue: open scenes from a list, playlist or filter.", 2800);
+              "Double-click or middle-click moves through a queue: open scenes from a list, playlist or filter.", 2800);
       }, 1500);
       if (viaMousetrap(seq)) return;
       if (viaQueueButton(direction)) return;
@@ -1258,34 +1285,46 @@
       return player.querySelector("video") || player;
     }
 
-    function onDblClick(ev) {
-      if (!settings.enableNav) return;
-      if (!onScenePage()) return;
-      if (ev[ESCAPE_KEY]) return;                                     // let fullscreen through
-      if (ev.target.closest?.(".vjs-control-bar, .vjs-menu")) return; // never steal control clicks
-      if (active) return;      // a panel is up; its own dismiss handles this click
+    // The queue direction for a click at this point on the player, or null when
+    // it is not navigation: feature off, not a scene page, a control-bar
+    // click, no video under it, or the dead zone.
+    function directionFor(ev) {
+      if (!settings.enableNav) return null;
+      if (!onScenePage()) return null;
+      if (ev.target.closest?.(".vjs-control-bar, .vjs-menu")) return null; // never steal control clicks
 
       const video = videoFor(ev.target);
-      if (!video) return;
+      if (!video) return null;
 
       const rect = video.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 40) return;
+      if (rect.width < 40 || rect.height < 40) return null;
+      return sideOf((ev.clientX - rect.left) / rect.width, DEAD_ZONE);
+    }
 
-      const rel = (ev.clientX - rect.left) / rect.width;
-      if (rel < 0 || rel > 1) return;
-      if (DEAD_ZONE > 0 && Math.abs(rel - 0.5) < DEAD_ZONE / 2) return;
-
+    function navigate(ev, direction, how) {
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
-
-      const direction = rel >= 0.5 ? "next" : "previous";
       flash(direction, ev.clientX, ev.clientY);
-      log(`Double-click at ${(rel * 100).toFixed(0)}% -> ${direction}`);
+      log(`${how} -> ${direction}`);
       go(direction);
     }
 
-    return { onDblClick };
+    function onDblClick(ev) {
+      if (ev[ESCAPE_KEY]) return;                                     // let fullscreen through
+      if (active) return;      // a panel is up; its own dismiss handles this click
+      const direction = directionFor(ev);
+      if (direction) navigate(ev, direction, "Double-click");
+    }
+
+    // One click, and no fullscreen toggle to fight. Called from the single
+    // pointerdown handler, not a listener of its own.
+    function onMiddleClick(ev) {
+      const direction = directionFor(ev);
+      if (direction) navigate(ev, direction, "Middle click");
+    }
+
+    return { onDblClick, onMiddleClick, directionFor };
   })();
 
   // ═══ Marked for delete (D) ═════════════════════════════════════════════════
@@ -1638,7 +1677,7 @@
 
   // scripts/test_quicktools.js sets this before loading the file.
   if (window.__QT_TEST__) {
-    window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost };
+    window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf };
   }
 
   loadSettings().then(() => {
@@ -1646,7 +1685,7 @@
     if (!settings.disableRating)  on.push("R rate");
     if (!settings.disableMarkers) on.push("M mark", "Shift+M range", "U undo");
     if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
-    if (settings.enableNav)       on.push("double-click queue");
+    if (settings.enableNav)       on.push("double-click / middle-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);
   });
 })();

@@ -47,7 +47,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.3.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click | `/scenes/<id>` | ~1620 |
+| QuickTools | 1.4.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click, middle-click | `/scenes/<id>` | ~1680 |
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
@@ -132,6 +132,17 @@ the rating panel still commits on play/next. With no panel open nothing is
 intercepted. If Stash changes its player DOM, `isVideoSurface()` is the one
 place to update.
 
+**Exception for the dblclick (1.4.0, user request).** Rating and moving on
+took three clicks: the first click of the double-click closed the panel and
+opened the swallow window, which then ate the dblclick too. Now, inside a
+window opened by a dismiss (`swallowedDismiss`), the guard hands the dblclick
+to `Nav.onDblClick()` before swallowing it. The panel has already closed and
+committed by then (`close(true)` is synchronous and clears `active`), so the
+rating lands on the scene being left. video.js still sees none of it. A
+single click still only dismisses. Verified in a harness with real mouse
+input: R, 8, 5, double-click saved 8.5 to the old scene and moved on, and no
+click reached the player.
+
 ### 3.6 Placement and fullscreen
 
 Panels anchor to the cursor (`mousemove` tracked globally), clamp to the
@@ -191,6 +202,15 @@ can "succeed" without anything happening (Stash ignores `p n` with no queue),
 so since 1.3.0 `go()` checks whether `location.href` changed 1.5 s later and
 otherwise shows "No next scene" with a hint. The URL is the only reliable
 signal.
+
+**Middle click (1.4.0, user request)** navigates the same way in one click.
+It is handled at the top of the single `pointerdown` handler (`ev.button ===
+1`), not by a new listener, and only when `Nav.directionFor()` says the click
+is navigation: nav on, scene page, on the video, not on the control bar or
+inside an open panel. An open panel closes and commits first. A 400 ms swallow
+window follows (`auxclick` joined the guarded types): preventing the
+mousedown is what stops Chrome's middle-click autoscroll. Middle clicks
+anywhere else are untouched. The side logic is the pure `sideOf()`, tested.
 
 Suppresses dblclick-to-fullscreen. Shift+dblclick restores it. The two single
 clicks that precede a dblclick still toggle play/pause twice — an even number,
@@ -1266,6 +1286,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M and D are keyboard-only. |
+| QuickTools | 1.4.0 middle click tested with script-dispatched events only (the harness browser cannot press a real middle button). Check in Stash: middle-click the right half of the player, it goes to the next scene and does not start autoscroll or pause the video. |
 | ScriptBadges | Stash's exact-name matching means scripts IntifaceSync finds (fuzzy names) can show as "No script". An optional check through the IntifaceSync backend would fix that. |
 | Collections | Untested in a real Stash. Check: the tab lands in the nav bar and filters; the Scenes page hides the studio (maybe after one reload); a Hardcore round records on O; the chip shows in fullscreen; cards show badges. |
 | Collections | Hiding covers the Scenes page only. `performer_scenes`, `tag_scenes` etc. are separate default-filter views and could get the same merge. |
@@ -1283,6 +1304,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-06 (later): QuickTools 1.4.0, rate then move on
+
+User: after rating, going to the next video took three clicks, and they
+wanted middle click as well as double-click. Both done through the existing
+handlers (one pointerdown, one dblclick, plus the swallow guard), see §3.5b
+and §4.2.
 
 ### 2026-10-06: IntifaceSync 1.33, dependency install
 

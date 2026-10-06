@@ -64,7 +64,9 @@ try {
 // dblclick has two by design: queue navigation, plus the click-swallow guard
 // that eats every mouse event type for 600 ms after a panel is dismissed by a
 // click on the video. A third means a feature added its own listener.
-const expected = { keydown: 1, pointerdown: 1, dblclick: 2 };
+// Middle-click navigation (1.4.0) rides the one pointerdown handler; auxclick
+// is only the swallow guard.
+const expected = { keydown: 1, pointerdown: 1, dblclick: 2, auxclick: 1 };
 for (const [type, want] of Object.entries(expected)) {
   const n = listeners.filter(([, t]) => t === type).length;
   check(`${want} global ${type} handler(s)`, n === want, `found ${n}`);
@@ -93,6 +95,14 @@ for (const [keys, want] of cases) {
   check(`keypad ${keys.join(" ")} -> ${want}`, Math.abs(got - want) < 1e-9, `got ${got}`);
 }
 check("second decimal point is ignored", T.typeDigit("3.", ".") === null);
+
+// ── queue side (double-click and middle-click) ─────────────────────────────
+check("right half is next", T.sideOf(0.75, 0) === "next");
+check("left half is previous", T.sideOf(0.2, 0) === "previous");
+check("centre line counts as next", T.sideOf(0.5, 0) === "next");
+check("outside the video is not navigation", T.sideOf(1.2, 0) === null && T.sideOf(-0.1, 0) === null);
+check("dead zone is not navigation", T.sideOf(0.52, 0.2) === null && T.sideOf(0.8, 0.2) === "next");
+check("NaN (zero-width video) is not navigation", T.sideOf(NaN, 0) === null);
 
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
