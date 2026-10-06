@@ -1,6 +1,6 @@
 name: QuickTools
-description: "Keyboard and mouse shortcuts for the scene player. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, double-click or middle-click jumps through the scene queue. Each feature can be turned off."
-version: 1.4.0
+description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers, double-click or middle-click jumps through the scene queue. Each feature can be turned off."
+version: 1.5.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
@@ -19,6 +19,10 @@ settings:
   disableDelete:
     displayName: Disable mark for delete (D)
     description: "Turn off the D hotkey that toggles the delete tag on the current scene."
+    type: BOOLEAN
+  disableTags:
+    displayName: Disable quick tags (T)
+    description: "Turn off the T hotkey that opens the tag panel on scene and performer pages."
     type: BOOLEAN
   deleteTagName:
     displayName: Delete tag name

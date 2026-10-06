@@ -1,7 +1,7 @@
 # Stash plugins
 
-Two plugins for [Stash](https://stashapp.cc). One is a set of player
-shortcuts, the other drives sex toys.
+Plugins for [Stash](https://stashapp.cc): player shortcuts, toy sync, studio
+tabs, funscript badges and a todo list.
 
 ## Install
 
@@ -17,10 +17,11 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 
 | Plugin | Keys | What it does |
 |---|---|---|
-| **QuickTools** | `R` `M` `Shift+M` `U` `D` double-click / middle-click | Four scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, and double-click or middle-click queue navigation. Each can be turned off. |
+| **QuickTools** | `R` `M` `Shift+M` `U` `D` `T` double-click / middle-click | Scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, quick tags for scenes and performers, and double-click or middle-click queue navigation. Each can be turned off. |
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 | **Collections** | top-bar tab | Gives a studio (Cock Hero by default) its own tab sorted by O count, keeps it out of the main Scenes list, and scores Cock Hero rounds: how far you got before pressing O, as Hardcore and Easy records. |
 | **ScriptBadges** | none | A badge on every scene card saying whether the scene has a funscript, so you can see what still needs one. |
+| **Todo** | top-bar button | A simple task list, saved in Stash so it is the same on every device. Tasks can link to the scene, performer or other page they are about. |
 
 Each folder under `plugins/` has its own README with the details.
 
@@ -30,8 +31,8 @@ handlers fighting over the same keys. Recent marker tags carry over.
 
 ## QuickTools in brief
 
-Four shortcuts, all of them limited to `/scenes/<id>` pages and none of them
-firing while you are typing in a field.
+Shortcuts limited to `/scenes/<id>` pages (`T` also works on performer
+pages), none of them firing while you are typing in a field.
 
 - **`R`** — a rating panel at your cursor. Type a number, drag the bar, or use
 the arrow keys. Auto-saves, and `Esc` is a real undo.
@@ -40,6 +41,8 @@ pick from your last nine tags.
 - **`D`** — toggles a **Marked for Delete** tag. The player goes under a red
 tint while the tag is on, so the state of a scene is obvious the moment you
 open it.
+- **`T`** — add or remove tags on the scene, or on the performer on a
+performer page. Search, Enter, and the panel stays open for the next one.
 - **double-click** or **middle-click** — next or previous scene in the
 queue. Off by default, because it replaces double-click-to-fullscreen.
 

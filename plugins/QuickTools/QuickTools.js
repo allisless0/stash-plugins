@@ -6,6 +6,7 @@
  *   M            add a marker at the current position (U undoes it)
  *   Shift+M      mark a range: once at the start, once at the end
  *   D            toggle the "Marked for Delete" tag
+ *   T            add or remove tags (scene and performer pages)
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -69,6 +70,22 @@
     if (!(rel >= 0 && rel <= 1)) return null;
     if (deadZone > 0 && Math.abs(rel - 0.5) < deadZone / 2) return null;
     return rel >= 0.5 ? "next" : "previous";
+  }
+
+  // What T tags on this page: the scene or the performer, or null.
+  function targetFromPath(pathname) {
+    const m = /^\/(scenes|performers)\/(\d+)(?:\/|$)/.exec(pathname || "");
+    if (!m) return null;
+    return { kind: m[1] === "scenes" ? "scene" : "performer", id: m[2], page: pathname };
+  }
+
+  // The full tag list after adding or removing one, for the fallback write
+  // that has to send every tag. Never drops any other id (rule 5).
+  function nextTagIds(ids, tagId, add) {
+    const list = ids.map(String);
+    const id = String(tagId);
+    if (add) return list.includes(id) ? list : list.concat(id);
+    return list.filter((x) => x !== id);
   }
 
   function videoEl() {
@@ -200,6 +217,7 @@
     enableNav:      false,
     disableDelete:  false,
     deleteTagName:  "",     // blank means DEFAULT_DELETE_TAG
+    disableTags:    false,
   };
 
   async function loadSettings() {
@@ -376,6 +394,32 @@
   padding: 0 4px; font-size: 10px; font-family: inherit; color: #e6e9ec; }
 #qt-mark .qt-dur { font-size: 12px; font-weight: 400; color: #8b97a3; margin-left: 6px; }
 
+/* tags */
+#qt-tag { width: 360px; }
+#qt-tag .qt-title { font-size: 15px; font-weight: 600; }
+#qt-tag .qt-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; max-height: 120px; overflow-y: auto; }
+#qt-tag .qt-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px 2px 8px;
+  border-radius: 11px; background: #33404d; font-size: 12px; line-height: 18px; }
+#qt-tag .qt-chip.qt-chip-new { background: #5a4520; box-shadow: 0 0 0 1px #f5a623 inset; }
+#qt-tag .qt-chip b { cursor: pointer; color: #8b97a3; font-weight: 400; font-size: 14px; padding: 0 3px; }
+#qt-tag .qt-chip b:hover { color: #e2574c; }
+#qt-tag .qt-none { font-size: 12px; color: #7f8b97; }
+#qt-tag input {
+  width: 100%; box-sizing: border-box; background: #1b2229; color: #e6e9ec;
+  border: 1px solid #44525f; border-radius: 4px; padding: 6px 8px;
+  font-size: 13px; font-family: inherit; outline: none;
+}
+#qt-tag input:focus { border-color: #f5a623; }
+#qt-tag .qt-list { margin-top: 6px; max-height: 208px; overflow-y: auto; }
+#qt-tag .qt-row { display: flex; align-items: center; gap: 8px; padding: 5px 7px;
+  border-radius: 4px; cursor: pointer; font-size: 13px; }
+#qt-tag .qt-row.qt-hi { background: #33404d; }
+#qt-tag .qt-row .qt-key { font-size: 10px; color: #8b97a3; min-width: 14px; text-align: center; }
+#qt-tag .qt-row .qt-new { font-size: 10px; color: #f5a623; margin-left: auto; }
+#qt-tag .qt-row .qt-have { font-size: 10px; color: #8bc48a; margin-left: auto; }
+#qt-tag .qt-row.qt-on-tag > span:nth-child(2) { color: #8bc48a; }
+#qt-tag .qt-empty { padding: 10px 7px; font-size: 12px; color: #7f8b97; }
+
 @media (prefers-reduced-motion: reduce) {
   .qt-panel, #qt-flash, #qt-del-overlay, #qt-toast { transition: none; }
 }
@@ -455,6 +499,8 @@
   // Leaving the scene commits against the scene being left, not the new one.
   setInterval(() => {
     if (active && active.sceneId && currentSceneId() !== active.sceneId) {
+      active.close(true);
+    } else if (active && active.page && window.location.pathname !== active.page) {
       active.close(true);
     }
   }, 300);
@@ -1164,6 +1210,360 @@
              rangeKey, hasPendingRange, cancelRange, canUndo, undo };
   })();
 
+  // ═══ Tags (T) ══════════════════════════════════════════════════════════════
+  // Add and remove tags on the scene or performer whose page this is, without
+  // opening Stash's editor. The panel stays up so several tags go on in a row.
+  //
+  // Writes go through bulkSceneUpdate / bulkPerformerUpdate with mode ADD or
+  // REMOVE, which touch only the one tag. sceneUpdate replaces the whole
+  // tag_ids list, so a stale read there would drop tags (rule 5); it is only
+  // the fallback for a Stash without the bulk mutations, and then it re-reads
+  // right before writing.
+
+  const Tag = (() => {
+    const RECENT_KEY   = "quickToolsRecentTags";
+    const RECENT_MAX   = 9;                       // one per number key
+    const SEARCH_LIMIT = 8;
+
+    let panel       = null;
+    let open        = false;
+    let target      = null;    // {kind: "scene"|"performer", id, page}
+    let current     = [];      // [{id, name}] on the target now
+    let added       = [];      // ids added since the panel opened, for Backspace
+    let results     = [];      // [{id, name, isNew}]
+    let highlight   = 0;
+    let searchSeq   = 0;
+    let searchTimer = null;
+    let busy        = false;
+    let loadSeq     = 0;
+
+    const entry = {
+      id: "tag",
+      get el() { return panel; },
+      get sceneId() { return target && target.kind === "scene" ? target.id : null; },
+      get page() { return target ? target.page : null; },
+      close: () => closePanel(),
+    };
+
+    const label = () => (target && target.kind === "performer" ? "Performer tags" : "Scene tags");
+
+    async function readTags(t) {
+      const q = t.kind === "scene"
+        ? `query ($id: ID!) { findScene(id: $id) { id tags { id name } } }`
+        : `query ($id: ID!) { findPerformer(id: $id) { id tags { id name } } }`;
+      const d = await gql(q, { id: t.id });
+      const obj = t.kind === "scene" ? d?.findScene : d?.findPerformer;
+      if (!obj) throw new Error(`${t.kind} ${t.id} not found`);
+      return (obj.tags ?? []).map((x) => ({ id: String(x.id), name: x.name }));
+    }
+
+    async function writeTag(t, tagId, add) {
+      const bulk = t.kind === "scene"
+        ? `mutation ($input: BulkSceneUpdateInput!) { bulkSceneUpdate(input: $input) { id } }`
+        : `mutation ($input: BulkPerformerUpdateInput!) { bulkPerformerUpdate(input: $input) { id } }`;
+      try {
+        await gql(bulk, { input: { ids: [t.id], tag_ids: { ids: [tagId], mode: add ? "ADD" : "REMOVE" } } });
+        return;
+      } catch (e) {
+        if (!/unknown type|cannot query field|unknown argument|not defined|unknown field/i.test(e.message)) throw e;
+        log(`Bulk tag update unavailable (${e.message}), using read-modify-write`);
+      }
+      const fresh = (await readTags(t)).map((x) => x.id);
+      const one = t.kind === "scene"
+        ? `mutation ($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`
+        : `mutation ($input: PerformerUpdateInput!) { performerUpdate(input: $input) { id } }`;
+      await gql(one, { input: { id: t.id, tag_ids: nextTagIds(fresh, tagId, add) } });
+    }
+
+    async function searchTags(term) {
+      const d = await gql(
+        `query ($f: FindFilterType) { findTags(filter: $f) { tags { id name } } }`,
+        { f: { q: term, per_page: SEARCH_LIMIT, sort: "name", direction: "ASC" } }
+      );
+      return (d?.findTags?.tags ?? []).map((x) => ({ id: String(x.id), name: x.name }));
+    }
+
+    async function createTag(name) {
+      const d = await gql(
+        `mutation ($input: TagCreateInput!) { tagCreate(input: $input) { id name } }`,
+        { input: { name } }
+      );
+      return d?.tagCreate ? { id: String(d.tagCreate.id), name: d.tagCreate.name } : null;
+    }
+
+    function loadRecent() {
+      try {
+        const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+        return Array.isArray(arr) ? arr.slice(0, RECENT_MAX) : [];
+      } catch { return []; }
+    }
+    function saveRecent(list) {
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch (_) {}
+    }
+    function noteRecent(tag) {
+      saveRecent([{ id: tag.id, name: tag.name }, ...loadRecent().filter((x) => x.id !== tag.id)]);
+    }
+
+    function build() {
+      injectStyles();
+      const el = document.createElement("div");
+      el.id = "qt-tag";
+      el.className = "qt-panel";
+      el.innerHTML = `
+        <div class="qt-head">
+          <div class="qt-title" data-qt="title">Tags</div>
+          <div class="qt-status" data-qt="status"></div>
+        </div>
+        <div class="qt-chips" data-qt="chips"></div>
+        <input data-qt="search" placeholder="Search or create a tag" autocomplete="off" spellcheck="false">
+        <div class="qt-list" data-qt="list"></div>
+        <div class="qt-hint">
+          <kbd>1</kbd>-<kbd>9</kbd> recent &middot;
+          <kbd>&uarr;</kbd><kbd>&darr;</kbd> pick &middot;
+          <kbd>Enter</kbd> add or remove &middot;
+          <kbd>Backspace</kbd> undo last &middot;
+          <kbd>Esc</kbd> close
+        </div>`;
+      mount(el);
+      const inp = el.querySelector('[data-qt="search"]');
+      inp.addEventListener("input", onSearchInput);
+      inp.addEventListener("keydown", onPanelKey);
+      return el;
+    }
+
+    const q = (n) => panel.querySelector(`[data-qt="${n}"]`);
+    const status = (t) => { if (panel) q("status").textContent = t; };
+    const has = (id) => current.some((x) => x.id === id);
+
+    function renderChips() {
+      const box = q("chips");
+      box.innerHTML = "";
+      if (!current.length) {
+        box.innerHTML = `<span class="qt-none">No tags yet</span>`;
+        return;
+      }
+      for (const t of current) {
+        const c = document.createElement("span");
+        c.className = "qt-chip" + (added.includes(t.id) ? " qt-chip-new" : "");
+        c.innerHTML = `${escapeHtml(t.name)}<b title="Remove">&times;</b>`;
+        c.querySelector("b").addEventListener("click", () => apply(t, false));
+        box.appendChild(c);
+      }
+    }
+
+    function renderList() {
+      const list = q("list");
+      list.innerHTML = "";
+      const typed = q("search").value.trim();
+      if (!results.length) {
+        const d = document.createElement("div");
+        d.className = "qt-empty";
+        d.textContent = typed ? "Searching..." : "No recent tags yet. Type to search.";
+        list.appendChild(d);
+        return;
+      }
+      results.forEach((t, i) => {
+        const row = document.createElement("div");
+        const on = !t.isNew && has(t.id);
+        row.className = "qt-row" + (i === highlight ? " qt-hi" : "") + (on ? " qt-on-tag" : "");
+        const showKey = !typed && i < 9;
+        row.innerHTML =
+          `<span class="qt-key">${showKey ? i + 1 : ""}</span>` +
+          `<span>${escapeHtml(t.name)}</span>` +
+          (t.isNew ? `<span class="qt-new">create</span>`
+                   : on ? `<span class="qt-have">✓ remove</span>` : "");
+        row.addEventListener("mouseenter", () => {
+          highlight = i;
+          list.querySelectorAll(".qt-row").forEach((r, j) => r.classList.toggle("qt-hi", j === i));
+        });
+        row.addEventListener("click", () => pick(i));
+        list.appendChild(row);
+      });
+    }
+
+    function showRecent() {
+      results = loadRecent();
+      highlight = 0;
+      renderList();
+    }
+
+    function onSearchInput() {
+      clearTimeout(searchTimer);
+      const term = q("search").value.trim();
+      if (!term) { showRecent(); return; }
+      searchTimer = setTimeout(() => runSearch(term), 140);
+    }
+
+    async function runSearch(term) {
+      const seq = ++searchSeq;
+      try {
+        const tags = await searchTags(term);
+        if (seq !== searchSeq || !open) return;
+        results = tags.slice();
+        if (!tags.some((t) => t.name.toLowerCase() === term.toLowerCase())) {
+          results.push({ id: null, name: term, isNew: true });
+        }
+        // Enter takes an existing tag: the exact name if there is one, else
+        // the first match. The "create" row is last and only highlighted when
+        // nothing exists, so a typo never makes a stray tag.
+        const exact = results.findIndex((t) => !t.isNew && t.name.toLowerCase() === term.toLowerCase());
+        highlight = exact >= 0 ? exact : 0;
+        renderList();
+      } catch (e) {
+        log(e.message, "error");
+        status("Tag search failed");
+      }
+    }
+
+    // Toggle: a tag already on the target comes off, anything else goes on.
+    async function pick(index) {
+      const t = results[index];
+      if (!t) return;
+      if (t.isNew) {
+        if (busy) return;
+        busy = true;
+        status("Creating tag...");
+        try {
+          const made = await createTag(t.name);
+          if (!made) throw new Error("tagCreate returned nothing");
+          busy = false;
+          await apply(made, true);
+        } catch (e) {
+          busy = false;
+          status(`Failed: ${String(e.message).slice(0, 60)}`);
+        }
+        return;
+      }
+      await apply(t, !has(t.id));
+    }
+
+    async function apply(tag, add) {
+      if (busy || !target) return;
+      busy = true;
+      const t = target;
+      status(add ? "Adding..." : "Removing...");
+      try {
+        await writeTag(t, tag.id, add);
+        if (target !== t) return;              // panel moved on meanwhile
+        if (add) {
+          if (!has(tag.id)) current = current.concat({ id: tag.id, name: tag.name });
+          added = added.filter((x) => x !== tag.id).concat(tag.id);
+          noteRecent(tag);
+        } else {
+          current = current.filter((x) => x.id !== tag.id);
+          added = added.filter((x) => x !== tag.id);
+        }
+        status(`${add ? "Added" : "Removed"} ${tag.name}`);
+        refetch(t.kind === "scene" ? ["FindScene", "FindScenes"] : ["FindPerformer", "FindPerformers"]);
+        q("search").value = "";
+        renderChips();
+        showRecent();
+        q("search").focus();
+      } catch (e) {
+        log(`Tag ${add ? "add" : "remove"} failed: ${e.message}`, "error");
+        status(`Failed: ${String(e.message).slice(0, 60)}`);
+        // A recent tag deleted since it was noted fails every time: drop it.
+        if (add && /not found|no rows|constraint|invalid/i.test(e.message)) {
+          saveRecent(loadRecent().filter((x) => x.id !== tag.id));
+        }
+      } finally {
+        busy = false;
+      }
+    }
+
+    function targetHere() {
+      return targetFromPath(window.location.pathname);
+    }
+
+    async function openPanel() {
+      const t = targetHere();
+      if (!t) return;
+      setActive(entry);
+      target  = t;
+      current = [];
+      added   = [];
+      if (!panel) panel = build();
+      mount(panel);
+      q("title").textContent = label();
+      q("search").value = "";
+      status("Loading...");
+      renderChips();
+      showRecent();
+      positionPanel(panel);
+      panel.classList.add("qt-open");
+      open = true;
+      q("search").focus();
+
+      const seq = ++loadSeq;
+      try {
+        const tags = await readTags(t);
+        if (seq !== loadSeq || target !== t) return;
+        current = tags;
+        status("");
+        renderChips();
+        renderList();                    // tick the ones already on
+        positionPanel(panel);            // the chips changed its height
+      } catch (e) {
+        if (seq !== loadSeq) return;
+        log(`Tag read failed: ${e.message}`, "error");
+        status("Could not read the current tags");
+      }
+    }
+
+    function closePanel() {
+      if (!open) return;
+      open = false;
+      clearTimeout(searchTimer);
+      if (panel) panel.classList.remove("qt-open");
+      clearActive(entry);
+      if (panel && panel.contains(document.activeElement)) document.activeElement.blur();
+      const player = videoEl()?.closest?.(".video-js");
+      if (player && player.tabIndex >= -1) player.focus?.({ preventScroll: true });
+      if (added.length) {
+        toast(`${added.length} tag${added.length === 1 ? "" : "s"} added`, "qt-info");
+      }
+    }
+
+    function onPanelKey(ev) {
+      const k = ev.key;
+      const stop = () => { ev.preventDefault(); ev.stopPropagation(); };
+      const empty = !q("search").value;
+
+      if (k === "Escape") { stop(); closePanel(); return; }
+      if (k === "Enter")  { stop(); pick(highlight); return; }
+      if (k === "ArrowDown") { stop(); highlight = Math.min(results.length - 1, highlight + 1); renderList(); return; }
+      if (k === "ArrowUp")   { stop(); highlight = Math.max(0, highlight - 1); renderList(); return; }
+      if (k === "Backspace" && empty && added.length) {
+        stop();
+        const last = current.find((x) => x.id === added[added.length - 1]);
+        if (last) apply(last, false);
+        return;
+      }
+      if (/^[1-9]$/.test(k) && empty) {
+        const i = parseInt(k, 10) - 1;
+        if (i < results.length) { stop(); pick(i); }
+        return;
+      }
+      ev.stopPropagation();              // typing a tag name must not reach Stash hotkeys
+    }
+
+    // Document-level fallback for when focus escapes the input.
+    function onKey(ev) {
+      if (typingInAField(document.activeElement) && panel?.contains(document.activeElement)) return true;
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closePanel(); return true; }
+      if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && ev.key.length === 1) {
+        ev.preventDefault(); ev.stopPropagation();
+        const inp = q("search");
+        inp.focus();
+        inp.value += ev.key;
+        onSearchInput();
+      }
+      return true;
+    }
+
+    return { openPanel, onKey, isOpen: () => open, closePanel, targetHere };
+  })();
+
   // ═══ Queue navigation (double-click) ═══════════════════════════════════════
 
   const Nav = (() => {
@@ -1628,9 +2028,21 @@
       Mark.onKey(ev);
       return;
     }
+    if (Tag.isOpen()) {
+      Tag.onKey(ev);
+      return;
+    }
 
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (typingInAField(document.activeElement)) return;
+
+    // T is the one key that also works off the scene page: performers.
+    if (!settings.disableTags && (ev.key === "t" || ev.key === "T") && Tag.targetHere()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      Tag.openPanel();
+      return;
+    }
     if (!currentSceneId()) return;
 
     if (!settings.disableRating && (ev.key === "r" || ev.key === "R")) {
@@ -1677,7 +2089,8 @@
 
   // scripts/test_quicktools.js sets this before loading the file.
   if (window.__QT_TEST__) {
-    window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf };
+    window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
+                                targetFromPath, nextTagIds };
   }
 
   loadSettings().then(() => {
@@ -1685,6 +2098,7 @@
     if (!settings.disableRating)  on.push("R rate");
     if (!settings.disableMarkers) on.push("M mark", "Shift+M range", "U undo");
     if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
+    if (!settings.disableTags)    on.push("T tags");
     if (settings.enableNav)       on.push("double-click / middle-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);
   });

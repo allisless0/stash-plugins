@@ -104,6 +104,17 @@ check("outside the video is not navigation", T.sideOf(1.2, 0) === null && T.side
 check("dead zone is not navigation", T.sideOf(0.52, 0.2) === null && T.sideOf(0.8, 0.2) === "next");
 check("NaN (zero-width video) is not navigation", T.sideOf(NaN, 0) === null);
 
+// ── quick tags (T) ──────────────────────────────────────────────────────────
+const sc = T.targetFromPath("/scenes/42");
+check("T on a scene page tags the scene", sc && sc.kind === "scene" && sc.id === "42");
+const pf = T.targetFromPath("/performers/7/scenes");
+check("T on a performer page (any tab) tags the performer", pf && pf.kind === "performer" && pf.id === "7");
+check("T does nothing on list pages", T.targetFromPath("/scenes") === null && T.targetFromPath("/performers") === null);
+check("T does nothing on other pages", T.targetFromPath("/studios/3") === null && T.targetFromPath("/scenes/markers") === null);
+check("fallback add keeps every other tag", JSON.stringify(T.nextTagIds(["1", "2"], "3", true)) === '["1","2","3"]');
+check("fallback add of a tag already there changes nothing", JSON.stringify(T.nextTagIds(["1", 2], 2, true)) === '["1","2"]');
+check("fallback remove takes only that tag", JSON.stringify(T.nextTagIds(["1", "2", "3"], "2", false)) === '["1","3"]');
+
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
 check("range pressed end-first", JSON.stringify(T.orderRange(20, 10)) === "[10,20]");

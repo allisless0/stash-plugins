@@ -47,10 +47,11 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.4.0 | UI only | `R` `M` `Shift+M` `U` `D` dbl-click, middle-click | `/scenes/<id>` | ~1680 |
+| QuickTools | 1.5.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`, `T` also `/performers/<id>` | ~2050 |
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
+| Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1213,6 +1214,57 @@ default-filter merge incl. rule 5, round rules, records). Browser-tested in a
 fake Stash SPA (tab, hiding, badges, a Hardcore round and its record, skip to
 Easy, reload continuation, restart). Not tested in a real Stash.
 
+### 4.9 Todo (1.0.0)
+
+User request: "a simple todo list addon". A top-bar button (same markup as
+the Collections tabs) with an open-task count opens a fixed dropdown. Tasks
+are `{id, text, done, doneAt, created, link?}`; `link` is `{kind, id, label}`
+for a scene, performer, studio, tag, gallery or group page (`/movies/` maps
+to group). On a linked page its tasks list first and the button is outlined.
+
+**Storage is plugin config, key `items`, a JSON string.** Not localStorage, so
+it is the same on every device. Writes are operations (`applyOp`: add, done,
+edit, delete by ids, move), replayed onto the list as read from Stash right
+before the write, then `configurePlugin` with `{...mine, items}` (the map is
+replaced whole, so every other key rides through). Two devices editing at
+once both keep their changes; "done" sets a state rather than flipping, and
+"clear done" deletes by id, so a replay or a tick elsewhere is not undone.
+Writes run one at a time on a promise chain.
+
+**Rule 5 in two places.** `parseItems` returns null for a value that does not
+parse or is not a list, and null stops every write with a visible error:
+overwriting a list we failed to read would lose all of it. Entries this
+version does not understand are kept in storage and only hidden (`isTask`).
+
+Refreshes on open, on window focus, and every 30 s while visible (not while
+editing a task). No hotkey on purpose: QuickTools owns the keyboard, and the
+add box stops propagation so typing a task does not fire Stash or QuickTools
+keys (QuickTools' window-capture router also skips focused inputs).
+Tested: `scripts/test_todo.js` (pure helpers), plus a harness run of add,
+link, tick, edit, clear, a concurrent "phone" write and a corrupted list.
+
+### 4.10 QuickTools `T`: quick tags (1.5.0)
+
+User request: quick tags with T for scenes and for performers on their page.
+A panel in the registry like R and M (`Tag`, entry id `tag`), opened from the
+one keydown router. `T` is checked before the scene-only guard, using
+`targetFromPath()` (`/scenes/<id>` or `/performers/<id>[/tab]`); R, M, D stay
+scene-only. Panels tied to a page close when the path changes
+(`entry.page`, added to the 300 ms check, since performer pages have no scene
+id).
+
+**Writes use `bulkSceneUpdate` / `bulkPerformerUpdate` with `tag_ids: {ids:
+[one], mode: ADD|REMOVE}`.** That touches one tag and cannot drop the others,
+which a full `tag_ids` write from a stale read would (rule 5, the D module's
+"one real trap"). Only if the bulk mutation does not exist in the schema does
+it fall back to re-read then `sceneUpdate`/`performerUpdate` with
+`nextTagIds()` (tested). The panel stays open after each change; Enter on a
+tag already on removes it; Backspace in an empty box takes back the last tag
+added in this panel; 1-9 pick recents (`quickToolsRecentTags`, own list, not
+the marker recents). **Enter never creates a tag while an existing one
+matches** (harness caught "out" creating a tag instead of picking "Outdoor");
+the create row is last and only highlighted when nothing exists.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1285,7 +1337,9 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | 1.32 seek and next-video handling tested in a harness, not real video.js. Check in Stash: a scene with no script, manual pattern running; click the timeline and drag it; the pattern must not restart. Play a queue of scenes without scripts; the pattern must not restart between them. Pause; it stops within a second. |
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
-| QuickTools | No touch access: R, M and D are keyboard-only. |
+| QuickTools | No touch access: R, M, D and T are keyboard-only. |
+| QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
 | QuickTools | 1.4.0 middle click tested with script-dispatched events only (the harness browser cannot press a real middle button). Check in Stash: middle-click the right half of the player, it goes to the next scene and does not start autoscroll or pause the video. |
 | ScriptBadges | Stash's exact-name matching means scripts IntifaceSync finds (fuzzy names) can show as "No script". An optional check through the IntifaceSync backend would fix that. |
 | Collections | Untested in a real Stash. Check: the tab lands in the nav bar and filters; the Scenes page hides the studio (maybe after one reload); a Hardcore round records on O; the chip shows in fullscreen; cards show badges. |
@@ -1304,6 +1358,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-06 (evening): Todo 1.0.0, QuickTools 1.5.0 (`T`)
+
+User asked for a simple todo list plugin and quick tags with T for scenes and
+performers. Todo stores in plugin config with operation replay (§4.9);
+`T` writes with bulk ADD/REMOVE so other tags are never rewritten (§4.10).
+Both run through a harness with a fake GraphQL; one bug found and fixed there
+(Enter on a partial match created a tag).
 
 ### 2026-10-06 (later): QuickTools 1.4.0, rate then move on
 

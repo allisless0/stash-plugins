@@ -1,0 +1,8 @@
+name: Todo
+description: "A simple task list behind a Todo button in the top bar. Tasks can be linked to the scene, performer, studio, tag, gallery or group page you wrote them on. Saved in Stash, so the list is the same on every device."
+version: 1.0.0
+url: https://github.com/allisless0/stash-plugins
+
+ui:
+  javascript:
+    - Todo.js

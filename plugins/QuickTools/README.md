@@ -1,6 +1,6 @@
 # QuickTools
 
-Four shortcuts for the Stash scene player. Each can be turned off in
+Shortcuts for the Stash scene player, plus quick tags on performer pages. Each can be turned off in
 **Settings > Plugins > QuickTools**.
 
 | Shortcut | Default | What it does |
@@ -10,10 +10,11 @@ Four shortcuts for the Stash scene player. Each can be turned off in
 | `Shift+M` | on | Mark a range: press at the start, again at the end |
 | `U` | on | Undo the marker you just added (for 8 s) |
 | `D` | on | Toggle the "Marked for Delete" tag |
+| `T` | on | Add or remove tags on the scene, or on the performer on a performer page |
 | double-click / middle-click | **off** | Jump through the scene queue |
 
-All of them only act on `/scenes/<id>` pages and never fire while you are
-typing in a field.
+All of them act on `/scenes/<id>` pages (`T` also on `/performers/<id>`) and
+never fire while you are typing in a field.
 
 ## Rating — `R`
 
@@ -92,6 +93,27 @@ is on it are left alone.
 
 A tag rather than a custom field or a reserved rating, because the tag is what
 the scene list can already filter, bulk-select and delete by.
+
+## Quick tags — `T`
+
+On a scene page it tags the scene; on a performer page, the performer. A panel
+opens at your cursor showing the current tags, with a search box underneath.
+
+| Key | |
+|---|---|
+| type | search tags; a name that does not exist yet can be created |
+| `Enter` | add the highlighted tag, or remove it if it is already on (marked "remove") |
+| `↑` `↓` | move the highlight |
+| `1`–`9` | with the box empty: your last nine tags |
+| `Backspace` | with the box empty: take back the last tag you added |
+| `Esc` | close |
+
+The panel stays open, so you can add several tags in a row. The &times; on a
+tag removes it. Enter always picks an existing tag; to create a new one whose
+name is part of an existing tag's name, press `↓` to the "create" row.
+
+Only the one tag changes each time: the rest of the scene's or performer's tags
+are never rewritten.
 
 ## Queue navigation — double-click or middle-click
 
