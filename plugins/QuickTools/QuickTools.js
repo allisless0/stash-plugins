@@ -9,7 +9,7 @@
  *   T            add or remove tags (scene and performer pages)
  *   T and D also act on the scene or performer card under the pointer, in
  *   any grid or list, so a library can be tagged without opening anything.
- *   F            saved scene filters: apply, rename, delete (scene lists)
+ *   F            saved filters: apply, rename, delete (scene and performer lists)
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -103,16 +103,23 @@
   }
 
   // ── Saved filters (F) ──────────────────────────────────────────────────────
-  // Where F works, and which list a saved scene filter is applied to: the
-  // Scenes page, or the Scenes tab of a performer, studio, tag or group. Those
-  // tabs keep their filter in the URL like the Scenes page does (Stash's
-  // alterQuery), so applying is a navigation in both cases. The tab is made
+  // Where F works, which saved filters it lists, and which list a pick is
+  // applied to: {path, mode}, or null.
+  //   scenes:     the Scenes page, or the Scenes tab of a performer, studio,
+  //               tag or group
+  //   performers: the Performers page, or the Performers tab of a studio or tag
+  // Those tabs keep their filter in the URL like the list pages (Stash's
+  // alterQuery), so applying is a navigation everywhere. The tab is made
   // explicit: a performer with no scenes opens on another tab by default.
-  function filterListPath(pathname) {
+  function filterListFor(pathname) {
     const p = pathname || "";
-    if (/^\/scenes\/?$/.test(p)) return "/scenes";
-    const m = /^\/(performers|studios|tags|groups)\/(\d+)(?:\/(scenes))?\/?$/.exec(p);
-    return m ? `/${m[1]}/${m[2]}/scenes` : null;
+    if (/^\/scenes\/?$/.test(p)) return { path: "/scenes", mode: "SCENES" };
+    if (/^\/performers\/?$/.test(p)) return { path: "/performers", mode: "PERFORMERS" };
+    let m = /^\/(performers|studios|tags|groups)\/(\d+)(?:\/(scenes))?\/?$/.exec(p);
+    if (m) return { path: `/${m[1]}/${m[2]}/scenes`, mode: "SCENES" };
+    m = /^\/(studios|tags)\/(\d+)\/performers\/?$/.exec(p);
+    if (m) return { path: `/${m[1]}/${m[2]}/performers`, mode: "PERFORMERS" };
+    return null;
   }
 
   // Stash's list URLs carry each criterion as JSON with { } swapped for ( )
@@ -145,14 +152,29 @@
   // A saved filter's criteria in the form a list URL carries them. Saved
   // filters store {type: {modifier, value}}; the URL wants {type, modifier,
   // value}, with no value for IS_NULL / NOT_NULL, and Stash writes a
-  // multi-select value as items, excluded, depth in that order.
+  // multi-select value as items, excluded, depth in that order. The special
+  // cases mirror Stash's setFromSavedCriterion overrides:
+  //   custom_fields  the whole saved object is the value, and no modifier
+  //   duplicated     an old "true"/"false" string means {phash: bool}; with
+  //                  no value the saved object itself is the value
+  //   gender         an old single string becomes a list
+  //   numbers        an old bare number becomes {value, value2}
   function savedCriteria(sf) {
     const out = [];
     for (const [type, saved] of Object.entries((sf && sf.object_filter) || {})) {
       if (!saved || typeof saved !== "object") continue;
+      if (type === "custom_fields") { out.push({ type, value: saved }); continue; }
       const c = { type, modifier: saved.modifier };
-      if (saved.modifier !== "IS_NULL" && saved.modifier !== "NOT_NULL" && saved.value !== undefined) {
-        let v = saved.value;
+      let v = saved.value;
+      if (type === "duplicated") {
+        if (v === undefined) v = saved;
+        else if (typeof v === "string") v = { phash: v === "true" };
+      } else if (type === "gender" && typeof v === "string") {
+        v = [v];
+      } else if (typeof v === "number") {
+        v = saved.value2 !== undefined ? { value: v, value2: saved.value2 } : { value: v };
+      }
+      if (saved.modifier !== "IS_NULL" && saved.modifier !== "NOT_NULL" && v !== undefined) {
         if (v && typeof v === "object" && Array.isArray(v.items)) {
           const { items, excluded, depth, ...rest } = v;
           v = { items, ...(excluded !== undefined ? { excluded } : {}), ...(depth !== undefined ? { depth } : {}), ...rest };
@@ -1810,7 +1832,7 @@
   })();
 
   // ═══ Saved filters (F) ═════════════════════════════════════════════════════
-  // A quick switcher for saved scene filters on scene lists, with rename and
+  // A quick switcher for saved scene or performer filters, with rename and
   // delete. Applying goes to the list URL Stash itself builds for a saved
   // filter (savedFilterQuery), so the result is what picking it in Stash's own
   // saved-filter menu gives. F replaces Stash's own F there (edit filter on a
@@ -1823,8 +1845,9 @@
     let panel     = null;
     let open      = false;
     let listPath  = null;      // where the chosen filter is applied
+    let mode      = "SCENES";  // which saved filters: SCENES or PERFORMERS
     let openPath  = null;      // the page it was opened on; leaving it closes it
-    let filters   = [];        // all saved scene filters, as Stash returns them
+    let filters   = [];        // this mode's saved filters, as Stash returns them
     let shown     = [];        // after the search box
     let highlight = 0;
     let openedAt  = 0;
@@ -1843,10 +1866,12 @@
 
     const FIELDS = `id mode name find_filter { q page per_page sort direction } object_filter ui_options`;
 
-    async function loadFilters() {
-      const d = await gql(`query { findSavedFilters(mode: SCENES) { ${FIELDS} } }`);
+    async function loadFilters(m) {
+      const d = await gql(`query ($mode: FilterMode) { findSavedFilters(mode: $mode) { ${FIELDS} } }`, { mode: m });
       return d?.findSavedFilters ?? [];
     }
+
+    const noun = () => (mode === "PERFORMERS" ? "performer" : "scene");
 
     // Rename re-reads the filter and sends every field back as it is, with
     // only the name changed (rule 5): saveFilter replaces the whole filter,
@@ -1871,7 +1896,7 @@
       el.className = "qt-panel";
       el.innerHTML = `
         <div class="qt-head">
-          <div class="qt-title">Saved filters <span class="qt-count" data-qt="count"></span></div>
+          <div class="qt-title"><span data-qt="title">Saved filters</span> <span class="qt-count" data-qt="count"></span></div>
           <div class="qt-status" data-qt="status"></div>
         </div>
         <input data-qt="search" placeholder="Type to find a filter" autocomplete="off" spellcheck="false">
@@ -1899,7 +1924,7 @@
     // order. The search matches anywhere in the name.
     function arrange() {
       const term = q("search").value.trim().toLowerCase();
-      const tag = deleteTag();
+      const tag = mode === "SCENES" ? deleteTag() : null;
       const marked = (f) => isDeleteFilter(f, tag);
       const hits = filters.filter((f) => !term || String(f.name).toLowerCase().includes(term));
       return hits.filter(marked).concat(hits.filter((f) => !marked(f)));
@@ -1916,11 +1941,12 @@
         const d = document.createElement("div");
         d.className = "qt-empty";
         d.textContent = filters.length ? "No saved filter matches."
-          : "No saved scene filters yet. Save one from Stash's filter menu.";
+          : `No saved ${noun()} filters yet. Save one from Stash's filter menu.`;
         list.appendChild(d);
         return;
       }
-      const tag = deleteTag();
+      // The delete pile is a scene idea: D tags scenes.
+      const tag = mode === "SCENES" ? deleteTag() : null;
       const nowKey = criteriaKey(currentCriteria(window.location.search));
       shown.forEach((f, i) => {
         const row = document.createElement("div");
@@ -1972,7 +1998,7 @@
       // React Router listens for popstate; a full reload would lose the SPA.
       history.pushState({}, "", url);
       window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
-      toast(f.name, "qt-info", "saved filter");
+      toast(f.name, "qt-info", `saved ${noun()} filter`);
       log(`Applied saved filter ${f.id} "${f.name}" -> ${url}`);
     }
 
@@ -2036,20 +2062,25 @@
     }
 
     function listHere() {
-      return filterListPath(window.location.pathname);
+      return filterListFor(window.location.pathname);
     }
 
     async function openPanel() {
-      const path = listHere();
-      if (!path) return;
+      const where = listHere();
+      if (!where) return;
       setActive(entry);
-      listPath  = path;
+      // A different list kind means different filters: never show the last
+      // mode's list while this one loads.
+      if (where.mode !== mode) filters = [];
+      listPath  = where.path;
+      mode      = where.mode;
       openPath  = window.location.pathname;
       renaming  = null;
       confirmId = null;
       highlight = 0;
       if (!panel) panel = build();
       mount(panel);
+      q("title").textContent = mode === "PERFORMERS" ? "Saved performer filters" : "Saved scene filters";
       q("search").value = "";
       status("Loading...");
       render();
@@ -2059,9 +2090,10 @@
       openedAt = Date.now();
       q("search").focus();
       const seq = ++loadSeq;
+      const m = mode;
       try {
-        const list = await loadFilters();
-        if (seq !== loadSeq || !open) return;
+        const list = await loadFilters(m);
+        if (seq !== loadSeq || !open || m !== mode) return;
         filters = list;
         status("");
         // Start on the filter showing now, if any.
@@ -2621,7 +2653,8 @@
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (typingInAField(document.activeElement)) return;
 
-    // F: saved scene filters, wherever a scene list keeps its filter in the URL.
+    // F: saved filters, on scene and performer lists that keep their filter
+    // in the URL.
     if (!settings.disableFilters && (ev.key === "f" || ev.key === "F") && !ev.shiftKey && Filt.listHere()) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -2698,7 +2731,7 @@
   if (window.__QT_TEST__) {
     window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
                                 targetFromPath, nextTagIds, cardTarget, isRatingTag,
-                                filterListPath, savedFilterQuery, savedCriteria, criteriaKey,
+                                filterListFor, savedFilterQuery, savedCriteria, criteriaKey,
                                 currentCriteria, isDeleteFilter, encodeCriterion };
   }
 

@@ -11,7 +11,7 @@ Shortcuts for the Stash scene player, plus quick tags on performer pages. Each c
 | `U` | on | Undo the marker you just added (for 8 s) |
 | `D` | on | Toggle the "Marked for Delete" tag (scene page, or the scene card under the mouse) |
 | `T` | on | Add or remove tags on the scene or performer: the page's own, or the card under the mouse |
-| `F` | on | Saved scene filters: switch, rename, delete (Scenes page and Scenes tabs) |
+| `F` | on | Saved filters: switch, rename, delete (scene and performer lists) |
 | double-click / middle-click | **off** | Jump through the scene queue |
 
 All of them act on `/scenes/<id>` pages and never fire while you are typing in
@@ -140,8 +140,12 @@ did not click.
 
 ## Saved filters — `F`
 
-On the Scenes page, or the Scenes tab of a performer, studio, tag or group,
-`F` opens your saved scene filters at the cursor.
+`F` opens your saved filters at the cursor:
+
+- **scene filters** on the Scenes page, or the Scenes tab of a performer,
+  studio, tag or group
+- **performer filters** on the Performers page, or the Performers tab of a
+  studio or tag
 
 | Key | |
 |---|---|
@@ -153,7 +157,7 @@ On the Scenes page, or the Scenes tab of a performer, studio, tag or group,
 | `Esc` | close |
 
 Applying gives the same list as picking the filter in Stash's own saved-filter
-menu. On a performer, studio, tag or group page it filters that page's scenes.
+menu. On a performer, studio, tag or group page it filters that page's list.
 The filter showing now is marked "showing" and highlighted when the panel
 opens.
 

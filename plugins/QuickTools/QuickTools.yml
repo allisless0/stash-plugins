@@ -1,6 +1,6 @@
 name: QuickTools
-description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers (also the card under the mouse in any list), F switches, renames and deletes saved scene filters, double-click or middle-click jumps through the scene queue. Each feature can be turned off."
-version: 1.8.0
+description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers (also the card under the mouse in any list), F switches, renames and deletes saved scene and performer filters, double-click or middle-click jumps through the scene queue. Each feature can be turned off."
+version: 1.9.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
@@ -26,7 +26,7 @@ settings:
     type: BOOLEAN
   disableFilters:
     displayName: Disable saved filters (F)
-    description: "Turn off the F hotkey that opens the saved scene filters panel on the Scenes page and on performer, studio, tag and group Scenes tabs. When on, F there opens the panel instead of Stash's own F (edit filter, or favourite on a performer page); pressing F twice quickly still does Stash's."
+    description: "Turn off the F hotkey that opens the saved filters panel: scene filters on the Scenes page and Scenes tabs, performer filters on the Performers page and Performers tabs. When on, F there opens the panel instead of Stash's own F (edit filter, or favourite on a performer page); pressing F twice quickly still does Stash's."
     type: BOOLEAN
   deleteTagName:
     displayName: Delete tag name

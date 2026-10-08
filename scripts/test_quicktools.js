@@ -137,12 +137,33 @@ check("Advanced Rating tag is a rating tag", T.isRatingTag("Body \u2605: 5") && 
 check("ordinary tags are not", !T.isRatingTag("Blonde") && !T.isRatingTag("5 stars") && !T.isRatingTag(null));
 
 // ── saved filters (F) ───────────────────────────────────────────────────────
-check("F works on the Scenes page", T.filterListPath("/scenes") === "/scenes");
-check("F on a performer page applies to its Scenes tab", T.filterListPath("/performers/7") === "/performers/7/scenes");
-check("F on a studio's Scenes tab", T.filterListPath("/studios/3/scenes") === "/studios/3/scenes");
-check("F does nothing on other tabs, a scene, markers or lists of other things",
-  T.filterListPath("/performers/7/galleries") === null && T.filterListPath("/scenes/12") === null &&
-  T.filterListPath("/scenes/markers") === null && T.filterListPath("/performers") === null);
+const fl = (p) => JSON.stringify(T.filterListFor(p));
+check("F on the Scenes page: scene filters", fl("/scenes") === '{"path":"/scenes","mode":"SCENES"}');
+check("F on a performer page: scene filters on its Scenes tab", fl("/performers/7") === '{"path":"/performers/7/scenes","mode":"SCENES"}');
+check("F on a studio's Scenes tab", fl("/studios/3/scenes") === '{"path":"/studios/3/scenes","mode":"SCENES"}');
+check("F on the Performers page: performer filters", fl("/performers") === '{"path":"/performers","mode":"PERFORMERS"}');
+check("F on a studio's or tag's Performers tab: performer filters",
+  fl("/studios/3/performers") === '{"path":"/studios/3/performers","mode":"PERFORMERS"}' &&
+  fl("/tags/9/performers") === '{"path":"/tags/9/performers","mode":"PERFORMERS"}');
+check("F does nothing on other tabs, a scene, markers or other lists",
+  T.filterListFor("/performers/7/galleries") === null && T.filterListFor("/scenes/12") === null &&
+  T.filterListFor("/scenes/markers") === null && T.filterListFor("/studios") === null &&
+  T.filterListFor("/performers/7/appearswith") === null);
+
+// performer criteria, and the saved forms Stash converts on load
+const crit = (obj) => JSON.stringify(T.savedCriteria({ object_filter: obj }));
+check("old single-string gender becomes a list",
+  crit({ gender: { modifier: "INCLUDES", value: "FEMALE" } }) === '[{"type":"gender","modifier":"INCLUDES","value":["FEMALE"]}]');
+check("gender list stays a list",
+  crit({ gender: { modifier: "INCLUDES", value: ["FEMALE", "TRANSGENDER_FEMALE"] } }) === '[{"type":"gender","modifier":"INCLUDES","value":["FEMALE","TRANSGENDER_FEMALE"]}]');
+check("old bare number becomes {value, value2}",
+  crit({ age: { modifier: "BETWEEN", value: 20, value2: 30 } }) === '[{"type":"age","modifier":"BETWEEN","value":{"value":20,"value2":30}}]');
+check("a string value stays a string",
+  crit({ country: { modifier: "EQUALS", value: "US" } }) === '[{"type":"country","modifier":"EQUALS","value":"US"}]');
+check("custom_fields: whole saved object as value, no modifier",
+  crit({ custom_fields: [{ field: "x", modifier: "EQUALS", value: ["1"] }] }) === '[{"type":"custom_fields","value":[{"field":"x","modifier":"EQUALS","value":["1"]}]}]');
+check("duplicated: old string means phash",
+  crit({ duplicated: { modifier: "EQUALS", value: "true" } }) === '[{"type":"duplicated","modifier":"EQUALS","value":{"phash":true}}]');
 
 // Expected strings are what Stash 0.31's own saved-filter menu writes to the
 // URL for the same saved filters (captured from a real instance, names changed).

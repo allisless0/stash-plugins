@@ -45,8 +45,9 @@ open it.
 performer page. Search, Enter, and the panel stays open for the next one.
 - **In the library**, `T` and `D` act on the scene or performer card under the
 mouse, so you can tag and mark scenes straight from a grid or list.
-- **`F`** — on scene lists, a switcher for your saved scene filters, with
-rename and delete. The filter for your delete pile is pinned in red.
+- **`F`** — on scene and performer lists, a switcher for your saved
+filters, with rename and delete. The filter for your delete pile is pinned in
+red.
 - **double-click** or **middle-click** — next or previous scene in the
 queue. Off by default, because it replaces double-click-to-fullscreen.
 
