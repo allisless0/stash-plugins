@@ -47,7 +47,7 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.7.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` dbl-click, middle-click | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere | ~2130 |
+| QuickTools | 1.8.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` `F` dbl-click, middle-click | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere; `F` on scene lists | ~2550 |
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
@@ -1297,6 +1297,56 @@ write; harness-checked by removing a visible tag next to three hidden ones.
 This is the exact failure the archived QuickCriteria shipped (saving dropped
 hidden level tags), so do not add any "save the visible list" path here.
 
+### 4.11 QuickTools `F`: saved filters (1.8.0)
+
+User request: F on the Scenes page or a performer page's scenes opens the
+saved filters, to switch quickly, rename, delete, with the Marked for Delete
+filter standing out. **Generic by design** (user: "it should work out of the
+box"): nothing assumes a particular library; everything comes from
+`findSavedFilters(mode: SCENES)`.
+
+**Where:** `filterListPath()` (tested): `/scenes`, and `/performers|studios|
+tags|groups/<id>` with no tab or the `scenes` tab. Applying always goes to
+the explicit `.../scenes` tab, because a performer with no scenes opens on
+another tab by default (Stash's `defaultTabKey`).
+
+**Applying is a navigation, checked against Stash itself.** Stash's list
+pages keep their filter in the URL (`useFilterURL`, active on the Scenes page
+and on entity Scenes tabs through `alterQuery`), and picking a saved filter
+in Stash runs `configureFromSavedFilter` then writes `makeQueryParameters()`.
+`savedFilterQuery()` builds that string from the saved filter: criteria as
+`{type, modifier, value}` (no value for IS_NULL/NOT_NULL, multi-select values
+ordered items, excluded, depth), then sortby, sortdir (lower case), perPage,
+disp, z, with Stash's own `{}`->`()` encoding (same as Collections). Before
+writing it, 14 real saved filters (tags, performers, rating, IS_NULL, random
+sort) were applied both ways on a Stash 0.31.1 and the resulting URLs
+compared: identical apart from key order inside `value` (now matched) and the
+random seed, which Stash also re-rolls. Unit tests use those strings as
+fixtures. **Known limit:** a few criterion types convert their saved form
+specially in `setFromSavedCriterion` (phash duplicates, a string-to-array
+case, EXCLUDES on a criterion without that modifier). None appeared in real
+filters; if one misapplies, that is where to look. The alternative, clicking
+Stash's sidebar item, needs the "Saved filters" sidebar section expanded
+(collapsed sections do not render their items), so it was rejected.
+
+**Rename re-reads then sends every field back** (`findSavedFilter`, then
+`saveFilter` with id, mode, find_filter, object_filter, ui_options unchanged
+and the new name): `saveFilter` replaces the whole filter (rule 5). The field
+list is Stash's own `SavedFilterData` fragment. **Delete** is
+`destroySavedFilter`, two-step (Del or the x twice within 3 s, no dialog).
+Both refetch `FindSavedFilters` so Stash's own menu updates.
+
+**Delete pile:** `isDeleteFilter()` (tested) is a tags INCLUDES/INCLUDES_ALL
+rule containing the D tag, by id (`Del.tagInfo()`, cached id) or by name, so
+it does not depend on what the filter is called. Pinned first, red.
+
+**F is Stash's key too:** `f` = edit filter on list pages, favourite on a
+performer page (both Mousetrap). The window-capture router takes it on the
+pages above; F again within 600 ms of opening, with the box empty, closes the
+panel and calls `Mousetrap.trigger("f")`. Shift+F and every other page are
+left alone. "showing" marks the saved filter whose criteria equal the URL's
+(`criteriaKey`, order-free).
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1370,6 +1420,7 @@ under new labels that mean something different. Recalculate makes ratings
 | IntifaceSync | Tease strength build untested on hardware. A starting strength under the motor floor is held at the floor, so on a Gush 2 the first few buzzes of a very gentle start may all feel the same. |
 | QuickTools | 1.3.0 tested in a harness page (fake GraphQL, synthetic keys, fullscreen simulated by overriding `document.fullscreenElement`), not in a real Stash. Check: R in real fullscreen shows the panel; Shift+M twice makes a marker with an end time on your Stash version; U within 8 s removes it. |
 | QuickTools | No touch access: R, M, D and T are keyboard-only. |
+| QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Criterion types with special saved forms (phash duplicates etc.) not covered, see §4.11. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
 | Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
@@ -1391,6 +1442,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-08: QuickTools 1.8.0, `F` saved filters
+
+User asked for F to bring up saved scene filters on scene lists, with rename,
+delete, and the Marked for Delete filter standing out, and said it must work
+out of the box rather than for their library. Applying is the URL Stash
+builds, verified against a real 0.31.1 instance; everything else is generic.
+See §4.11.
 
 ### 2026-10-07: QuickTools 1.7.0, hide rating tags in the T panel
 

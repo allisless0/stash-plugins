@@ -9,6 +9,7 @@
  *   T            add or remove tags (scene and performer pages)
  *   T and D also act on the scene or performer card under the pointer, in
  *   any grid or list, so a library can be tagged without opening anything.
+ *   F            saved scene filters: apply, rename, delete (scene lists)
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -99,6 +100,112 @@
       if (m) return { kind, id: m[1] };
     }
     return null;
+  }
+
+  // ── Saved filters (F) ──────────────────────────────────────────────────────
+  // Where F works, and which list a saved scene filter is applied to: the
+  // Scenes page, or the Scenes tab of a performer, studio, tag or group. Those
+  // tabs keep their filter in the URL like the Scenes page does (Stash's
+  // alterQuery), so applying is a navigation in both cases. The tab is made
+  // explicit: a performer with no scenes opens on another tab by default.
+  function filterListPath(pathname) {
+    const p = pathname || "";
+    if (/^\/scenes\/?$/.test(p)) return "/scenes";
+    const m = /^\/(performers|studios|tags|groups)\/(\d+)(?:\/(scenes))?\/?$/.exec(p);
+    return m ? `/${m[1]}/${m[2]}/scenes` : null;
+  }
+
+  // Stash's list URLs carry each criterion as JSON with { } swapped for ( )
+  // outside strings, then URL-encoded with ?#&;=+ escaped (ListFilterModel
+  // .getEncodedParams in the Stash UI; Collections mirrors the same).
+  function encodeCriterion(obj) {
+    let inString = false, escaped = false, out = "";
+    for (const ch of JSON.stringify(obj)) {
+      if (escaped) { escaped = false; out += ch; continue; }
+      if (ch === "\\" && inString) { escaped = true; out += ch; continue; }
+      if (ch === '"') inString = !inString;
+      out += (!inString && ch === "{") ? "(" : (!inString && ch === "}") ? ")" : ch;
+    }
+    let s = encodeURI(out);
+    for (const c of "?#&;=+") s = s.split(c).join(encodeURIComponent(c));
+    return s;
+  }
+
+  function decodeCriterion(raw) {
+    let inString = false, escaped = false, json = "";
+    for (const ch of raw) {
+      if (escaped) { escaped = false; json += ch; continue; }
+      if (ch === "\\" && inString) { escaped = true; json += ch; continue; }
+      if (ch === '"') inString = !inString;
+      json += (!inString && ch === "(") ? "{" : (!inString && ch === ")") ? "}" : ch;
+    }
+    try { return JSON.parse(json); } catch { return null; }
+  }
+
+  // A saved filter's criteria in the form a list URL carries them. Saved
+  // filters store {type: {modifier, value}}; the URL wants {type, modifier,
+  // value}, with no value for IS_NULL / NOT_NULL, and Stash writes a
+  // multi-select value as items, excluded, depth in that order.
+  function savedCriteria(sf) {
+    const out = [];
+    for (const [type, saved] of Object.entries((sf && sf.object_filter) || {})) {
+      if (!saved || typeof saved !== "object") continue;
+      const c = { type, modifier: saved.modifier };
+      if (saved.modifier !== "IS_NULL" && saved.modifier !== "NOT_NULL" && saved.value !== undefined) {
+        let v = saved.value;
+        if (v && typeof v === "object" && Array.isArray(v.items)) {
+          const { items, excluded, depth, ...rest } = v;
+          v = { items, ...(excluded !== undefined ? { excluded } : {}), ...(depth !== undefined ? { depth } : {}), ...rest };
+        }
+        c.value = v;
+      }
+      out.push(c);
+    }
+    return out;
+  }
+
+  // The query string Stash builds for a saved filter (makeQueryParameters):
+  // q, the criteria, sort, direction, page size, display mode, zoom. Stash
+  // tidies it on arrival (dropping defaults), so it need not be minimal.
+  function savedFilterQuery(sf) {
+    const parts = [];
+    const ff = (sf && sf.find_filter) || {};
+    if (ff.q) parts.push("q=" + encodeURIComponent(ff.q));
+    for (const c of savedCriteria(sf)) parts.push("c=" + encodeCriterion(c));
+    if (ff.sort) parts.push("sortby=" + encodeURIComponent(ff.sort));
+    if (ff.direction) parts.push("sortdir=" + String(ff.direction).toLowerCase());
+    if (ff.per_page) parts.push("perPage=" + ff.per_page);
+    const ui = (sf && sf.ui_options) || {};
+    if (ui.display_mode !== undefined && ui.display_mode !== null) parts.push("disp=" + ui.display_mode);
+    if (ui.zoom_index !== undefined && ui.zoom_index !== null) parts.push("z=" + ui.zoom_index);
+    return parts.join("&");
+  }
+
+  // Order-free fingerprint of a set of criteria, to tell which saved filter
+  // the list is showing now.
+  function criteriaKey(list) {
+    const canon = (v) => Array.isArray(v) ? v.map(canon)
+      : (v && typeof v === "object")
+        ? Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o; }, {})
+        : v;
+    return list.map((c) => JSON.stringify(canon(c))).sort().join("|");
+  }
+
+  function currentCriteria(search) {
+    let raw = [];
+    try { raw = new URLSearchParams(search || "").getAll("c"); } catch { return []; }
+    return raw.map(decodeCriterion).filter(Boolean);
+  }
+
+  // A filter for the delete tag D sets: a tags rule that includes it, by id
+  // or by name. Whatever the filter itself is called.
+  function isDeleteFilter(sf, tag) {
+    const rule = sf && sf.object_filter && sf.object_filter.tags;
+    if (!rule || !tag) return false;
+    if (rule.modifier !== "INCLUDES" && rule.modifier !== "INCLUDES_ALL") return false;
+    const name = String(tag.name || "").toLowerCase();
+    return ((rule.value && rule.value.items) || []).some((it) =>
+      (tag.id && String(it.id) === String(tag.id)) || (name && String(it.label || "").toLowerCase() === name));
   }
 
   // Tags the Advanced Rating plugin writes ("Body \u2605: 5"). The T panel can
@@ -247,6 +354,7 @@
     disableDelete:  false,
     deleteTagName:  "",     // blank means DEFAULT_DELETE_TAG
     disableTags:    false,
+    disableFilters: false,
   };
 
   async function loadSettings() {
@@ -441,6 +549,37 @@
 #qt-toast kbd { background: #2e3944; border: 1px solid #44525f; border-radius: 3px;
   padding: 0 4px; font-size: 10px; font-family: inherit; color: #e6e9ec; }
 #qt-mark .qt-dur { font-size: 12px; font-weight: 400; color: #8b97a3; margin-left: 6px; }
+
+/* saved filters */
+#qt-filt { width: 380px; }
+#qt-filt .qt-title { font-size: 15px; font-weight: 600; }
+#qt-filt .qt-count { font-size: 12px; font-weight: 400; color: #8b97a3; margin-left: 4px; }
+#qt-filt input {
+  width: 100%; box-sizing: border-box; background: #1b2229; color: #e6e9ec;
+  border: 1px solid #44525f; border-radius: 4px; padding: 6px 8px;
+  font-size: 13px; font-family: inherit; outline: none;
+}
+#qt-filt input:focus { border-color: #f5a623; }
+#qt-filt .qt-list { margin-top: 6px; max-height: 320px; overflow-y: auto; }
+#qt-filt .qt-row { display: flex; align-items: center; gap: 8px; padding: 6px 7px;
+  border-radius: 4px; cursor: pointer; font-size: 13px; }
+#qt-filt .qt-row.qt-hi { background: #33404d; }
+#qt-filt .qt-fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#qt-filt .qt-cur { font-size: 10px; color: #8bc48a; }
+#qt-filt .qt-acts { display: none; gap: 2px; }
+#qt-filt .qt-row.qt-hi .qt-acts { display: inline-flex; }
+#qt-filt .qt-acts b { font-weight: 400; color: #8b97a3; padding: 0 4px; font-size: 14px; }
+#qt-filt .qt-acts b:hover { color: #fff; }
+#qt-filt .qt-acts b[data-a=del]:hover { color: #e2574c; }
+#qt-filt .qt-row.qt-filt-del { background: rgba(226,87,76,.12); box-shadow: inset 3px 0 0 #e2574c; margin-bottom: 4px; }
+#qt-filt .qt-row.qt-filt-del.qt-hi { background: rgba(226,87,76,.24); }
+#qt-filt .qt-row.qt-filt-del .qt-fname { color: #f0b9b3; font-weight: 600; }
+#qt-filt .qt-del-dot { width: 8px; height: 8px; border-radius: 50%; background: #e2574c;
+  box-shadow: 0 0 6px #e2574c; flex: none; }
+#qt-filt .qt-row.qt-confirm { background: rgba(226,87,76,.3); }
+#qt-filt .qt-ask { font-size: 11px; color: #ffd2cc; font-weight: 600; }
+#qt-filt .qt-rename { padding: 3px 6px; }
+#qt-filt .qt-empty { padding: 10px 7px; font-size: 12px; color: #7f8b97; }
 
 /* the card T is tagging, and a card D just marked */
 .qt-card-target { outline: 2px solid #f5a623 !important; outline-offset: 2px; border-radius: 4px; }
@@ -1670,6 +1809,335 @@
     return { openPanel, onKey, isOpen: () => open, closePanel, targetHere };
   })();
 
+  // ═══ Saved filters (F) ═════════════════════════════════════════════════════
+  // A quick switcher for saved scene filters on scene lists, with rename and
+  // delete. Applying goes to the list URL Stash itself builds for a saved
+  // filter (savedFilterQuery), so the result is what picking it in Stash's own
+  // saved-filter menu gives. F replaces Stash's own F there (edit filter on a
+  // list, favourite on a performer page); F twice hands it back.
+
+  const Filt = (() => {
+    const PASS_MS = 600;       // F again this soon after opening: Stash's own F
+    const CONFIRM_MS = 3000;   // second Delete within this deletes
+
+    let panel     = null;
+    let open      = false;
+    let listPath  = null;      // where the chosen filter is applied
+    let openPath  = null;      // the page it was opened on; leaving it closes it
+    let filters   = [];        // all saved scene filters, as Stash returns them
+    let shown     = [];        // after the search box
+    let highlight = 0;
+    let openedAt  = 0;
+    let renaming  = null;      // id being renamed
+    let confirmId = null;      // id waiting for a second Delete
+    let confirmTimer = null;
+    let busy      = false;
+    let loadSeq   = 0;
+
+    const entry = {
+      id: "filters",
+      get el() { return panel; },
+      get page() { return open ? openPath : null; },
+      close: () => closePanel(),
+    };
+
+    const FIELDS = `id mode name find_filter { q page per_page sort direction } object_filter ui_options`;
+
+    async function loadFilters() {
+      const d = await gql(`query { findSavedFilters(mode: SCENES) { ${FIELDS} } }`);
+      return d?.findSavedFilters ?? [];
+    }
+
+    // Rename re-reads the filter and sends every field back as it is, with
+    // only the name changed (rule 5): saveFilter replaces the whole filter,
+    // so a field left out would be lost.
+    async function rename(id, name) {
+      const d = await gql(`query ($id: ID!) { findSavedFilter(id: $id) { ${FIELDS} } }`, { id });
+      const f = d?.findSavedFilter;
+      if (!f) throw new Error("that filter no longer exists");
+      const input = { id: f.id, mode: f.mode, name, find_filter: f.find_filter,
+                      object_filter: f.object_filter, ui_options: f.ui_options };
+      await gql(`mutation ($input: SaveFilterInput!) { saveFilter(input: $input) { id name } }`, { input });
+    }
+
+    async function destroy(id) {
+      await gql(`mutation ($input: DestroyFilterInput!) { destroySavedFilter(input: $input) }`, { input: { id } });
+    }
+
+    function build() {
+      injectStyles();
+      const el = document.createElement("div");
+      el.id = "qt-filt";
+      el.className = "qt-panel";
+      el.innerHTML = `
+        <div class="qt-head">
+          <div class="qt-title">Saved filters <span class="qt-count" data-qt="count"></span></div>
+          <div class="qt-status" data-qt="status"></div>
+        </div>
+        <input data-qt="search" placeholder="Type to find a filter" autocomplete="off" spellcheck="false">
+        <div class="qt-list" data-qt="list"></div>
+        <div class="qt-hint">
+          <kbd>&uarr;</kbd><kbd>&darr;</kbd> pick &middot; <kbd>Enter</kbd> apply &middot;
+          <kbd>F2</kbd> rename &middot; <kbd>Del</kbd> delete &middot; <kbd>Esc</kbd> close<br>
+          <kbd>F</kbd><kbd>F</kbd> quickly: Stash's own <kbd>F</kbd>
+        </div>`;
+      mount(el);
+      const inp = el.querySelector('[data-qt="search"]');
+      inp.addEventListener("input", () => { highlight = 0; render(); });
+      inp.addEventListener("keydown", onPanelKey);
+      return el;
+    }
+
+    const q = (n) => panel.querySelector(`[data-qt="${n}"]`);
+    const status = (t) => { if (panel) q("status").textContent = t; };
+
+    function deleteTag() {
+      try { return Del.tagInfo(); } catch { return null; }
+    }
+
+    // The delete-tag filter goes first and stands out; the rest keep Stash's
+    // order. The search matches anywhere in the name.
+    function arrange() {
+      const term = q("search").value.trim().toLowerCase();
+      const tag = deleteTag();
+      const marked = (f) => isDeleteFilter(f, tag);
+      const hits = filters.filter((f) => !term || String(f.name).toLowerCase().includes(term));
+      return hits.filter(marked).concat(hits.filter((f) => !marked(f)));
+    }
+
+    function render() {
+      if (!panel) return;
+      shown = arrange();
+      highlight = Math.max(0, Math.min(highlight, shown.length - 1));
+      q("count").textContent = filters.length ? String(filters.length) : "";
+      const list = q("list");
+      list.innerHTML = "";
+      if (!shown.length) {
+        const d = document.createElement("div");
+        d.className = "qt-empty";
+        d.textContent = filters.length ? "No saved filter matches."
+          : "No saved scene filters yet. Save one from Stash's filter menu.";
+        list.appendChild(d);
+        return;
+      }
+      const tag = deleteTag();
+      const nowKey = criteriaKey(currentCriteria(window.location.search));
+      shown.forEach((f, i) => {
+        const row = document.createElement("div");
+        const del = isDeleteFilter(f, tag);
+        const current = nowKey !== "" && criteriaKey(savedCriteria(f)) === nowKey;
+        row.className = "qt-row" + (i === highlight ? " qt-hi" : "") + (del ? " qt-filt-del" : "") +
+                        (confirmId === f.id ? " qt-confirm" : "");
+        if (renaming === f.id) {
+          const inp = document.createElement("input");
+          inp.className = "qt-rename";
+          inp.value = f.name;
+          inp.addEventListener("keydown", (ev) => {
+            ev.stopPropagation();
+            if (ev.key === "Enter") { ev.preventDefault(); finishRename(f, inp.value); }
+            if (ev.key === "Escape") { ev.preventDefault(); renaming = null; render(); q("search").focus(); }
+          });
+          inp.addEventListener("blur", () => { if (renaming === f.id) finishRename(f, inp.value); });
+          row.appendChild(inp);
+          list.appendChild(row);
+          setTimeout(() => { inp.focus(); inp.select(); }, 0);
+          return;
+        }
+        row.innerHTML =
+          (del ? `<span class="qt-del-dot" title="Scenes marked for delete"></span>` : "") +
+          `<span class="qt-fname">${escapeHtml(f.name)}</span>` +
+          (current ? `<span class="qt-cur">showing</span>` : "") +
+          (confirmId === f.id ? `<span class="qt-ask">Del again to delete</span>` : "") +
+          `<span class="qt-acts"><b data-a="ren" title="Rename (F2)">\u270E</b>` +
+          `<b data-a="del" title="Delete (Del)">&times;</b></span>`;
+        row.addEventListener("mouseenter", () => {
+          highlight = i;
+          list.querySelectorAll(".qt-row").forEach((r, j) => r.classList.toggle("qt-hi", j === i));
+        });
+        row.addEventListener("click", (ev) => {
+          const a = ev.target.closest && ev.target.closest("b[data-a]");
+          if (a && a.dataset.a === "ren") { startRename(f); return; }
+          if (a && a.dataset.a === "del") { askDelete(f); return; }
+          apply(f);
+        });
+        list.appendChild(row);
+      });
+      list.querySelector(".qt-hi")?.scrollIntoView?.({ block: "nearest" });
+    }
+
+    function apply(f) {
+      if (!listPath) return;
+      const url = `${listPath}?${savedFilterQuery(f)}`;
+      closePanel();
+      // React Router listens for popstate; a full reload would lose the SPA.
+      history.pushState({}, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
+      toast(f.name, "qt-info", "saved filter");
+      log(`Applied saved filter ${f.id} "${f.name}" -> ${url}`);
+    }
+
+    function startRename(f) {
+      confirmId = null;
+      renaming = f.id;
+      render();
+    }
+
+    async function finishRename(f, value) {
+      if (renaming !== f.id) return;
+      renaming = null;
+      const name = String(value || "").trim();
+      if (!name || name === f.name) { render(); q("search").focus(); return; }
+      if (busy) return;
+      busy = true;
+      status("Renaming...");
+      try {
+        await rename(f.id, name);
+        f.name = name;
+        status(`Renamed to ${name}`);
+        refetch(["FindSavedFilters"]);
+      } catch (e) {
+        log(`Rename failed: ${e.message}`, "error");
+        status(`Failed: ${String(e.message).slice(0, 60)}`);
+      } finally {
+        busy = false;
+        render();
+        q("search").focus();
+      }
+    }
+
+    // Two steps, no dialog: the first press arms the row, a second within
+    // CONFIRM_MS deletes. A saved filter cannot be got back once deleted.
+    async function askDelete(f) {
+      if (confirmId !== f.id) {
+        confirmId = f.id;
+        clearTimeout(confirmTimer);
+        confirmTimer = setTimeout(() => { confirmId = null; render(); }, CONFIRM_MS);
+        render();
+        return;
+      }
+      clearTimeout(confirmTimer);
+      confirmId = null;
+      if (busy) return;
+      busy = true;
+      status("Deleting...");
+      try {
+        await destroy(f.id);
+        filters = filters.filter((x) => x.id !== f.id);
+        status(`Deleted ${f.name}`);
+        refetch(["FindSavedFilters"]);
+      } catch (e) {
+        log(`Delete failed: ${e.message}`, "error");
+        status(`Failed: ${String(e.message).slice(0, 60)}`);
+      } finally {
+        busy = false;
+        render();
+        q("search").focus();
+      }
+    }
+
+    function listHere() {
+      return filterListPath(window.location.pathname);
+    }
+
+    async function openPanel() {
+      const path = listHere();
+      if (!path) return;
+      setActive(entry);
+      listPath  = path;
+      openPath  = window.location.pathname;
+      renaming  = null;
+      confirmId = null;
+      highlight = 0;
+      if (!panel) panel = build();
+      mount(panel);
+      q("search").value = "";
+      status("Loading...");
+      render();
+      positionPanel(panel);
+      panel.classList.add("qt-open");
+      open = true;
+      openedAt = Date.now();
+      q("search").focus();
+      const seq = ++loadSeq;
+      try {
+        const list = await loadFilters();
+        if (seq !== loadSeq || !open) return;
+        filters = list;
+        status("");
+        // Start on the filter showing now, if any.
+        render();
+        const nowKey = criteriaKey(currentCriteria(window.location.search));
+        const i = shown.findIndex((f) => nowKey !== "" && criteriaKey(savedCriteria(f)) === nowKey);
+        if (i > 0) { highlight = i; render(); }
+        positionPanel(panel);
+      } catch (e) {
+        if (seq !== loadSeq) return;
+        log(`Saved filters failed to load: ${e.message}`, "error");
+        status("Could not load saved filters");
+      }
+    }
+
+    function closePanel() {
+      if (!open) return;
+      open = false;
+      renaming = null;
+      confirmId = null;
+      clearTimeout(confirmTimer);
+      if (panel) panel.classList.remove("qt-open");
+      clearActive(entry);
+      if (panel && panel.contains(document.activeElement)) document.activeElement.blur();
+    }
+
+    // Stash's own F: edit filter on a list, favourite on a performer page.
+    function passThrough() {
+      closePanel();
+      try {
+        const lib  = window.PluginApi?.libraries?.Mousetrap;
+        const inst = lib?.default ?? lib;
+        if (inst && typeof inst.trigger === "function") { inst.trigger("f"); return; }
+      } catch (e) { log(`Mousetrap trigger failed: ${e.message}`); }
+    }
+
+    function onPanelKey(ev) {
+      const k = ev.key;
+      const stop = () => { ev.preventDefault(); ev.stopPropagation(); };
+      const inp = q("search");
+      const empty = !inp.value;
+
+      if (k === "Escape") { stop(); closePanel(); return; }
+      if ((k === "f" || k === "F") && empty && Date.now() - openedAt < PASS_MS) { stop(); passThrough(); return; }
+      if (k === "Enter") { stop(); if (shown[highlight]) apply(shown[highlight]); return; }
+      if (k === "ArrowDown") { stop(); highlight = Math.min(shown.length - 1, highlight + 1); confirmId = null; render(); return; }
+      if (k === "ArrowUp")   { stop(); highlight = Math.max(0, highlight - 1); confirmId = null; render(); return; }
+      if (k === "F2") { stop(); if (shown[highlight]) startRename(shown[highlight]); return; }
+      // Delete with nothing after the caret would do nothing in the box, so
+      // it means the filter.
+      if (k === "Delete" && inp.selectionStart === inp.value.length && inp.selectionEnd === inp.value.length) {
+        stop();
+        if (shown[highlight]) askDelete(shown[highlight]);
+        return;
+      }
+      ev.stopPropagation();              // typing must not reach Stash hotkeys
+    }
+
+    // Document-level fallback for when focus escapes the input.
+    function onKey(ev) {
+      if (typingInAField(document.activeElement) && panel?.contains(document.activeElement)) return true;
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closePanel(); return true; }
+      if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && ev.key.length === 1) {
+        ev.preventDefault(); ev.stopPropagation();
+        const inp = q("search");
+        inp.focus();
+        inp.value += ev.key;
+        highlight = 0;
+        render();
+      }
+      return true;
+    }
+
+    return { openPanel, onKey, isOpen: () => open, closePanel, listHere };
+  })();
+
   // ═══ Queue navigation (double-click) ═══════════════════════════════════════
 
   const Nav = (() => {
@@ -2108,7 +2576,8 @@
       renderOverlay();
     }
 
-    return { start, toggle, onFullscreen, isMarked: () => marked };
+    return { start, toggle, onFullscreen, isMarked: () => marked,
+             tagInfo: () => ({ id: tagId || readCached(), name: tagName() }) };
   })();
 
   // ═══ Keyboard router ═══════════════════════════════════════════════════════
@@ -2144,9 +2613,21 @@
       Tag.onKey(ev);
       return;
     }
+    if (Filt.isOpen()) {
+      Filt.onKey(ev);
+      return;
+    }
 
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (typingInAField(document.activeElement)) return;
+
+    // F: saved scene filters, wherever a scene list keeps its filter in the URL.
+    if (!settings.disableFilters && (ev.key === "f" || ev.key === "F") && !ev.shiftKey && Filt.listHere()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      Filt.openPanel();
+      return;
+    }
 
     // T and D act on the scene or performer card under the pointer when there
     // is one (any grid or list, including a performer's scenes tab), and
@@ -2216,7 +2697,9 @@
   // scripts/test_quicktools.js sets this before loading the file.
   if (window.__QT_TEST__) {
     window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
-                                targetFromPath, nextTagIds, cardTarget, isRatingTag };
+                                targetFromPath, nextTagIds, cardTarget, isRatingTag,
+                                filterListPath, savedFilterQuery, savedCriteria, criteriaKey,
+                                currentCriteria, isDeleteFilter, encodeCriterion };
   }
 
   loadSettings().then(() => {
@@ -2225,6 +2708,7 @@
     if (!settings.disableMarkers) on.push("M mark", "Shift+M range", "U undo");
     if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
     if (!settings.disableTags)    on.push("T tags");
+    if (!settings.disableFilters) on.push("F saved filters");
     if (settings.enableNav)       on.push("double-click / middle-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);
   });

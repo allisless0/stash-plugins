@@ -11,6 +11,7 @@ Shortcuts for the Stash scene player, plus quick tags on performer pages. Each c
 | `U` | on | Undo the marker you just added (for 8 s) |
 | `D` | on | Toggle the "Marked for Delete" tag (scene page, or the scene card under the mouse) |
 | `T` | on | Add or remove tags on the scene or performer: the page's own, or the card under the mouse |
+| `F` | on | Saved scene filters: switch, rename, delete (Scenes page and Scenes tabs) |
 | double-click / middle-click | **off** | Jump through the scene queue |
 
 All of them act on `/scenes/<id>` pages and never fire while you are typing in
@@ -136,6 +137,36 @@ and its recents, so they do not crowd it. A "+7 rating tags" chip shows them;
 "hide rating tags" puts them away again, and the panel remembers which you
 chose. Hidden tags stay on the performer: nothing here ever removes a tag you
 did not click.
+
+## Saved filters — `F`
+
+On the Scenes page, or the Scenes tab of a performer, studio, tag or group,
+`F` opens your saved scene filters at the cursor.
+
+| Key | |
+|---|---|
+| type | find a filter by name |
+| `↑` `↓` | move the highlight |
+| `Enter` / click | apply it |
+| `F2` / ✎ | rename it (Enter saves, Esc cancels) |
+| `Del` / &times; | delete it: press or click twice, the first only asks |
+| `Esc` | close |
+
+Applying gives the same list as picking the filter in Stash's own saved-filter
+menu. On a performer, studio, tag or group page it filters that page's scenes.
+The filter showing now is marked "showing" and highlighted when the panel
+opens.
+
+**Your delete pile stands out.** A saved filter that lists scenes with the
+delete tag (the tag `D` sets, "Marked for Delete" unless you changed it) is
+pinned to the top in red, whatever you named it.
+
+**F was Stash's own key** on these pages: "edit filter" on a list, "favourite"
+on a performer page. Press `F` twice quickly to get Stash's, or turn the panel
+off with "Disable saved filters (F)".
+
+Renaming keeps everything else about the filter as it was; deleting a saved
+filter only removes the filter, never any scenes.
 
 ## Queue navigation — double-click or middle-click
 

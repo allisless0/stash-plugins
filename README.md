@@ -17,7 +17,7 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 
 | Plugin | Keys | What it does |
 |---|---|---|
-| **QuickTools** | `R` `M` `Shift+M` `U` `D` `T` double-click / middle-click | Scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, quick tags for scenes and performers, and double-click or middle-click queue navigation. Each can be turned off. |
+| **QuickTools** | `R` `M` `Shift+M` `U` `D` `T` `F` double-click / middle-click | Scene-player shortcuts in one plugin: a 0.0–10.0 rating panel, a marker panel that captures the current timestamp, a mark-for-delete tag, quick tags for scenes and performers, a saved-filter switcher, and double-click or middle-click queue navigation. Each can be turned off. |
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 | **Collections** | top-bar tab | Gives a studio (Cock Hero by default) its own tab sorted by O count, keeps it out of the main Scenes list, and scores Cock Hero rounds: how far you got before pressing O, as Hardcore and Easy records. |
 | **ScriptBadges** | none | A badge on every scene card saying whether the scene has a funscript, so you can see what still needs one. |
@@ -45,6 +45,8 @@ open it.
 performer page. Search, Enter, and the panel stays open for the next one.
 - **In the library**, `T` and `D` act on the scene or performer card under the
 mouse, so you can tag and mark scenes straight from a grid or list.
+- **`F`** — on scene lists, a switcher for your saved scene filters, with
+rename and delete. The filter for your delete pile is pinned in red.
 - **double-click** or **middle-click** — next or previous scene in the
 queue. Off by default, because it replaces double-click-to-fullscreen.
 

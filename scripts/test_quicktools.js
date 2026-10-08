@@ -47,7 +47,7 @@ const sandbox = {
   setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   requestAnimationFrame: () => 0, console: { log() {}, error() {}, warn() {} },
   HTMLMediaElement: function () {}, Element: function () {},
-  KeyboardEvent: function () {},
+  KeyboardEvent: function () {}, URLSearchParams,
 };
 sandbox.globalThis = sandbox;
 
@@ -135,6 +135,49 @@ check("a row with no matching link is nothing", T.cardTarget("", ["/tags/1"], "/
 // ── Advanced Rating tags can be hidden in the T panel ──────────────────────
 check("Advanced Rating tag is a rating tag", T.isRatingTag("Body \u2605: 5") && T.isRatingTag("Range \u2606: 4"));
 check("ordinary tags are not", !T.isRatingTag("Blonde") && !T.isRatingTag("5 stars") && !T.isRatingTag(null));
+
+// ── saved filters (F) ───────────────────────────────────────────────────────
+check("F works on the Scenes page", T.filterListPath("/scenes") === "/scenes");
+check("F on a performer page applies to its Scenes tab", T.filterListPath("/performers/7") === "/performers/7/scenes");
+check("F on a studio's Scenes tab", T.filterListPath("/studios/3/scenes") === "/studios/3/scenes");
+check("F does nothing on other tabs, a scene, markers or lists of other things",
+  T.filterListPath("/performers/7/galleries") === null && T.filterListPath("/scenes/12") === null &&
+  T.filterListPath("/scenes/markers") === null && T.filterListPath("/performers") === null);
+
+// Expected strings are what Stash 0.31's own saved-filter menu writes to the
+// URL for the same saved filters (captured from a real instance, names changed).
+const sfTags = { find_filter: { q: "", sort: "date", direction: "DESC", per_page: 40 },
+  object_filter: { tags: { modifier: "INCLUDES_ALL", value: { depth: 0, excluded: [], items: [{ id: "23", label: "Outdoor" }] } } },
+  ui_options: { display_mode: 0, zoom_index: 1 } };
+const qTags = T.savedFilterQuery(sfTags);
+check("tags rule: items, excluded, depth in Stash's order",
+  qTags.split("&")[0] === "c=(%22type%22:%22tags%22,%22modifier%22:%22INCLUDES_ALL%22,%22value%22:(%22items%22:%5B(%22id%22:%2223%22,%22label%22:%22Outdoor%22)%5D,%22excluded%22:%5B%5D,%22depth%22:0))", qTags);
+check("sort and direction follow", /&sortby=date&sortdir=desc/.test(qTags));
+const sfNull = { find_filter: { sort: "random_65185796", direction: "DESC" },
+  object_filter: { rating100: { modifier: "IS_NULL", value: { value: 0 } } } };
+check("IS_NULL carries no value", T.savedFilterQuery(sfNull).split("&")[0] === "c=(%22type%22:%22rating100%22,%22modifier%22:%22IS_NULL%22)");
+const sfRate = { find_filter: { sort: "date", direction: "ASC" }, object_filter: { rating100: { modifier: "EQUALS", value: { value: 20 } } },
+  ui_options: { display_mode: 1, zoom_index: 2 } };
+check("number rule and display options",
+  T.savedFilterQuery(sfRate) === "c=(%22type%22:%22rating100%22,%22modifier%22:%22EQUALS%22,%22value%22:(%22value%22:20))&sortby=date&sortdir=asc&disp=1&z=2", T.savedFilterQuery(sfRate));
+check("a search term and special characters are escaped",
+  /^q=a%26b&c=/.test(T.savedFilterQuery({ find_filter: { q: "a&b" }, object_filter: { title: { modifier: "INCLUDES", value: "x=1+2?" } } })) &&
+  T.savedFilterQuery({ object_filter: { title: { modifier: "INCLUDES", value: "x=1+2?" } } }).includes("x%3D1%2B2%3F"));
+check("empty filter is an empty query", T.savedFilterQuery({}) === "");
+
+// which saved filter is showing: same criteria, any order, any key order
+const url = "?" + T.savedFilterQuery(sfTags);
+check("current filter recognised from the URL", T.criteriaKey(T.currentCriteria(url)) === T.criteriaKey(T.savedCriteria(sfTags)));
+check("a different filter is not current", T.criteriaKey(T.currentCriteria(url)) !== T.criteriaKey(T.savedCriteria(sfRate)));
+check("no criteria is no match for an empty list", T.criteriaKey(T.currentCriteria("")) === "");
+
+// the delete-tag filter, by id or name, whatever the filter is called
+const delTag = { id: "2143", name: "Marked for Delete" };
+const sfDel = (items, modifier = "INCLUDES_ALL") => ({ name: "anything", object_filter: { tags: { modifier, value: { items } } } });
+check("delete filter found by tag id", T.isDeleteFilter(sfDel([{ id: "2143", label: "renamed" }]), delTag));
+check("delete filter found by tag name", T.isDeleteFilter(sfDel([{ id: "9", label: "marked for delete" }]), { id: null, name: "Marked for Delete" }));
+check("excluding the delete tag is not the delete filter", !T.isDeleteFilter(sfDel([{ id: "2143" }], "EXCLUDES"), delTag));
+check("other tag filters are not", !T.isDeleteFilter(sfTags, delTag) && !T.isDeleteFilter(sfRate, delTag));
 
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
