@@ -52,6 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.1.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
+| Insights | 1.0.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~1500 |
 | Lockdown | 1.3.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1520,6 +1521,65 @@ Its source was read from the user's Stash (`/plugin/VideoScrollWheel/javascript`
   made one seek, volume and sideways and line-mode deltas checked, page
   scroll prevented only over the player.
 
+### 4.14 Insights (1.0.0)
+
+User request: a stats plugin combining O Stats 1.0 and Stats Enhancer 1.1.1
+(both read from the user's Stash and inventoried first; neither is published
+anywhere), with better design. Two mockups signed off (Overview; Activity,
+People, Library, Backlog), then the user asked for in-depth performer
+analysis ("height, nationality, etc."), colours, good UX. Decisions: on the
+Stats page, own watch tracker with O Stats import, name Insights.
+
+**Placement.** Inserted after Stash's `.stats` element, before the
+changelog; nothing native is hidden or restyled (Stats Enhancer hid a tile
+by `nth-child` and set `.stats .title` to 2.5vw). A MutationObserver runs
+only while on `/stats`, to put it back after React redraws.
+
+**Data.** One paged pass: scenes 500 per page, performers 1000 per page,
+fields chosen by introspecting `Scene` and `Performer` (`fieldsOf`, `pick`),
+so a Stash without e.g. `career_start` still loads (`career_length` is the
+fallback). Compacted (`compactScene`, `compactPerformer`) and cached in
+IndexedDB for 30 minutes (localStorage is too small; O Stats hit its quota).
+Everything else is pure functions over that (all tested in
+`scripts/test_insights.js`): no second fetch (O Stats fetched the library
+twice), no per-performer queries (Stats Enhancer's age chart was N+1).
+
+**Dates are local.** `dayKey`, `parseDay` (YYYY-MM-DD as local midnight),
+`daysBetween` by calendar day. O Stats' year view used `new Date('YYYY-MM-DD')`
+(UTC) and filed O's in the wrong month west of UTC. Weeks start Monday.
+O's without a timestamp (`o_counter` above the `o_history` length) are
+counted in totals and per scene and reported as "N more without a date".
+
+**What works for you** (`traitRows`): for one dimension, each scene counts
+once per value however many of its performers share it; shares of scenes,
+O's (scene `o_counter`), plays and play duration; lift = O share / scene
+share. `small` (under 5 scenes, or under 2 O's and 3 plays) is hidden by
+default. Tones: >= 1.25 up (green), <= 0.8 down (coral). Performer traits:
+country (upper-cased), ethnicity, hair, eyes, height/weight groups, cup from
+measurements, natural/enhanced, tattoos/piercings, age on the scene date,
+career years at the scene date, favourites, performer tags. Scene traits:
+tags, studios, cast size, length, resolution, release era, interactive.
+"Strongest pulls" = non-small rows with lift >= 1.25 and >= 8 scenes,
+ranked by (lift - 1) x sqrt(scenes). Rows link to filtered performer or scene
+lists (`traitLink`; criteria in Stash's URL encoding, same as QuickTools F);
+cup, natural, career, weight, resolution, length have no link.
+
+**Flags:** Windows has no flag emoji (two letters render), so countries get
+a code badge (`.ins-cc`) and the name from `Intl.DisplayNames`.
+
+**Watch tracker** (replaces O Stats' Python task and its `watch_data.json`):
+a 1 s tick counts a second while `#VideoJsPlayer video` on a `/scenes/<id>`
+page is playing (not hover previews: O Stats counted every `<video>` and
+multiplied by how many played). Seconds go to localStorage per tab
+(`insightsWatch:<tab>`), flushed every 60 s into plugin config `watch`
+(`{day: seconds}`) with `addWatch` (read-merge-write, adds; never a whole-map
+overwrite). Keys of tabs that stopped refreshing `insightsAlive:<tab>` for 3
+minutes are claimed by the next flush, so a closed tab loses nothing. A watch
+map that does not parse stops the write (rule 5).
+**O Stats import:** `/plugin/ostats/assets/watch_data.json` if present;
+`mergeOStats` takes both its formats and keeps the larger value per day
+(both trackers may have run the same day); sets `ostatsImported`.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1597,6 +1657,8 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Insights | 1.0.0 tested on a synthetic 400-scene library in a harness, not a real Stash. Check on the real library: load time and progress text, the dashboard placement on /stats, trait links open the right filtered lists (some criterion shapes, e.g. `filter_favorites`, `performer_count`, `created_at`, were not verified against the bundle), and the O Stats import count matches its file. |
+| Insights | Performance on very large libraries (tens of thousands of scenes) unmeasured; the compute is linear but every trait dimension is computed on first view. |
 | Lockdown | 1.3.0 dialog and history view checked in the harness at desktop and narrow widths, not in a real Stash. Check the dialog's fit on a phone, and that the search finds performers on a large library quickly (it asks for 8 by name). |
 | Lockdown | 1.1.0 card hiding relies on Stash's card classes (`scene-card`, `image-card`, `gallery-card`, `wall-item`, `queue-scene-details`, seen in the 0.31 bundle). A card type with another class (a new view, a plugin's own cards) is not hidden. Check the wall and list views on a real Stash while locked. |
 | Lockdown | 1.0.0 tested in a harness against a fake GraphQL, not a real Stash. Check: the bar covers the real nav at its height on desktop and mobile; a saved-filter spin on a real filter (tags, gender) picks only matching performers; O on the real scene page ends it within ~3 s; Stash's own hotkeys that navigate (g s etc.) bounce back. |
@@ -1621,6 +1683,15 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (night): Insights 1.0.0 (new plugin)
+
+User asked for a stats plugin to replace O Stats and Stats Enhancer, after
+learning their features. Both were read from the user's Stash and
+inventoried by a subagent; design signed off in two mockups plus "in-depth
+performer analysis, colours, good UX". Built in parts (calculations, data and
+tracker, UI, tabs), tested with 57 unit checks and a harness with a seeded
+library whose built-in biases (blonde, POV) the analysis found. See §4.14.
 
 ### 2026-10-10 (evening): QuickTools 1.10.0, wheel seek from VideoScrollWheel
 

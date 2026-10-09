@@ -92,6 +92,13 @@ else
   note "  FAIL"; grep -v '^  ok' /tmp/test_ld.out; fail=1
 fi
 
+note "== Insights tests =="
+if node scripts/test_insights.js >/tmp/test_ins.out 2>&1; then
+  note "  ok   $(grep -c '^  ok' /tmp/test_ins.out) checks passed"
+else
+  note "  FAIL"; grep -v '^  ok' /tmp/test_ins.out; fail=1
+fi
+
 note "== IntifaceSync test suite =="
 if timeout 300 python3 plugins/IntifaceSync/test_vibe.py >/tmp/test_vibe.out 2>&1; then
   note "  ok   $(grep -c 'OK$' /tmp/test_vibe.out) checks passed"
