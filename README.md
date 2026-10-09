@@ -21,7 +21,7 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 | **Collections** | top-bar tab | Gives a studio (Cock Hero by default) its own tab sorted by O count, keeps it out of the main Scenes list, and scores Cock Hero rounds: how far you got before pressing O, as Hardcore and Easy records. |
 | **ScriptBadges** | none | A badge on every scene card saying whether the scene has a funscript, so you can see what still needs one. |
-| **Lockdown** | top-bar button | Locks Stash to one performer (spun from your favourites or a saved filter, or picked) until an O on one of their scenes. Optional scene roulette; hold Give up to quit early. This browser only. |
+| **Lockdown** | top-bar button | Locks Stash to one performer (searched for, or spun from your favourites or a saved filter) until an O on one of their scenes. Optional scene roulette; hold Give up to quit early. This browser only. |
 | **Todo** | top-bar button | A simple task list, saved in Stash so it is the same on every device. Tasks can link to the scene, performer or other page they are about. |
 
 Each folder under `plugins/` has its own README with the details.

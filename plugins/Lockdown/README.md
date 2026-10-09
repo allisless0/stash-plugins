@@ -4,12 +4,16 @@ Lock Stash to one performer until an O on one of their scenes.
 
 ## Starting
 
-Click **Lockdown** in the top bar and pick how the performer is chosen:
+Click **Lockdown** in the top bar. The first time, a short guide explains the
+rules; **How it works** brings it back later.
 
-- **Spin your favourites:** a spin over your favourite performers who have scenes
-- **Spin a saved filter:** a spin over the performers one of your saved
-  performer filters matches
-- **Lock this performer:** on a performer's page, lock them directly
+- **Pick a performer:** type a name and press Enter (or click). Only
+  performers with scenes are listed. Opened from a performer's page, that
+  performer is offered first.
+- **Or let a spin decide:** **Favourites** spins over your favourite
+  performers who have scenes; **Saved filter** lists your saved performer
+  filters with how many performers each matches, and spins over the one you
+  pick. A filter Lockdown cannot read says "can't use".
 
 Tick **Scene roulette** for random scenes only: their scene list is off limits,
 **Random scene** in the bar picks one, and when a scene ends the next is random
@@ -36,10 +40,19 @@ filter on their own tabs is undone.
   page or anywhere else. It is noticed within a few seconds.
 - **Give up:** hold the button for 5 seconds. It is recorded as given up.
 
-The start dialog shows your history: lockdowns done (a drop) and given up
-(an X), your fastest and with whom, your best and current streak, total time
-locked, a strip of your last 30, and the recent ones with when and how long.
-The totals are lifetime numbers; the list keeps the latest 200.
+## History
+
+The dialog shows your totals (done, given up, the performer you have been
+locked to most, best and current streak), a strip of drops and X's for your
+last 30, and the latest five. **See all history** opens everything, grouped by
+month, with filters for done or given up and a search by performer.
+
+- **Remove one:** hover a row and click the bin, then **Remove?** to confirm.
+  The totals are updated.
+- **Clear history:** click it, then again to confirm. Everything starts over,
+  totals included.
+
+The totals count every lockdown ever; the list keeps the latest 200.
 
 ## Good to know
 
@@ -49,3 +62,5 @@ The totals are lifetime numbers; the list keeps the latest 200.
   filters performers by their scenes) says so instead of spinning on part of
   it.
 - History is saved in Stash, so it is the same everywhere.
+- The first lock shows a tip under the bar, and a page that will not open
+  says why.

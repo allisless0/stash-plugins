@@ -196,31 +196,117 @@
   // Lifetime totals, kept apart from the history list and updated with each
   // lockdown. The list is capped (HISTORY_MAX) to keep the config small;
   // totals counted from it would quietly shrink once it filled (1.0 did
-  // that). Keys this version does not know ride through.
-  const EMPTY_STATS = { v: 1, done: 0, gaveUp: 0, totalMs: 0, fastestMs: null, fastestName: null,
-                        streak: 0, bestStreak: 0 };
+  // that). `perf` counts lockdowns per performer for "most locked"; it grows
+  // with the number of different performers, not of lockdowns. Keys this
+  // version does not know (1.2's fastestMs, later ones) ride through.
+  const EMPTY_STATS = { v: 2, done: 0, gaveUp: 0, totalMs: 0, streak: 0, bestStreak: 0, perf: {} };
 
   const isEntry = (e) => !!e && (e.result === "done" || e.result === "gaveup") && typeof e.ms === "number";
+  const perfKey = (e) => (e.pid ? String(e.pid) : `name:${e.name || "?"}`);
+
+  // Which entry a row is: its id from 1.3 on, a fingerprint before that.
+  function entryKey(e) {
+    return e && e.id ? String(e.id) : `${e && e.pid}|${e && e.at}|${e && e.ms}|${e && e.result}`;
+  }
 
   function addToStats(stats, e) {
     const st = { ...EMPTY_STATS, ...(stats || {}) };
+    st.perf = { ...(st.perf || {}) };
     if (!isEntry(e)) return st;
     st.totalMs += e.ms;
     if (e.result === "done") {
       st.done += 1;
       st.streak += 1;
       st.bestStreak = Math.max(st.bestStreak, st.streak);
-      if (st.fastestMs === null || e.ms < st.fastestMs) { st.fastestMs = e.ms; st.fastestName = e.name || null; }
     } else {
       st.gaveUp += 1;
       st.streak = 0;
     }
+    const k = perfKey(e);
+    st.perf[k] = { name: e.name || (st.perf[k] && st.perf[k].name) || "?", n: ((st.perf[k] && st.perf[k].n) || 0) + 1 };
     return st;
   }
 
-  // For a history from before totals were kept: count what the list has.
+  // For a history from before totals (or per-performer counts) were kept:
+  // count what the list has.
   function statsFromHistory(list) {
-    return (list || []).reduce(addToStats, { ...EMPTY_STATS });
+    return (list || []).reduce(addToStats, { ...EMPTY_STATS, perf: {} });
+  }
+
+  function perfFromList(list) {
+    return statsFromHistory(list).perf;
+  }
+
+  // Current and best run of completions, from a list in time order.
+  function streaksOf(list) {
+    let run = 0, best = 0;
+    for (const e of list || []) {
+      if (!isEntry(e)) continue;
+      if (e.result === "done") { run += 1; best = Math.max(best, run); } else run = 0;
+    }
+    return { streak: run, best };
+  }
+
+  // Totals after removing one entry. `rest` is the list without it. When the
+  // list still holds every lockdown counted, streaks are recounted exactly;
+  // past the 200-entry cap the oldest are gone, so the best streak can only
+  // be kept or raised, never recounted (documented limit).
+  function removeFromStats(stats, e, rest) {
+    const st = { ...EMPTY_STATS, ...(stats || {}) };
+    st.perf = { ...(st.perf || {}) };
+    if (!isEntry(e)) return st;
+    const complete = st.done + st.gaveUp === (rest || []).filter(isEntry).length + 1;
+    st.totalMs = Math.max(0, st.totalMs - e.ms);
+    if (e.result === "done") st.done = Math.max(0, st.done - 1);
+    else st.gaveUp = Math.max(0, st.gaveUp - 1);
+    const k = perfKey(e);
+    if (st.perf[k]) {
+      const n = (st.perf[k].n || 0) - 1;
+      if (n > 0) st.perf[k] = { ...st.perf[k], n }; else delete st.perf[k];
+    }
+    const s = streaksOf(rest);
+    st.streak = s.streak;
+    st.bestStreak = complete ? s.best : Math.max(s.best, st.bestStreak);
+    return st;
+  }
+
+  // The performer locked most often, or null. Ties go to the name first in
+  // the alphabet so the tile does not flicker between equals.
+  function mostLocked(stats) {
+    let best = null;
+    for (const v of Object.values((stats && stats.perf) || {})) {
+      if (!v || !v.n) continue;
+      if (!best || v.n > best.n || (v.n === best.n && String(v.name) < String(best.name))) best = v;
+    }
+    return best;
+  }
+
+  // Newest first, by calendar month: [{ key, label, done, gaveUp, items }].
+  function groupByMonth(entries) {
+    const groups = [];
+    const byKey = new Map();
+    const sorted = (entries || []).filter(isEntry).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const e of sorted) {
+      const d = new Date(typeof e.at === "number" ? e.at : 0);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, label: d.toLocaleDateString(undefined, { month: "long", year: "numeric" }), done: 0, gaveUp: 0, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(e);
+      if (e.result === "done") g.done += 1; else g.gaveUp += 1;
+    }
+    return groups;
+  }
+
+  // The full view's filters: result ("all" | "done" | "gaveup") and a name.
+  function filterEntries(entries, result, q) {
+    const term = String(q || "").trim().toLowerCase();
+    return (entries || []).filter((e) => isEntry(e) &&
+      (result === "all" || !result || e.result === result) &&
+      (!term || String(e.name || "").toLowerCase().includes(term)));
   }
 
   // undefined: none stored yet (build from history); null: stored but
@@ -252,7 +338,8 @@
 
   if (window.__LOCKDOWN_TEST__) {
     window.__LockdownTest = { routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration,
-                              addToStats, statsFromHistory, parseStats, fmtWhen,
+                              addToStats, statsFromHistory, parseStats, fmtWhen, entryKey,
+                              removeFromStats, mostLocked, groupByMonth, filterEntries, streaksOf,
                               parseHistory, cardItem, stripPerformerRules };
     return;
   }
@@ -310,6 +397,26 @@
     return (d?.findPerformers?.performers ?? []).filter((p) => p.scene_count > 0);
   }
 
+  // Search box: performers with at least one scene, by name.
+  async function searchPerformers(term) {
+    const d = await gql(`query ($f: FindFilterType, $pf: PerformerFilterType) {
+                           findPerformers(filter: $f, performer_filter: $pf) { performers { ${PERF_FIELDS} } } }`,
+                        { f: { q: term, per_page: 8, sort: "name", direction: "ASC" },
+                          pf: { scene_count: { modifier: "GREATER_THAN", value: 0 } } });
+    return d?.findPerformers?.performers ?? [];
+  }
+
+  // How many performers with scenes a saved filter matches, for its menu
+  // item. Throws like performersFor when the filter cannot be translated.
+  async function countFor(saved) {
+    const filter = toGraphQLFilter(saved.object_filter, await performerFieldTypes());
+    if (!filter.scene_count) filter.scene_count = { modifier: "GREATER_THAN", value: 0 };
+    const d = await gql(`query ($pf: PerformerFilterType, $f: FindFilterType) {
+                           findPerformers(performer_filter: $pf, filter: $f) { count } }`,
+                        { pf: filter, f: { per_page: 1, q: saved.find_filter?.q || undefined } });
+    return d?.findPerformers?.count ?? 0;
+  }
+
   async function performer(id) {
     const d = await gql(`query ($id: ID!) { findPerformer(id: $id) { ${PERF_FIELDS} } }`, { id });
     return d?.findPerformer ?? null;
@@ -358,9 +465,11 @@
   }
 
   // History: read-merge-write of this plugin's config map; every other key
-  // rides through, and a history that does not parse is left alone.
+  // rides through, and a history or totals that do not parse are left alone.
+  // `fn(list, stats)` returns the new { list, stats }. Writes run one at a
+  // time.
   let writeChain = Promise.resolve();
-  function recordHistory(entry) {
+  function updateHistory(fn) {
     const run = writeChain.then(async () => {
       const d = await gql(`query { configuration { plugins } }`);
       const plugins = d?.configuration?.plugins;
@@ -371,14 +480,33 @@
       let stats = parseStats(mine.stats);
       if (stats === null) throw new Error("saved totals could not be read; left as they were");
       if (stats === undefined) stats = statsFromHistory(list);      // first time: from the list
-      list.push(entry);
-      stats = addToStats(stats, entry);
+      if (!stats.perf) stats = { ...stats, perf: perfFromList(list) }; // from 1.2: counts start here
+      const next = fn(list, stats);
       await gql(`mutation ($id: ID!, $input: Map!) { configurePlugin(plugin_id: $id, input: $input) }`,
-                { id: PLUGIN_ID, input: { ...mine, history: JSON.stringify(list.slice(-HISTORY_MAX)),
-                                          stats: JSON.stringify(stats) } });
+                { id: PLUGIN_ID, input: { ...mine, history: JSON.stringify(next.list.slice(-HISTORY_MAX)),
+                                          stats: JSON.stringify(next.stats) } });
+      return { list: next.list.slice(-HISTORY_MAX), stats: next.stats };
     });
     writeChain = run.catch((e) => log(`History not saved: ${e.message}`, "error"));
     return run;
+  }
+
+  function recordHistory(entry) {
+    return updateHistory((list, stats) => ({ list: list.concat(entry), stats: addToStats(stats, entry) }));
+  }
+
+  function removeEntry(key) {
+    return updateHistory((list, stats) => {
+      const i = list.findIndex((e) => isEntry(e) && entryKey(e) === key);
+      if (i < 0) return { list, stats };
+      const rest = list.slice(0, i).concat(list.slice(i + 1));
+      return { list: rest, stats: removeFromStats(stats, list[i], rest) };
+    });
+  }
+
+  // A fresh start: the list and the totals. Other keys are kept.
+  function clearHistory() {
+    return updateHistory(() => ({ list: [], stats: { ...EMPTY_STATS, perf: {} } }));
   }
 
   async function readHistory() {
@@ -386,9 +514,10 @@
       const d = await gql(`query { configuration { plugins } }`);
       const mine = d?.configuration?.plugins?.[PLUGIN_ID] || {};
       const list = parseHistory(mine.history) || [];
-      const stats = parseStats(mine.stats) || statsFromHistory(list);
+      let stats = parseStats(mine.stats) || statsFromHistory(list);
+      if (!stats.perf) stats = { ...stats, perf: perfFromList(list) };
       return { list, stats };
-    } catch (_) { return { list: [], stats: { ...EMPTY_STATS } }; }
+    } catch (_) { return { list: [], stats: { ...EMPTY_STATS, perf: {} } }; }
   }
 
   // ═══ State ═════════════════════════════════════════════════════════════════
@@ -500,6 +629,88 @@ body.ld-checking #ld-veil { display: block; }
 .ld-spin .ld-name { font-size: 22px; font-weight: 700; margin-top: 12px; min-height: 1.3em; }
 .ld-spin.ld-landed img { border-color: #e2574c; box-shadow: 0 0 24px rgba(226,87,76,.6); }
 .ld-spin .ld-msg { color: #8b97a3; font-size: 13px; margin-top: 6px; min-height: 1.2em; }
+
+.ld-modal.ld-tall { max-height: calc(100vh - 40px); }
+.ld-modal .ld-head { display: flex; align-items: center; gap: 8px; }
+.ld-modal .ld-head h3 { display: flex; align-items: center; gap: 7px; }
+.ld-lock { width: 19px; height: 19px; }
+.ld-lock rect { fill: #e2574c; }
+.ld-lock path { stroke: #e2574c; stroke-width: 1.6; }
+.ld-modal .ld-link { background: none; border: 0; padding: 0; color: #7fb2e5; font: inherit; font-size: 13px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.ld-modal .ld-head .ld-link { margin-left: auto; }
+.ld-modal .ld-link:hover { text-decoration: underline; }
+.ld-modal .ld-danger { color: #e2847c; }
+.ld-modal .ld-danger.ld-armed { color: #fff; background: #a3403a; border-radius: 4px; padding: 2px 8px; text-decoration: none; }
+.ld-guide { background: rgba(79,163,255,.1); border: 1px solid rgba(79,163,255,.35); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 14px; font-size: 13px; color: #cfe3f7; }
+.ld-guide ol { margin: 6px 0 4px; padding-left: 20px; line-height: 1.6; }
+.ld-guide .ld-link { display: block; margin-left: auto; }
+.ld-modal .ld-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #7f8b97; margin-bottom: 6px; }
+.ld-search { position: relative; }
+.ld-search .ld-ico { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #7f8b97; }
+.ld-search input { width: 100%; box-sizing: border-box; background: #1b2229; color: #e6e9ec; border: 1px solid #44525f;
+  border-radius: 6px; padding: 9px 10px 9px 32px; font: inherit; font-size: 14px; outline: none; }
+.ld-search input:focus { border-color: #e2574c; }
+.ld-search.ld-small { flex: 0 1 150px; margin-left: auto; }
+.ld-search.ld-small input { padding: 5px 8px 5px 28px; font-size: 12px; }
+.ld-results { margin-top: 4px; }
+.ld-res { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.ld-res.ld-hi { background: #33404d; }
+.ld-res .ld-rmeta { color: #8b97a3; font-size: 12px; }
+.ld-res .ld-arrow { color: #8b97a3; visibility: hidden; }
+.ld-res.ld-hi .ld-arrow { visibility: visible; }
+.ld-hint { color: #8b97a3; font-size: 12px; padding: 6px 2px; }
+.ld-or { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; color: #7f8b97; font-size: 12px; }
+.ld-or::before, .ld-or::after { content: ""; flex: 1; height: 1px; background: #3c4a57; }
+.ld-spins { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.ld-spins .ld-go { width: 100%; }
+.ld-menuwrap { position: relative; }
+.ld-menu { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 2; background: #1b2229;
+  border: 1px solid #44525f; border-radius: 6px; padding: 4px; max-height: 240px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.ld-mi { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; color: #e6e9ec;
+  font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 4px; cursor: pointer; text-align: left; }
+.ld-mi:hover { background: #2e3944; }
+.ld-mi span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-mi small { color: #8b97a3; font-size: 11px; }
+.ld-mi.ld-cant { opacity: .55; }
+.ld-modal .ld-roul { align-items: flex-start; margin-top: 14px; }
+.ld-modal .ld-roul input { margin-top: 3px; accent-color: #e2574c; }
+.ld-modal .ld-roul small { display: block; color: #8b97a3; font-size: 12px; }
+.ld-hhead { display: flex; align-items: center; margin-bottom: 8px; }
+.ld-hhead b { font-size: 14px; color: #e6e9ec; }
+.ld-hhead .ld-link { margin-left: auto; }
+.ld-crown path { fill: #f5a623; }
+.ld-flame path { fill: #e2774c; }
+.ld-tile.ld-tname b { font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-del { background: none; border: 0; color: #8b97a3; cursor: pointer; padding: 0 2px; font: inherit; font-size: 12px;
+  visibility: hidden; min-width: 18px; }
+.ld-row:hover .ld-del, .ld-row.ld-confirm .ld-del { visibility: visible; }
+.ld-del:hover { color: #e2574c; }
+.ld-row.ld-confirm { background: rgba(226,87,76,.18); }
+.ld-row.ld-confirm .ld-del { color: #ffd2cc; font-weight: 600; }
+.ld-all { margin-top: 8px; }
+.ld-filters { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; flex-wrap: wrap; }
+.ld-chip { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid #44525f; color: #c6ced6;
+  border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.ld-chip .ld-ico { width: 12px; height: 12px; }
+.ld-chip.ld-on { background: rgba(79,163,255,.18); border-color: rgba(79,163,255,.55); color: #fff; }
+.ld-month { display: flex; align-items: center; font-size: 11px; color: #8b97a3; padding: 12px 6px 4px;
+  border-bottom: 1px solid #33404d; margin-bottom: 2px; }
+.ld-month .ld-mcount { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; }
+.ld-month .ld-ico { width: 11px; height: 11px; }
+.ld-foot { font-size: 11px; color: #6e7b88; text-align: center; margin-top: 10px; }
+.ld-back { background: none; border: 0; color: #c6ced6; font: inherit; font-size: 18px; cursor: pointer; padding: 0 4px 0 0; }
+#ld-tip { position: fixed; left: 50%; transform: translateX(-50%); z-index: 1066; max-width: min(560px, calc(100vw - 32px));
+  background: #232b33; border: 1px solid #e2574c; border-radius: 8px; padding: 9px 12px; color: #e6e9ec; font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#ld-tip button { margin-left: 8px; background: #e2574c; border: 0; color: #fff; border-radius: 4px; padding: 3px 10px;
+  font: inherit; font-size: 12px; cursor: pointer; }
+#ld-toast { position: fixed; left: 50%; transform: translateX(-50%); z-index: 1067; background: rgba(20,24,28,.95);
+  border: 1px solid #a3403a; color: #f0d3d0; border-radius: 6px; padding: 7px 14px; font-size: 13px;
+  opacity: 0; pointer-events: none; transition: opacity .2s; }
+#ld-toast.ld-show { opacity: 1; }
 `;
     document.head.appendChild(s);
   }
@@ -523,12 +734,14 @@ body.ld-checking #ld-veil { display: block; }
     document.querySelector(".ld-modal-back")?.remove();
   }
 
-  function modal(html) {
+  // sticky: no closing by clicking outside (the spin must play out).
+  function modal(html, sticky) {
     closeModal();
     injectStyles();
     const back = document.createElement("div");
     back.className = "ld-modal-back";
     back.innerHTML = `<div class="ld-modal">${html}</div>`;
+    if (!sticky) back.addEventListener("pointerdown", (ev) => { if (ev.target === back) closeModal(); });
     document.body.appendChild(back);
     return back.querySelector(".ld-modal");
   }
@@ -537,116 +750,312 @@ body.ld-checking #ld-veil { display: block; }
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  async function openStart() {
-    const here = performerOnPage();
-    const box = modal(`
-      <h3>Lockdown</h3>
-      <div class="ld-sub">One performer, nothing else, until an O on one of their scenes.</div>
-      <div class="ld-opt"><button class="ld-go" data-a="fav">Spin your favourites<small>loading...</small></button></div>
-      <div class="ld-opt"><select data-a="filter"><option value="">Saved performer filter...</option></select>
-        <button class="ld-go" data-a="spinfilter" style="flex:0 0 auto">Spin</button></div>
-      <div class="ld-opt" data-a="hererow" style="display:none"><button class="ld-go" data-a="here">Lock this performer<small></small></button></div>
-      <label><input type="checkbox" data-a="roulette"> Scene roulette: random scenes only, no picking</label>
-      <div class="ld-err" data-a="err"></div>
-      <div class="ld-hist" data-a="hist">History loading...</div>
-      <button class="ld-close" data-a="close">Not now</button>`);
-    const $ = (a) => box.querySelector(`[data-a="${a}"]`);
-    const err = (t) => { $("err").textContent = t || ""; };
-    $("close").addEventListener("click", closeModal);
-    box.parentElement.addEventListener("pointerdown", (ev) => { if (ev.target === box.parentElement) closeModal(); });
-    $("roulette").checked = prefs().roulette;
-    $("roulette").addEventListener("change", () => setPref("roulette", $("roulette").checked));
-    const how = () => ({ roulette: $("roulette").checked });
-
-    let favs = null;
-    favourites().then((list) => {
-      favs = list;
-      $("fav").querySelector("small").textContent = list.length
-        ? `${list.length} favourite performer${list.length === 1 ? "" : "s"} with scenes`
-        : "No favourite performers with scenes yet";
-      $("fav").disabled = !list.length;
-    }).catch((e) => { $("fav").querySelector("small").textContent = `Could not load: ${e.message}`; });
-    $("fav").addEventListener("click", () => { if (favs && favs.length) spin(favs, "favourites", how().roulette); });
-
-    let saved = [];
-    savedPerformerFilters().then((list) => {
-      saved = list;
-      for (const f of list) {
-        const o = document.createElement("option");
-        o.value = f.id; o.textContent = f.name;
-        $("filter").appendChild(o);
-      }
-      if (!list.length) $("filter").firstChild.textContent = "No saved performer filters";
-    }).catch(() => {});
-    $("spinfilter").addEventListener("click", async () => {
-      const f = saved.find((x) => x.id === $("filter").value);
-      if (!f) { err("Pick a saved filter first."); return; }
-      err("");
-      try {
-        const list = await performersFor(f);
-        if (!list.length) { err(`"${f.name}" has no performers with scenes.`); return; }
-        spin(list, `filter: ${f.name}`, how().roulette);
-      } catch (e) {
-        err(`Can't use "${f.name}" for a spin: ${e.message}.`);
-      }
-    });
-
-    if (here) {
-      performer(here).then((p) => {
-        if (!p) return;
-        $("hererow").style.display = "";
-        $("here").querySelector("small").textContent = p.scene_count
-          ? `${p.name}, ${p.scene_count} scene${p.scene_count === 1 ? "" : "s"}` : `${p.name} has no scenes`;
-        $("here").disabled = !p.scene_count;
-        $("here").addEventListener("click", () => begin(p, "chosen", how().roulette));
-      }).catch(() => {});
-    }
-
-    readHistory().then(({ list, stats }) => renderHistory($("hist"), list, stats));
-  }
+  // ── Shared pieces ─────────────────────────────────────────────────────────
 
   // A drop for a lockdown that ended in an O, an X for one given up.
   const DROP = `<svg class="ld-ico ld-drop" viewBox="0 0 16 16" aria-label="done"><path d="M8 1.2C8 1.2 3.2 6.6 3.2 10.1a4.8 4.8 0 0 0 9.6 0C12.8 6.6 8 1.2 8 1.2z"/><path class="ld-shine" d="M5.9 10.4a2.2 2.2 0 0 0 1.6 2.1" fill="none"/></svg>`;
   const CROSS = `<svg class="ld-ico ld-x" viewBox="0 0 16 16" aria-label="given up"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>`;
+  const CROWN = `<svg class="ld-ico ld-crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5l3 3L8 4l2.5 4.5 3-3-1.3 7H3.8z"/></svg>`;
+  const FLAME = `<svg class="ld-ico ld-flame" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5c.5 2.5 3.8 4 3.8 7.6A3.8 3.8 0 0 1 4.2 9.1c0-1.8 1-2.8 1.8-3.6.1 1.3.7 2.1 1.4 2.4C7.2 5.6 7.6 3.5 8 1.5z"/></svg>`;
+  const TRASH = `<svg class="ld-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const SEARCH = `<svg class="ld-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+  const LOCK_SVG = `<svg class="ld-ico ld-lock" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" fill="none"/></svg>`;
   const icon = (e) => (e.result === "done" ? DROP : CROSS);
 
-  function renderHistory(box, list, st) {
+  function avatarHtml(name, image) {
+    return image ? `<img src="${escapeHtml(image)}" alt="">`
+                 : `<i>${escapeHtml(String(name || "?").trim().charAt(0).toUpperCase())}</i>`;
+  }
+
+  function tilesHtml(st) {
+    const top = mostLocked(st);
+    const tile = (ico, big, label, cls = "") => `<div class="ld-tile ${cls}">${ico}<b>${big}</b><span>${label}</span></div>`;
+    return `<div class="ld-tiles">` +
+      tile(DROP, st.done, "done") +
+      tile(CROSS, st.gaveUp, "given up") +
+      tile(CROWN, top ? escapeHtml(top.name) : "–", top ? `most locked · ${top.n}×` : "most locked", "ld-tname") +
+      tile(FLAME, st.bestStreak, `best streak${st.streak ? ` · now ${st.streak}` : ""}`) +
+      `</div>`;
+  }
+
+  function rowHtml(e, now) {
+    return `<div class="ld-row ${e.result}" data-key="${escapeHtml(entryKey(e))}">${icon(e)}` +
+      `<span class="ld-av">${avatarHtml(e.name, e.image)}</span>` +
+      `<span class="ld-rname">${escapeHtml(e.name || "?")}</span>` +
+      `<span class="ld-rtime">${e.result === "done" ? "" : "gave up "}${escapeHtml(fmtDuration(e.ms))}</span>` +
+      `<span class="ld-rwhen">${escapeHtml(typeof e.at === "number" ? fmtWhen(e.at, now) : "")}</span>` +
+      `<button class="ld-del" title="Remove from history" aria-label="Remove">${TRASH}</button></div>`;
+  }
+
+  // Remove one entry: the first click asks, a second within 4 s removes.
+  // No dialogs. `after(data)` re-renders with what Stash now holds.
+  function wireRowDeletes(box, after) {
+    box.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest && ev.target.closest(".ld-del");
+      if (!btn) return;
+      const row = btn.closest(".ld-row");
+      if (!row.classList.contains("ld-confirm")) {
+        box.querySelectorAll(".ld-row.ld-confirm").forEach((r) => r.classList.remove("ld-confirm"));
+        row.classList.add("ld-confirm");
+        btn.innerHTML = "Remove?";
+        setTimeout(() => { if (row.isConnected && row.classList.contains("ld-confirm")) {
+          row.classList.remove("ld-confirm"); btn.innerHTML = TRASH; } }, 4000);
+        return;
+      }
+      btn.innerHTML = "…";
+      try { after(await removeEntry(row.dataset.key)); }
+      catch (e) { btn.innerHTML = "Failed"; log(`Remove failed: ${e.message}`, "error"); }
+    });
+  }
+
+  // Clear everything: the first click names the count, a second clears.
+  function wireClear(btn, count, after) {
+    let armed = false, t = null;
+    btn.addEventListener("click", async () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = `Clear all ${typeof count === "function" ? count() : count}? Click again`;
+        btn.classList.add("ld-armed");
+        t = setTimeout(() => { armed = false; btn.innerHTML = `${TRASH} Clear history`; btn.classList.remove("ld-armed"); }, 4000);
+        return;
+      }
+      clearTimeout(t);
+      btn.textContent = "Clearing…";
+      try { after(await clearHistory()); }
+      catch (e) { btn.textContent = "Failed"; log(`Clear failed: ${e.message}`, "error"); }
+    });
+  }
+
+  // ── Start dialog ──────────────────────────────────────────────────────────
+
+  const GUIDE = `<div class="ld-guide" data-a="guide">
+      <b>First time? Here's the deal</b>
+      <ol><li>Pick a performer, or let a spin choose</li>
+        <li>Stash only shows them: their scenes, images and galleries</li>
+        <li>An O on any of their scenes ends it</li>
+        <li>Stuck? Hold <i>Give up</i> for 5 seconds. It counts as an X</li></ol>
+      <button class="ld-link" data-a="gotit">Got it</button></div>`;
+
+  async function openStart() {
+    const here = performerOnPage();
+    const box = modal(`
+      <div class="ld-head"><h3>${LOCK_SVG} Lockdown</h3>
+        <button class="ld-link" data-a="help">How it works</button></div>
+      <div class="ld-sub">One performer, nothing else, until an O on one of their scenes.</div>
+      <div data-a="guidebox">${prefs().guideSeen ? "" : GUIDE}</div>
+      <div class="ld-label">Pick a performer</div>
+      <div class="ld-search">${SEARCH}<input data-a="q" placeholder="Search performers" autocomplete="off" spellcheck="false"></div>
+      <div class="ld-results" data-a="results"></div>
+      <div class="ld-or"><span>or let a spin decide</span></div>
+      <div class="ld-spins">
+        <button class="ld-go" data-a="fav">Favourites<small>…</small></button>
+        <div class="ld-menuwrap"><button class="ld-go" data-a="filters">Saved filter ▾<small>…</small></button>
+          <div class="ld-menu" data-a="menu" hidden></div></div>
+      </div>
+      <label class="ld-roul"><input type="checkbox" data-a="roulette">
+        <span>Scene roulette<small>You can't choose scenes. Each one is random, and so is the next.</small></span></label>
+      <div class="ld-err" data-a="err"></div>
+      <div class="ld-hist" data-a="hist"><div class="ld-empty">Loading history…</div></div>
+      <button class="ld-close" data-a="close">Not now</button>`);
+    const $ = (a) => box.querySelector(`[data-a="${a}"]`);
+    const err = (t) => { $("err").textContent = t || ""; };
+    $("close").addEventListener("click", closeModal);
+    $("roulette").checked = !!prefs().roulette;
+    $("roulette").addEventListener("change", () => setPref("roulette", $("roulette").checked));
+    const roulette = () => $("roulette").checked;
+
+    // the guide: shown until "Got it", back with "How it works"
+    const wireGuide = () => $("gotit")?.addEventListener("click", () => { setPref("guideSeen", true); $("guidebox").innerHTML = ""; });
+    wireGuide();
+    $("help").addEventListener("click", () => {
+      $("guidebox").innerHTML = $("guidebox").innerHTML ? "" : GUIDE;
+      wireGuide();
+    });
+
+    // search first; on a performer page, that performer is offered first
+    let results = [], hi = 0, seq = 0, timer = null, herePerf = null;
+    const renderResults = () => {
+      const typed = $("q").value.trim();
+      const list = typed ? results : (herePerf ? [herePerf] : []);
+      if (!list.length) {
+        $("results").innerHTML = typed ? `<div class="ld-hint">No performer with scenes matches “${escapeHtml(typed)}”.</div>` : "";
+        return;
+      }
+      hi = Math.min(hi, list.length - 1);
+      $("results").innerHTML = list.map((p, i) =>
+        `<div class="ld-res${i === hi ? " ld-hi" : ""}" data-i="${i}"><span class="ld-av">${avatarHtml(p.name, p.image_path)}</span>` +
+        `<span class="ld-rname">${!typed ? "Lock " : ""}${escapeHtml(p.name)}</span>` +
+        `<span class="ld-rmeta">${p.scene_count} scene${p.scene_count === 1 ? "" : "s"}</span><span class="ld-arrow">→</span></div>`).join("");
+      $("results").querySelectorAll(".ld-res").forEach((el) => {
+        el.addEventListener("click", () => begin(list[+el.dataset.i], "chosen", roulette()));
+        el.addEventListener("mouseenter", () => { hi = +el.dataset.i;
+          $("results").querySelectorAll(".ld-res").forEach((r, j) => r.classList.toggle("ld-hi", j === hi)); });
+      });
+    };
+    $("q").addEventListener("input", () => {
+      clearTimeout(timer);
+      hi = 0;
+      const term = $("q").value.trim();
+      if (!term) { results = []; renderResults(); return; }
+      timer = setTimeout(async () => {
+        const mine = ++seq;
+        try { const r = await searchPerformers(term); if (mine === seq) { results = r; renderResults(); } }
+        catch (e) { err(`Search failed: ${e.message}`); }
+      }, 180);
+    });
+    $("q").addEventListener("keydown", (ev) => {
+      ev.stopPropagation();                 // keep Stash and QuickTools keys out of the box
+      const list = $("q").value.trim() ? results : (herePerf ? [herePerf] : []);
+      if (ev.key === "ArrowDown") { ev.preventDefault(); hi = Math.min(list.length - 1, hi + 1); renderResults(); }
+      else if (ev.key === "ArrowUp") { ev.preventDefault(); hi = Math.max(0, hi - 1); renderResults(); }
+      else if (ev.key === "Enter" && list[hi]) { ev.preventDefault(); begin(list[hi], "chosen", roulette()); }
+      else if (ev.key === "Escape") closeModal();
+    });
+    if (here) {
+      performer(here).then((p) => { if (p && p.scene_count) { herePerf = p; if (!$("q").value.trim()) renderResults(); } }).catch(() => {});
+    }
+    setTimeout(() => $("q").focus(), 0);
+
+    // spins
+    let favs = null;
+    favourites().then((list) => {
+      favs = list;
+      $("fav").querySelector("small").textContent = list.length
+        ? `${list.length} performer${list.length === 1 ? "" : "s"}` : "No favourites with scenes";
+    }).catch(() => { $("fav").querySelector("small").textContent = "Could not load"; });
+    $("fav").addEventListener("click", () => {
+      if (favs && favs.length) spin(favs, "favourites", roulette());
+      else err("Favourite some performers who have scenes first, or search above.");
+    });
+
+    let saved = [];
+    savedPerformerFilters().then((list) => {
+      saved = list;
+      $("filters").querySelector("small").textContent = list.length
+        ? `${list.length} saved filter${list.length === 1 ? "" : "s"}` : "No saved performer filters";
+    }).catch(() => { $("filters").querySelector("small").textContent = "Could not load"; });
+    $("filters").addEventListener("click", () => {
+      const menu = $("menu");
+      if (!menu.hidden) { menu.hidden = true; return; }
+      if (!saved.length) { err("Save a filter on the Performers page first, then it shows up here."); return; }
+      menu.innerHTML = saved.map((f, i) =>
+        `<button class="ld-mi" data-i="${i}"><span>${escapeHtml(f.name)}</span><small data-c="${i}">…</small></button>`).join("");
+      menu.hidden = false;
+      saved.forEach((f, i) => {
+        countFor(f).then((n) => {
+          const el = menu.querySelector(`[data-c="${i}"]`);
+          if (el) el.textContent = `${n} performer${n === 1 ? "" : "s"}`;
+        }).catch((e) => {
+          const el = menu.querySelector(`[data-c="${i}"]`);
+          if (el) { el.textContent = "can't use"; el.title = e.message; el.closest(".ld-mi").classList.add("ld-cant"); }
+        });
+      });
+      menu.querySelectorAll(".ld-mi").forEach((b) => b.addEventListener("click", async () => {
+        const f = saved[+b.dataset.i];
+        menu.hidden = true;
+        err("");
+        try {
+          const list = await performersFor(f);
+          if (!list.length) { err(`“${f.name}” matches no performers with scenes.`); return; }
+          spin(list, `filter: ${f.name}`, roulette());
+        } catch (e) {
+          err(`Can't spin “${f.name}”: ${e.message}.`);
+        }
+      }));
+    });
+
+    const show = (data) => renderPreview($("hist"), data);
+    readHistory().then(show);
+  }
+
+  // The dialog's history: tiles, the last 30 as a strip, the latest 5, and
+  // the way into the full view.
+  function renderPreview(box, data) {
+    const { list, stats } = data;
     const entries = list.filter(isEntry);
-    if (!st.done && !st.gaveUp) { box.innerHTML = `<div class="ld-empty">No lockdowns yet.</div>`; return; }
-    const tile = (big, label, ico = "") => `<div class="ld-tile">${ico}<b>${big}</b><span>${label}</span></div>`;
-    const strip = entries.slice(-30).map((e) =>
-      `<span title="${escapeHtml(e.name || "")} \u00b7 ${escapeHtml(fmtDuration(e.ms))}">${icon(e)}</span>`).join("");
+    if (!stats.done && !stats.gaveUp) {
+      box.innerHTML = `<div class="ld-empty">No lockdowns yet. Your drops and X's will show up here.</div>`;
+      return;
+    }
     const now = Date.now();
-    const rows = entries.slice().reverse().map((e) => {
-      const av = e.image ? `<img src="${escapeHtml(e.image)}" alt="">`
-                         : `<i>${escapeHtml(String(e.name || "?").trim().charAt(0).toUpperCase())}</i>`;
-      return `<div class="ld-row ${e.result}">${icon(e)}<span class="ld-av">${av}</span>` +
-        `<span class="ld-rname">${escapeHtml(e.name || "?")}</span>` +
-        `<span class="ld-rtime">${e.result === "done" ? "" : "gave up "}${escapeHtml(fmtDuration(e.ms))}</span>` +
-        `<span class="ld-rwhen">${escapeHtml(typeof e.at === "number" ? fmtWhen(e.at, now) : "")}</span></div>`;
-    });
     box.innerHTML =
-      `<div class="ld-tiles">` +
-        tile(st.done, "done", DROP) + tile(st.gaveUp, "given up", CROSS) +
-        tile(st.fastestMs !== null ? escapeHtml(fmtDuration(st.fastestMs)) : "\u2013",
-             st.fastestName ? `fastest \u00b7 ${escapeHtml(st.fastestName)}` : "fastest") +
-        tile(st.bestStreak, `best streak${st.streak ? ` \u00b7 now ${st.streak}` : ""}`) +
+      `<div class="ld-hhead"><b>Your history</b><button class="ld-link ld-danger" data-a="clear">${TRASH} Clear history</button></div>` +
+      tilesHtml(stats) +
+      `<div class="ld-strip" title="Last ${Math.min(30, entries.length)}, oldest first">` +
+        entries.slice(-30).map((e) => `<span title="${escapeHtml(e.name || "")} · ${escapeHtml(fmtDuration(e.ms))}">${icon(e)}</span>`).join("") +
       `</div>` +
-      (strip ? `<div class="ld-strip" title="Last ${Math.min(30, entries.length)}, oldest first">${strip}</div>` : "") +
-      `<div class="ld-total">${escapeHtml(fmtDuration(st.totalMs))} locked in total</div>` +
-      `<div class="ld-rows">${rows.slice(0, 6).join("")}</div>` +
-      (rows.length > 6 ? `<button class="ld-more">Show ${Math.min(rows.length, 30) - 6} more</button>` : "");
-    box.querySelector(".ld-more")?.addEventListener("click", (ev) => {
-      box.querySelector(".ld-rows").innerHTML = rows.slice(0, 30).join("");
-      ev.target.remove();
-    });
+      `<div class="ld-total">${escapeHtml(fmtDuration(stats.totalMs))} locked in total</div>` +
+      `<div class="ld-rows">${entries.slice(-5).reverse().map((e) => rowHtml(e, now)).join("")}</div>` +
+      `<button class="ld-link ld-all" data-a="all">See all history (${stats.done + stats.gaveUp}) →</button>`;
+    const rerender = (d) => renderPreview(box, d);
+    wireRowDeletes(box.querySelector(".ld-rows"), rerender);
+    wireClear(box.querySelector('[data-a="clear"]'), stats.done + stats.gaveUp, rerender);
+    box.querySelector('[data-a="all"]').addEventListener("click", () => openHistory(data));
+  }
+
+  // ── Full history ──────────────────────────────────────────────────────────
+
+  const PAGE = 30;
+
+  function openHistory(data) {
+    let { list, stats } = data;
+    let result = "all", q = "", shown = PAGE;
+    const box = modal(`
+      <div class="ld-head"><h3><button class="ld-back" data-a="back" aria-label="Back">←</button> Your history</h3>
+        <button class="ld-link ld-danger" data-a="clear">${TRASH} Clear history</button></div>
+      <div data-a="tiles"></div>
+      <div class="ld-total" data-a="total"></div>
+      <div class="ld-filters">
+        <button class="ld-chip ld-on" data-r="all">All</button>
+        <button class="ld-chip" data-r="done">${DROP} Done</button>
+        <button class="ld-chip" data-r="gaveup">${CROSS} Given up</button>
+        <div class="ld-search ld-small">${SEARCH}<input data-a="q" placeholder="Performer" autocomplete="off"></div>
+      </div>
+      <div data-a="list"></div>
+      <div class="ld-foot">Your latest ${HISTORY_MAX} lockdowns are kept. Totals count all of them.</div>`);
+    box.classList.add("ld-tall");
+    const $ = (a) => box.querySelector(`[data-a="${a}"]`);
+
+    const render = () => {
+      $("tiles").innerHTML = tilesHtml(stats);
+      $("total").textContent = `${stats.done + stats.gaveUp} lockdowns · ${fmtDuration(stats.totalMs)} locked in total`;
+      const matching = filterEntries(list, result, q);
+      const groups = groupByMonth(matching);
+      const now = Date.now();
+      let left = shown, html = "";
+      for (const g of groups) {
+        if (left <= 0) break;
+        html += `<div class="ld-month"><span>${escapeHtml(g.label)}</span>` +
+          `<span class="ld-mcount">${g.done} ${DROP} ${g.gaveUp} ${CROSS}</span></div>`;
+        const items = g.items.slice(0, left);
+        html += items.map((e) => rowHtml(e, now)).join("");
+        left -= items.length;
+      }
+      if (!matching.length) html = `<div class="ld-empty">${list.length ? "Nothing matches." : "No lockdowns yet."}</div>`;
+      if (matching.length > shown) html += `<button class="ld-more" data-a="more">Show ${Math.min(PAGE, matching.length - shown)} more</button>`;
+      $("list").innerHTML = html;
+      $("more")?.addEventListener("click", () => { shown += PAGE; render(); });
+    };
+    const update = (d) => { list = d.list; stats = d.stats; render(); };
+
+    $("back").addEventListener("click", () => openStart());
+    box.querySelectorAll(".ld-chip").forEach((c) => c.addEventListener("click", () => {
+      result = c.dataset.r; shown = PAGE;
+      box.querySelectorAll(".ld-chip").forEach((x) => x.classList.toggle("ld-on", x === c));
+      render();
+    }));
+    $("q").addEventListener("input", () => { q = $("q").value; shown = PAGE; render(); });
+    $("q").addEventListener("keydown", (ev) => ev.stopPropagation());
+    wireRowDeletes($("list"), update);
+    wireClear($("clear"), () => stats.done + stats.gaveUp, update);
+    render();
   }
 
   // ═══ Spin ══════════════════════════════════════════════════════════════════
 
   function spin(list, how, roulette) {
     const pick = list[Math.floor(Math.random() * list.length)];   // decided now, shown last
-    const box = modal(`<div class="ld-spin"><img alt=""><div class="ld-name"></div><div class="ld-msg">Spinning...</div></div>`);
+    const box = modal(`<div class="ld-spin"><img alt=""><div class="ld-name"></div><div class="ld-msg">Spinning...</div></div>`, true);
     const img = box.querySelector("img"), name = box.querySelector(".ld-name");
     const delays = spinSchedule(Math.min(26, Math.max(8, list.length * 3)));
     let i = 0;
@@ -689,7 +1098,8 @@ body.ld-checking #ld-veil { display: block; }
     clearBar();
     for (const el of document.querySelectorAll(".ld-ok, .ld-no")) el.classList.remove("ld-ok", "ld-no");
     const ms = Date.now() - done.startedAt;
-    recordHistory({ pid: done.pid, name: done.name, image: done.image || "", how: done.how, result, ms,
+    recordHistory({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+                    pid: done.pid, name: done.name, image: done.image || "", how: done.how, result, ms,
                     at: done.startedAt });
     const box = modal(`<div class="ld-spin ${result === "done" ? "ld-landed" : ""}">
         ${done.image ? `<img src="${escapeHtml(done.image)}" alt="">` : ""}
@@ -754,6 +1164,7 @@ body.ld-checking #ld-veil { display: block; }
     bar.querySelector('[data-a="random"]')?.addEventListener("click", goRandom);
     wireGiveUp(bar.querySelector(".ld-giveup"));
     tick();
+    showTip();
   }
 
   function wireGiveUp(btn) {
@@ -784,6 +1195,30 @@ body.ld-checking #ld-veil { display: block; }
     for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) btn.addEventListener(t, () => { if (started) stop(); });
   }
 
+  // One-time tip the first time the bar appears.
+  function showTip() {
+    if (prefs().barTipSeen || document.getElementById("ld-tip") || !lock) return;
+    const tip = document.createElement("div");
+    tip.id = "ld-tip";
+    tip.style.top = navHeight() + 8 + "px";
+    tip.innerHTML = `Only <b>${escapeHtml(lock.name)}</b> until an O. Use the links in this bar to move around; ` +
+      `hold <b>Give up</b> for 5 seconds to quit. <button>Got it</button>`;
+    tip.querySelector("button").addEventListener("click", () => { setPref("barTipSeen", true); tip.remove(); });
+    document.body.appendChild(tip);
+  }
+
+  // Says why a page did not open, briefly, under the bar.
+  let toastTimer = null;
+  function ldToast(text) {
+    let t = document.getElementById("ld-toast");
+    if (!t) { t = document.createElement("div"); t.id = "ld-toast"; document.body.appendChild(t); }
+    t.style.top = navHeight() + 10 + "px";
+    t.textContent = text;
+    t.classList.add("ld-show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("ld-show"), 2600);
+  }
+
   function tick() {
     if (!lock || !bar) return;
     const t = bar.querySelector(".ld-time");
@@ -792,6 +1227,8 @@ body.ld-checking #ld-veil { display: block; }
 
   function clearBar() {
     document.body.classList.remove("ld-on", "ld-checking");
+    document.getElementById("ld-tip")?.remove();
+    document.getElementById("ld-toast")?.remove();
     bar?.remove(); veil?.remove();
     bar = null; veil = null;
   }
@@ -816,6 +1253,7 @@ body.ld-checking #ld-veil { display: block; }
       const clean = stripPerformerRules(location.search);
       if (clean !== null) {
         document.body.classList.add("ld-checking");
+        ldToast("Other performers can't be added during a lockdown");
         later(() => { lastPath = null; navigate(path + clean, true); });
         return;
       }
@@ -848,6 +1286,9 @@ body.ld-checking #ld-veil { display: block; }
 
   function bounce() {
     document.body.classList.add("ld-checking");
+    const ownList = new RegExp(`^/performers/${lock.pid}(/scenes)?/?$`).test(location.pathname);
+    ldToast(lock.roulette && ownList ? "Scene roulette: scenes come at random"
+                                     : `Locked to ${lock.name}: that page isn't theirs`);
     later(() => {
       if (!lock) return;
       lastPath = null;                   // re-check wherever we land

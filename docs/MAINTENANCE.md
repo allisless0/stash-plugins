@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
-| Lockdown | 1.2.0 | UI only | none (top-bar button) | every page while locked | ~750 |
+| Lockdown | 1.3.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1382,6 +1382,31 @@ done, gaveUp, totalMs, fastestMs, fastestName, streak, bestStreak (a given
 up resets streak, never bestStreak; a given-up run is never fastest);
 unknown keys ride through. Entries now carry `image` for the avatar.
 
+**1.3.0 (designed with the user in chat first, then signed off).**
+- Start dialog: performer search first (`searchPerformers`, `scene_count >
+  0`, 8 results, arrows and Enter), the page's performer offered first, then
+  "or let a spin decide": Favourites and a Saved filter menu whose items show
+  `countFor()` (the converted filter plus `scene_count > 0`, `count` only) or
+  "can't use". Clicking outside closes a dialog, except the spin (`sticky`).
+- Newcomers: a four-line guide until "Got it" (pref `guideSeen`, back via
+  "How it works"); a one-time tip under the bar on the first lock
+  (`barTipSeen`); `ldToast()` says why a page bounced (roulette, not theirs,
+  performer rule removed).
+- Stats v2: `fastestMs` dropped from the display (the user: speed is not the
+  point) in favour of **most locked**, from `perf` (`{pid: {name, n}}`,
+  lifetime, built from the list the first time it is missing). Old keys ride
+  through. Entries get an `id`; older ones are found by `entryKey()`'s
+  fingerprint.
+- **Removing an entry** (`removeEntry`, two clicks, no dialog) subtracts it
+  from done/given up/time/most locked and recounts streaks from the list when
+  the list still holds every lockdown counted; past the 200 cap the best
+  streak can only be kept (it may include entries no longer listed).
+  **Clear history** resets list and totals, other keys kept. Both go through
+  `updateHistory(fn)`, the same read-merge-write as recording.
+- Full history view: month groups newest first with per-month counts
+  (`groupByMonth`), All / Done / Given up chips and a name search
+  (`filterEntries`), 30 at a time. All the new pure helpers are tested.
+
 **Enforcement:** `routeCheck()` (tested) says ok / bounce / check a scene,
 image or gallery's performers. Runs on pushState/replaceState (wrapped, so
 before React renders), popstate and a 250 ms timer. While a check is in
@@ -1514,6 +1539,7 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Lockdown | 1.3.0 dialog and history view checked in the harness at desktop and narrow widths, not in a real Stash. Check the dialog's fit on a phone, and that the search finds performers on a large library quickly (it asks for 8 by name). |
 | Lockdown | 1.1.0 card hiding relies on Stash's card classes (`scene-card`, `image-card`, `gallery-card`, `wall-item`, `queue-scene-details`, seen in the 0.31 bundle). A card type with another class (a new view, a plugin's own cards) is not hidden. Check the wall and list views on a real Stash while locked. |
 | Lockdown | 1.0.0 tested in a harness against a fake GraphQL, not a real Stash. Check: the bar covers the real nav at its height on desktop and mobile; a saved-filter spin on a real filter (tags, gender) picks only matching performers; O on the real scene page ends it within ~3 s; Stash's own hotkeys that navigate (g s etc.) bounce back. |
 | Lockdown | Gender labels to enums assume Stash's labels are the enum names in words ("Transgender Female" -> TRANSGENDER_FEMALE, "Non-Binary" -> NON_BINARY). True for 0.31; check if a gender filter spin finds nobody. |
@@ -1536,6 +1562,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10: Lockdown 1.3.0, picking first, history editing, newcomer help
+
+User asked for a specific-performer pick as the first option, a way to clear
+or remove history, better guidance for newcomers, and to design it in chat
+first. Two mockups were signed off (most locked replacing fastest, a
+month-grouped full history). Built as designed; see §4.12.
 
 ### 2026-10-09 (evening): Lockdown 1.2.0, lifetime stats and history design
 
