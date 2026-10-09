@@ -83,5 +83,40 @@ const v = T.sortForView([{ id: "1", text: "", done: true, doneAt: 1 }, { id: "2"
 check("open tasks keep stored order", eq(v.open.map((t) => t.id), ["2", "4"]));
 check("done tasks newest first", eq(v.done.map((t) => t.id), ["3", "1"]));
 
+// ── 1.1: pin, undo, groups, the page's tasks, search ────────────────────────
+const P = (id, extra = {}) => ({ id, text: id, done: false, created: 0, ...extra });
+check("pin sets state, replay keeps it", T.applyOp([P("a")], { type: "pin", id: "a", pinned: true })[0].pinned === true &&
+  T.applyOp(T.applyOp([P("a")], { type: "pin", id: "a", pinned: true }), { type: "pin", id: "a", pinned: true })[0].pinned === true);
+const base = [P("a"), P("b"), P("c"), P("d")];
+const afterDel = T.applyOp(base, { type: "delete", ids: ["b", "d"] });
+const restored = T.applyOp(afterDel, { type: "restore", entries: [{ item: P("d"), index: 3 }, { item: P("b"), index: 1 }] });
+check("undo puts deleted tasks back where they were", eq(restored.map((x) => x.id), ["a", "b", "c", "d"]));
+check("undo is idempotent", eq(T.applyOp(restored, { type: "restore", entries: [{ item: P("b"), index: 1 }] }).map((x) => x.id), ["a", "b", "c", "d"]));
+check("undo after another device added a task keeps that task",
+  eq(T.applyOp([P("new"), ...afterDel], { type: "restore", entries: [{ item: P("b"), index: 1 }] }).map((x) => x.id), ["new", "b", "a", "c"]));
+check("pinned first, otherwise stored order", eq(T.orderTasks([P("a"), P("b", { pinned: true }), P("c")]).map((x) => x.id), ["b", "a", "c"]));
+
+const jane = { kind: "performer", id: "5" }, scene = { kind: "scene", id: "12" }, studio = { kind: "studio", id: "3" };
+const openT = [
+  P("j1", { link: jane, created: 10 }), P("g1", { created: 50 }), P("s1", { link: scene, created: 20 }),
+  P("j2", { link: jane, created: 5, pinned: true }), P("st", { link: studio, created: 40 }),
+];
+const G = T.groupTasks(openT);
+check("groups: the one with a pin first, then newest, general last",
+  eq(G.map((g) => g.key), ["performer:5", "studio:3", "scene:12", "general"]), JSON.stringify(G.map((g) => g.key)));
+check("inside a group, pinned first", eq(G[0].items.map((x) => x.id), ["j2", "j1"]));
+const pageJane = T.tasksForPage(openT, jane, []);
+check("a performer page: its own tasks", pageJane.count === 2 && pageJane.byPerformer.length === 0);
+const pageScene = T.tasksForPage(openT, scene, ["5", "9"]);
+check("a scene page: its tasks plus its performers'", pageScene.own.length === 1 && pageScene.byPerformer.length === 1 &&
+  pageScene.byPerformer[0].pid === "5" && pageScene.count === 3);
+check("a studio page does not pull in performers", T.tasksForPage(openT, studio, ["5"]).count === 1);
+check("no page, nothing", T.tasksForPage(openT, null, []).count === 0);
+check("search: task text or link name", T.matches(P("Fix tags"), "tags") &&
+  T.matches(P("x", { link: { label: "Jane Example" } }), "jane") && !T.matches(P("x"), "jane") && T.matches(P("x"), ""));
+const nowT = new Date(2026, 9, 10, 12).getTime();
+check("done when", T.fmtAgo(new Date(2026, 9, 10, 1).getTime(), nowT) === "today" &&
+  T.fmtAgo(new Date(2026, 9, 9, 1).getTime(), nowT) === "yesterday" && T.fmtAgo(0, nowT) === "");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

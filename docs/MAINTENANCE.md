@@ -51,7 +51,7 @@ Keep those greps in step with any refactor of the safety chain.
 | IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
-| Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
+| Todo | 1.1.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
 | Lockdown | 1.3.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1244,6 +1244,32 @@ keys (QuickTools' window-capture router also skips focused inputs).
 Tested: `scripts/test_todo.js` (pure helpers), plus a harness run of add,
 link, tick, edit, clear, a concurrent "phone" write and a corrupted list.
 
+**1.1.0 (designed in chat with three mockups, signed off).**
+- Layout is one grid for every row: a 40 px picture column, text, actions
+  (`.todo-r`). Checkboxes sit in the picture column, so all text starts at
+  one edge; the page card is inset 6 px with 10 px padding so its picture
+  lands on the same column (harness-measured: every picture centred on the
+  same x, every text at the same left). Text never wraps (ellipsis, full
+  text in the tooltip and the editor).
+- Tabs: This page (only on an entity page), All, Done. **All** is
+  `groupTasks()`: by link, groups with a pin first, then the newest task,
+  General last. **This page** is `tasksForPage()`: the page's tasks, and on a
+  scene page also each of its performers' tasks (the user: "if the task is
+  related to that performer show it"). Search appears past 10 open tasks.
+- New ops: `pin` (explicit state) and `restore` (undo of a delete or of
+  Clear done: put back at the old index, skip ids already present).
+  Clear done is two clicks, then Undo; no confirm() dialogs any more.
+- Link pictures and a scene's performers come from one aliased request per
+  40 links (`fetchMeta`, per page load, not stored); tasks keep the label they
+  were written with as the fallback. Gallery has no picture (field not
+  queried, to avoid version differences).
+- Page chip "N todos": appended to `.scene-subheader` or `.detail-header
+  .name-icons` (class names from the 0.31 bundle), opens the panel on this
+  page's tab. The nav badge reads "N here" on such a page.
+- **renderNav and renderChip only touch the DOM on a change**: the
+  MutationObserver calls them, and an unconditional textContent write is a
+  mutation, which made 1.0 re-render every 80 ms forever.
+
 ### 4.10 QuickTools `T`: quick tags (1.5.0)
 
 User request: quick tags with T for scenes and for performers on their page.
@@ -1543,6 +1569,7 @@ under new labels that mean something different. Recalculate makes ratings
 | Lockdown | 1.1.0 card hiding relies on Stash's card classes (`scene-card`, `image-card`, `gallery-card`, `wall-item`, `queue-scene-details`, seen in the 0.31 bundle). A card type with another class (a new view, a plugin's own cards) is not hidden. Check the wall and list views on a real Stash while locked. |
 | Lockdown | 1.0.0 tested in a harness against a fake GraphQL, not a real Stash. Check: the bar covers the real nav at its height on desktop and mobile; a saved-filter spin on a real filter (tags, gender) picks only matching performers; O on the real scene page ends it within ~3 s; Stash's own hotkeys that navigate (g s etc.) bounce back. |
 | Lockdown | Gender labels to enums assume Stash's labels are the enum names in words ("Transgender Female" -> TRANSGENDER_FEMALE, "Non-Binary" -> NON_BINARY). True for 0.31; check if a gender filter spin finds nobody. |
+| Todo | 1.1.0 chip placement depends on Stash's `.scene-subheader` / `.detail-header .name-icons`; tested on harness markup copied from those names. Check in Stash that the chip lands by the title on scene, performer and studio pages. |
 | Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
 | QuickTools | 1.4.0 middle click tested with script-dispatched events only (the harness browser cannot press a real middle button). Check in Stash: middle-click the right half of the player, it goes to the next scene and does not start autoscroll or pause the video. |
 | ScriptBadges | Stash's exact-name matching means scripts IntifaceSync finds (fuzzy names) can show as "No script". An optional check through the IntifaceSync backend would fix that. |
@@ -1562,6 +1589,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (later): Todo 1.1.0, the same treatment as Lockdown
+
+User asked to enhance Todo the way Lockdown was. Three mockups in chat:
+the panel, clearer performers (header card, grouping), and a strict grid
+for alignment; signed off with "if the task is related to that performer
+show it" (a scene's page shows its performers' tasks). See §4.9.
 
 ### 2026-10-10: Lockdown 1.3.0, picking first, history editing, newcomer help
 
