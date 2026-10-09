@@ -36,8 +36,10 @@ filter on their own tabs is undone.
   page or anywhere else. It is noticed within a few seconds.
 - **Give up:** hold the button for 5 seconds. It is recorded as given up.
 
-The start dialog shows a short history: lockdowns done and given up, the
-fastest, the current streak, and the last five.
+The start dialog shows your history: lockdowns done (a drop) and given up
+(an X), your fastest and with whom, your best and current streak, total time
+locked, a strip of your last 30, and the recent ones with when and how long.
+The totals are lifetime numbers; the list keeps the latest 200.
 
 ## Good to know
 

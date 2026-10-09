@@ -138,11 +138,32 @@ check("spin has the asked number of steps", sch.length === 20);
 check("spin slows down", sch.every((d, i) => i === 0 || d >= sch[i - 1]) && sch[0] < 80 && sch[19] > 400);
 check("durations read well", T.fmtDuration(9000) === "9s" && T.fmtDuration(754000) === "12m 34s" && T.fmtDuration(3720000) === "1h 2m");
 const h = [
-  { result: "done", ms: 600000 }, { result: "gaveup", ms: 120000 },
-  { result: "done", ms: 300000 }, { future: "entry" }, { result: "done", ms: 900000 },
+  { result: "done", ms: 600000, name: "A" }, { result: "gaveup", ms: 120000, name: "B" },
+  { result: "done", ms: 300000, name: "C" }, { future: "entry" }, { result: "done", ms: 900000, name: "D" },
 ];
-check("summary counts", eq(T.historySummary(h), { done: 3, gaveUp: 1, fastest: 300000, streak: 2 }));
-check("empty summary", eq(T.historySummary([]), { done: 0, gaveUp: 0, fastest: null, streak: 0 }));
+const st = T.statsFromHistory(h);
+check("totals from an old history", st.done === 3 && st.gaveUp === 1 && st.totalMs === 1920000 &&
+  st.fastestMs === 300000 && st.fastestName === "C" && st.streak === 2 && st.bestStreak === 2, JSON.stringify(st));
+check("empty totals", eq(T.statsFromHistory([]), { v: 1, done: 0, gaveUp: 0, totalMs: 0, fastestMs: null,
+  fastestName: null, streak: 0, bestStreak: 0 }));
+// totals keep counting past the list cap: 250 done, the list would hold 200
+let run = T.statsFromHistory([]);
+for (let i = 0; i < 250; i++) run = T.addToStats(run, { result: "done", ms: 1000 + i, name: "x" });
+check("totals do not shrink when the list is capped", run.done === 250 && run.bestStreak === 250 && run.fastestMs === 1000);
+run = T.addToStats(run, { result: "gaveup", ms: 5 });
+check("giving up ends the streak, keeps the best", run.streak === 0 && run.bestStreak === 250 && run.gaveUp === 1);
+check("a given-up run is never the fastest", run.fastestMs === 1000);
+check("unknown keys in stored totals ride through", T.addToStats({ done: 1, later: "x" }, { result: "done", ms: 1 }).later === "x");
+check("an entry it does not understand changes nothing", eq(T.addToStats(st, { odd: 1 }), { ...st }));
+check("stored totals: missing, unreadable, fine",
+  T.parseStats(undefined) === undefined && T.parseStats("{") === null && T.parseStats("[1]") === null &&
+  T.parseStats('{"done":2}').done === 2);
+const now = new Date(2026, 9, 9, 15, 0).getTime();
+check("when: today, yesterday, days",
+  T.fmtWhen(new Date(2026, 9, 9, 1, 0).getTime(), now) === "today" &&
+  T.fmtWhen(new Date(2026, 9, 8, 23, 0).getTime(), now) === "yesterday" &&
+  T.fmtWhen(new Date(2026, 9, 5, 12, 0).getTime(), now) === "4d ago");
+check("when: older is a date", /\d/.test(T.fmtWhen(new Date(2026, 8, 1).getTime(), now)));
 check("history that does not parse is untrusted", T.parseHistory("[{") === null && T.parseHistory('{"a":1}') === null);
 check("nothing stored is an empty history", eq(T.parseHistory(undefined), []));
 check("unknown entries are kept in storage", T.parseHistory(JSON.stringify(h)).length === 5);

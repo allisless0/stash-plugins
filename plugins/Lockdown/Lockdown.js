@@ -193,21 +193,54 @@
     return `${r}s`;
   }
 
-  // The one line of history: done, given up, fastest, current streak of
-  // completions. Entries this version does not understand are ignored here
-  // and kept in storage.
-  function historySummary(list) {
-    const ok = (e) => e && (e.result === "done" || e.result === "gaveup") && typeof e.ms === "number";
-    const all = (list || []).filter(ok);
-    const done = all.filter((e) => e.result === "done");
-    let streak = 0;
-    for (let i = all.length - 1; i >= 0 && all[i].result === "done"; i--) streak++;
-    return {
-      done: done.length,
-      gaveUp: all.length - done.length,
-      fastest: done.length ? Math.min(...done.map((e) => e.ms)) : null,
-      streak,
-    };
+  // Lifetime totals, kept apart from the history list and updated with each
+  // lockdown. The list is capped (HISTORY_MAX) to keep the config small;
+  // totals counted from it would quietly shrink once it filled (1.0 did
+  // that). Keys this version does not know ride through.
+  const EMPTY_STATS = { v: 1, done: 0, gaveUp: 0, totalMs: 0, fastestMs: null, fastestName: null,
+                        streak: 0, bestStreak: 0 };
+
+  const isEntry = (e) => !!e && (e.result === "done" || e.result === "gaveup") && typeof e.ms === "number";
+
+  function addToStats(stats, e) {
+    const st = { ...EMPTY_STATS, ...(stats || {}) };
+    if (!isEntry(e)) return st;
+    st.totalMs += e.ms;
+    if (e.result === "done") {
+      st.done += 1;
+      st.streak += 1;
+      st.bestStreak = Math.max(st.bestStreak, st.streak);
+      if (st.fastestMs === null || e.ms < st.fastestMs) { st.fastestMs = e.ms; st.fastestName = e.name || null; }
+    } else {
+      st.gaveUp += 1;
+      st.streak = 0;
+    }
+    return st;
+  }
+
+  // For a history from before totals were kept: count what the list has.
+  function statsFromHistory(list) {
+    return (list || []).reduce(addToStats, { ...EMPTY_STATS });
+  }
+
+  // undefined: none stored yet (build from history); null: stored but
+  // unreadable (leave alone); otherwise the totals.
+  function parseStats(raw) {
+    if (raw === undefined || raw === null || raw === "") return undefined;
+    try {
+      const v = JSON.parse(raw);
+      return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+    } catch (_) { return null; }
+  }
+
+  // "today", "yesterday", "3d ago", else a short date.
+  function fmtWhen(at, now) {
+    const day = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    const days = Math.round((day(now) - day(at)) / 86400000);
+    if (days <= 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 7) return `${days}d ago`;
+    return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
   // The stored history, or null when it cannot be trusted (never overwrite
@@ -219,7 +252,8 @@
 
   if (window.__LOCKDOWN_TEST__) {
     window.__LockdownTest = { routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration,
-                              historySummary, parseHistory, cardItem, stripPerformerRules };
+                              addToStats, statsFromHistory, parseStats, fmtWhen,
+                              parseHistory, cardItem, stripPerformerRules };
     return;
   }
 
@@ -334,9 +368,14 @@
       const mine = plugins[PLUGIN_ID] || {};
       const list = parseHistory(mine.history);
       if (list === null) throw new Error("saved history could not be read; left as it was");
+      let stats = parseStats(mine.stats);
+      if (stats === null) throw new Error("saved totals could not be read; left as they were");
+      if (stats === undefined) stats = statsFromHistory(list);      // first time: from the list
       list.push(entry);
+      stats = addToStats(stats, entry);
       await gql(`mutation ($id: ID!, $input: Map!) { configurePlugin(plugin_id: $id, input: $input) }`,
-                { id: PLUGIN_ID, input: { ...mine, history: JSON.stringify(list.slice(-HISTORY_MAX)) } });
+                { id: PLUGIN_ID, input: { ...mine, history: JSON.stringify(list.slice(-HISTORY_MAX)),
+                                          stats: JSON.stringify(stats) } });
     });
     writeChain = run.catch((e) => log(`History not saved: ${e.message}`, "error"));
     return run;
@@ -345,8 +384,11 @@
   async function readHistory() {
     try {
       const d = await gql(`query { configuration { plugins } }`);
-      return parseHistory(d?.configuration?.plugins?.[PLUGIN_ID]?.history) || [];
-    } catch (_) { return []; }
+      const mine = d?.configuration?.plugins?.[PLUGIN_ID] || {};
+      const list = parseHistory(mine.history) || [];
+      const stats = parseStats(mine.stats) || statsFromHistory(list);
+      return { list, stats };
+    } catch (_) { return { list: [], stats: { ...EMPTY_STATS } }; }
   }
 
   // ═══ State ═════════════════════════════════════════════════════════════════
@@ -404,7 +446,7 @@ body.ld-on .ld-no { display: none !important; }
 body.ld-checking #ld-veil { display: block; }
 .ld-modal-back { position: fixed; inset: 0; z-index: 1070; background: rgba(0,0,0,.65); display: flex;
   align-items: center; justify-content: center; }
-.ld-modal { width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); overflow-y: auto;
+.ld-modal { width: 460px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); overflow-y: auto;
   background: #232b33; border: 1px solid #3c4a57; border-radius: 10px; color: #e6e9ec; padding: 18px 20px;
   box-shadow: 0 16px 50px rgba(0,0,0,.7); }
 .ld-modal h3 { margin: 0 0 4px; font-size: 19px; }
@@ -420,9 +462,36 @@ body.ld-checking #ld-veil { display: block; }
 .ld-modal label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: #c6ced6; margin: 12px 0 4px;
   cursor: pointer; }
 .ld-modal .ld-err { color: #f5a623; font-size: 12px; min-height: 1.2em; margin-top: 6px; }
-.ld-modal .ld-hist { border-top: 1px solid #3c4a57; margin-top: 14px; padding-top: 10px; font-size: 12px; color: #a9b4bf; }
-.ld-modal .ld-hist b { color: #e6e9ec; }
-.ld-modal .ld-hist div { margin-top: 3px; }
+.ld-modal .ld-hist { border-top: 1px solid #3c4a57; margin-top: 14px; padding-top: 12px; font-size: 12px; color: #a9b4bf; }
+.ld-modal .ld-empty { color: #7f8b97; text-align: center; padding: 6px 0; }
+.ld-ico { width: 16px; height: 16px; flex: none; vertical-align: middle; }
+.ld-drop path { fill: #4fa3ff; }
+.ld-drop .ld-shine { fill: none; stroke: rgba(255,255,255,.75); stroke-width: 1.1; stroke-linecap: round; }
+.ld-x path { fill: none; stroke: #e2574c; stroke-width: 2.4; stroke-linecap: round; }
+.ld-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.ld-tile { background: #1b2229; border: 1px solid #33404d; border-radius: 8px; padding: 8px 6px 7px;
+  text-align: center; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.ld-tile .ld-ico { width: 18px; height: 18px; margin-bottom: 1px; }
+.ld-tile b { font-size: 17px; color: #e6e9ec; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.ld-tile span { font-size: 10.5px; color: #8b97a3; line-height: 1.25; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 100%; }
+.ld-strip { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 2px; }
+.ld-strip .ld-ico { width: 14px; height: 14px; }
+.ld-total { font-size: 11px; color: #7f8b97; margin: 6px 0 4px; }
+.ld-rows { display: flex; flex-direction: column; gap: 2px; }
+.ld-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; }
+.ld-row:hover { background: #2b353f; }
+.ld-row.gaveup .ld-rname { color: #a9b4bf; }
+.ld-av img, .ld-av i { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; display: block; }
+.ld-av i { background: #33404d; color: #c6ced6; font-style: normal; font-size: 11px; font-weight: 700;
+  text-align: center; line-height: 24px; }
+.ld-rname { flex: 1; min-width: 0; color: #e6e9ec; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-rtime { font-variant-numeric: tabular-nums; color: #c6ced6; }
+.ld-row.gaveup .ld-rtime { color: #e2a29c; }
+.ld-rwhen { color: #7f8b97; min-width: 62px; text-align: right; }
+.ld-more { margin-top: 6px; width: 100%; padding: 5px; background: none; border: 1px dashed #3c4a57;
+  border-radius: 6px; color: #8b97a3; font: inherit; font-size: 12px; cursor: pointer; }
+.ld-more:hover { color: #e6e9ec; border-color: #8b97a3; }
 .ld-modal .ld-close { margin-top: 12px; width: 100%; padding: 7px; background: none; color: #8b97a3;
   border: 1px solid #3c4a57; cursor: pointer; }
 .ld-spin { text-align: center; padding: 10px 0 4px; }
@@ -533,15 +602,43 @@ body.ld-checking #ld-veil { display: block; }
       }).catch(() => {});
     }
 
-    readHistory().then((list) => {
-      const s = historySummary(list);
-      const recent = list.filter((e) => e && e.name).slice(-5).reverse();
-      $("hist").innerHTML = (s.done || s.gaveUp)
-        ? `<b>${s.done}</b> done &middot; <b>${s.gaveUp}</b> given up` +
-          (s.fastest !== null ? ` &middot; fastest <b>${fmtDuration(s.fastest)}</b>` : "") +
-          (s.streak > 1 ? ` &middot; streak <b>${s.streak}</b>` : "") +
-          recent.map((e) => `<div>${escapeHtml(e.name)} &middot; ${e.result === "done" ? "done in" : "gave up after"} ${fmtDuration(e.ms)}</div>`).join("")
-        : "No lockdowns yet.";
+    readHistory().then(({ list, stats }) => renderHistory($("hist"), list, stats));
+  }
+
+  // A drop for a lockdown that ended in an O, an X for one given up.
+  const DROP = `<svg class="ld-ico ld-drop" viewBox="0 0 16 16" aria-label="done"><path d="M8 1.2C8 1.2 3.2 6.6 3.2 10.1a4.8 4.8 0 0 0 9.6 0C12.8 6.6 8 1.2 8 1.2z"/><path class="ld-shine" d="M5.9 10.4a2.2 2.2 0 0 0 1.6 2.1" fill="none"/></svg>`;
+  const CROSS = `<svg class="ld-ico ld-x" viewBox="0 0 16 16" aria-label="given up"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>`;
+  const icon = (e) => (e.result === "done" ? DROP : CROSS);
+
+  function renderHistory(box, list, st) {
+    const entries = list.filter(isEntry);
+    if (!st.done && !st.gaveUp) { box.innerHTML = `<div class="ld-empty">No lockdowns yet.</div>`; return; }
+    const tile = (big, label, ico = "") => `<div class="ld-tile">${ico}<b>${big}</b><span>${label}</span></div>`;
+    const strip = entries.slice(-30).map((e) =>
+      `<span title="${escapeHtml(e.name || "")} \u00b7 ${escapeHtml(fmtDuration(e.ms))}">${icon(e)}</span>`).join("");
+    const now = Date.now();
+    const rows = entries.slice().reverse().map((e) => {
+      const av = e.image ? `<img src="${escapeHtml(e.image)}" alt="">`
+                         : `<i>${escapeHtml(String(e.name || "?").trim().charAt(0).toUpperCase())}</i>`;
+      return `<div class="ld-row ${e.result}">${icon(e)}<span class="ld-av">${av}</span>` +
+        `<span class="ld-rname">${escapeHtml(e.name || "?")}</span>` +
+        `<span class="ld-rtime">${e.result === "done" ? "" : "gave up "}${escapeHtml(fmtDuration(e.ms))}</span>` +
+        `<span class="ld-rwhen">${escapeHtml(typeof e.at === "number" ? fmtWhen(e.at, now) : "")}</span></div>`;
+    });
+    box.innerHTML =
+      `<div class="ld-tiles">` +
+        tile(st.done, "done", DROP) + tile(st.gaveUp, "given up", CROSS) +
+        tile(st.fastestMs !== null ? escapeHtml(fmtDuration(st.fastestMs)) : "\u2013",
+             st.fastestName ? `fastest \u00b7 ${escapeHtml(st.fastestName)}` : "fastest") +
+        tile(st.bestStreak, `best streak${st.streak ? ` \u00b7 now ${st.streak}` : ""}`) +
+      `</div>` +
+      (strip ? `<div class="ld-strip" title="Last ${Math.min(30, entries.length)}, oldest first">${strip}</div>` : "") +
+      `<div class="ld-total">${escapeHtml(fmtDuration(st.totalMs))} locked in total</div>` +
+      `<div class="ld-rows">${rows.slice(0, 6).join("")}</div>` +
+      (rows.length > 6 ? `<button class="ld-more">Show ${Math.min(rows.length, 30) - 6} more</button>` : "");
+    box.querySelector(".ld-more")?.addEventListener("click", (ev) => {
+      box.querySelector(".ld-rows").innerHTML = rows.slice(0, 30).join("");
+      ev.target.remove();
     });
   }
 
@@ -592,7 +689,8 @@ body.ld-checking #ld-veil { display: block; }
     clearBar();
     for (const el of document.querySelectorAll(".ld-ok, .ld-no")) el.classList.remove("ld-ok", "ld-no");
     const ms = Date.now() - done.startedAt;
-    recordHistory({ pid: done.pid, name: done.name, how: done.how, result, ms, at: done.startedAt });
+    recordHistory({ pid: done.pid, name: done.name, image: done.image || "", how: done.how, result, ms,
+                    at: done.startedAt });
     const box = modal(`<div class="ld-spin ${result === "done" ? "ld-landed" : ""}">
         ${done.image ? `<img src="${escapeHtml(done.image)}" alt="">` : ""}
         <div class="ld-name">${result === "done" ? "Lockdown complete" : "Lockdown given up"}</div>

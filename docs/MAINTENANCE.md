@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
-| Lockdown | 1.1.0 | UI only | none (top-bar button) | every page while locked | ~750 |
+| Lockdown | 1.2.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1372,8 +1372,15 @@ counts for the O.
 baseO, roulette, how}`, deliberately per browser. A `storage` listener keeps
 this browser's other tabs in step. **History** is plugin config `history`,
 read-merge-write with every other key kept, refused if it does not parse
-(rule 5), last 200 entries; `historySummary()` ignores entries it does not
-understand and storage keeps them.
+(rule 5), last 200 entries, with entries it does not understand kept.
+**Totals are separate (1.2.0):** plugin config `stats`, updated by
+`addToStats()` in the same write. Counting totals from the capped list (1.0
+and 1.1) would have quietly shrunk them after 200 lockdowns. A history from
+before 1.2 has no `stats`; it is built once with `statsFromHistory()`.
+Stored totals that do not parse stop the write, like the list. Fields:
+done, gaveUp, totalMs, fastestMs, fastestName, streak, bestStreak (a given
+up resets streak, never bestStreak; a given-up run is never fastest);
+unknown keys ride through. Entries now carry `image` for the avatar.
 
 **Enforcement:** `routeCheck()` (tested) says ok / bounce / check a scene,
 image or gallery's performers. Runs on pushState/replaceState (wrapped, so
@@ -1529,6 +1536,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-09 (evening): Lockdown 1.2.0, lifetime stats and history design
+
+User asked how the stats scale and for a nicer history: a drop for an O, an
+X for given up. Totals moved out of the capped list (they would have shrunk
+past 200); history view redone with tiles, a 30-result strip and rows with
+avatar, time and when. Tests run 250 lockdowns through the totals.
 
 ### 2026-10-09 (later): Lockdown 1.1.0, closing the cheats
 
