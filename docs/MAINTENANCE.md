@@ -52,6 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
+| Lockdown | 1.0.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1357,6 +1358,53 @@ panel and calls `Mousetrap.trigger("f")`. Shift+F and every other page are
 left alone. "showing" marks the saved filter whose criteria equal the URL's
 (`criteriaKey`, order-free).
 
+### 4.12 Lockdown (1.0.0)
+
+User request, designed by interview: lock Stash to one performer until an O.
+Answers: performer by spin of favourites, spin of a saved performer filter,
+or the performer page you are on (all three); **this browser only**; quit by
+holding Give up 5 s (a forfeit); scene roulette as an option; history light.
+Allowed while locked: their page (default, scenes, galleries, images tabs)
+and any scene, image or gallery they appear in; any scene they appear in
+counts for the O.
+
+**State** is localStorage `lockdownState` `{pid, name, image, startedAt,
+baseO, roulette, how}`, deliberately per browser. A `storage` listener keeps
+this browser's other tabs in step. **History** is plugin config `history`,
+read-merge-write with every other key kept, refused if it does not parse
+(rule 5), last 200 entries; `historySummary()` ignores entries it does not
+understand and storage keeps them.
+
+**Enforcement:** `routeCheck()` (tested) says ok / bounce / check a scene,
+image or gallery's performers. Runs on pushState/replaceState (wrapped, so
+before React renders), popstate and a 250 ms timer. While a check is in
+flight `body.ld-checking` shows a veil so a forbidden page is never seen;
+results are cached per lock. Bounce goes to their scenes, or with roulette
+to a random scene (`findScenes` sorted `random_<seed>`, per_page 2, not the
+current one). A failed check counts as not allowed. The top nav is hidden
+(`body.ld-on`) and `#ld-bar` sits over it at the nav's height.
+
+**O detection** is the sum of `o_counter` over their scenes, polled every
+2.5 s on a scene page and 10 s elsewhere, **only while the tab is visible**
+(the harness pane is hidden, so tests override `visibilityState`). Above the
+baseline ends the lock; below it (an O taken back) lowers the baseline. This
+catches an O from any page, plugin or device.
+
+**Saved-filter spin** needs the saved `object_filter` as a GraphQL
+`PerformerFilterType`, a different shape from the URL form QuickTools F uses.
+`toGraphQLFilter()` (tested) mirrors Stash's `toCriterionInput` per input
+type, with the type of each field read from the schema by introspection
+(`__type(name: "PerformerFilterType")`), so it follows the Stash version:
+Int/Float/Date/Timestamp, String, Multi and HierarchicalMulti (depth 0 for
+EQUALS), Gender (`value_list`, labels to enums), Circumcision (`value`),
+StashID, Boolean (`"true"`), plain String (is_missing), custom fields.
+**Anything else throws** and the dialog says the filter cannot be used, so a
+spin never runs on a silently trimmed filter (e.g. nested `scenes_filter`).
+Performers without scenes are never picked.
+
+Give up is a pointer hold with a timer (not rAF, which stalls in hidden
+tabs); releasing early resets it.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1433,6 +1481,8 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Lockdown | 1.0.0 tested in a harness against a fake GraphQL, not a real Stash. Check: the bar covers the real nav at its height on desktop and mobile; a saved-filter spin on a real filter (tags, gender) picks only matching performers; O on the real scene page ends it within ~3 s; Stash's own hotkeys that navigate (g s etc.) bounce back. |
+| Lockdown | Gender labels to enums assume Stash's labels are the enum names in words ("Transgender Female" -> TRANSGENDER_FEMALE, "Non-Binary" -> NON_BINARY). True for 0.31; check if a gender filter spin finds nobody. |
 | Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
 | QuickTools | 1.4.0 middle click tested with script-dispatched events only (the harness browser cannot press a real middle button). Check in Stash: middle-click the right half of the player, it goes to the next scene and does not start autoscroll or pause the video. |
 | ScriptBadges | Stash's exact-name matching means scripts IntifaceSync finds (fuzzy names) can show as "No script". An optional check through the IntifaceSync backend would fix that. |
@@ -1452,6 +1502,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-09: Lockdown 1.0.0 (new plugin)
+
+User asked for a plugin that locks Stash to one performer until an O, with a
+way out, and to be interviewed on the design. Built from the answers; see
+§4.12. Harness-tested: spin of a saved filter and of favourites, manual lock,
+every route rule, O ending it, roulette (bounce, random button, video end),
+give up hold, history written with other config kept.
 
 ### 2026-10-08 (later): QuickTools 1.9.0, F for performer filters
 

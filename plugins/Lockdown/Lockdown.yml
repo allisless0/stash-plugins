@@ -1,0 +1,8 @@
+name: Lockdown
+description: "Lock Stash to one performer until an O on one of their scenes. Spin your favourites, spin a saved performer filter, or lock the performer you're looking at. Optional scene roulette; hold Give up for 5 seconds to quit early. Locks this browser only."
+version: 1.0.0
+url: https://github.com/allisless0/stash-plugins
+
+ui:
+  javascript:
+    - Lockdown.js
