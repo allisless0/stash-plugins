@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.0.0 | UI only | none (top-bar button) | every page | ~480 |
-| Lockdown | 1.0.0 | UI only | none (top-bar button) | every page while locked | ~750 |
+| Lockdown | 1.1.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1405,6 +1405,32 @@ Performers without scenes are never picked.
 Give up is a pointer hold with a timer (not rAF, which stalls in hidden
 tabs); releasing early resets it.
 
+**1.1.0, user report: "you could still cheat" (clicking tags or
+co-performers showed their scenes).** Three fixes, all load-bearing:
+
+1. **Bounce after the router.** Stash's router writes the URL with
+   pushState and only then sets the location it renders. 1.0.0 redirected
+   from inside the pushState wrapper, so the router's second step rendered
+   the forbidden page under the allowed URL (the harness had no router, so
+   it never showed). Now the veil goes up synchronously and the redirect is
+   `setTimeout(0)` (`later`). The harness page imitates the router
+   (`router.push` = pushState, then set `rendered`) and checks `rendered`,
+   not just the URL. **Never redirect synchronously from the wrapper.**
+2. **Cards are checked, not just routes.** CSS hides every `.scene-card`,
+   `.image-card`, `.gallery-card`, `.wall-item` and queue row
+   (`li:has(.queue-scene-details)`) under `body.ld-on` until it has
+   `ld-ok`; `scanCards()` (observer + 250 ms timer) resolves each with
+   `cardItem()` (tested; class picks the kind, since a scene card also links
+   galleries) and one aliased query of findScene/findImage/findGallery (the
+   list queries' by-id arguments differ: `scene_ids`, `image_ids`, none for
+   galleries). Not featuring them, unknown, or a failed check: stays hidden
+   (`ld-no` is display none). Fail closed.
+3. **No widening their own tabs.** Stash merges any `performers` URL rule
+   with the page's performer, so an INCLUDES (any of) rule listed other
+   performers' scenes. `stripPerformerRules()` (tested) removes those `c=`
+   parts, keeping the rest byte for byte. Enforcement now keys on path and
+   query, since such a change touches only the query.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1481,6 +1507,7 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Lockdown | 1.1.0 card hiding relies on Stash's card classes (`scene-card`, `image-card`, `gallery-card`, `wall-item`, `queue-scene-details`, seen in the 0.31 bundle). A card type with another class (a new view, a plugin's own cards) is not hidden. Check the wall and list views on a real Stash while locked. |
 | Lockdown | 1.0.0 tested in a harness against a fake GraphQL, not a real Stash. Check: the bar covers the real nav at its height on desktop and mobile; a saved-filter spin on a real filter (tags, gender) picks only matching performers; O on the real scene page ends it within ~3 s; Stash's own hotkeys that navigate (g s etc.) bounce back. |
 | Lockdown | Gender labels to enums assume Stash's labels are the enum names in words ("Transgender Female" -> TRANSGENDER_FEMALE, "Non-Binary" -> NON_BINARY). True for 0.31; check if a gender filter spin finds nobody. |
 | Todo | 1.0.0 tested in a harness, not a real Stash. Check: the button lands in the top bar on desktop and mobile widths; the list survives a reload and shows on a second device. A very long list is one config value; fine for hundreds of tasks, not designed for thousands. |
@@ -1502,6 +1529,12 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-09 (later): Lockdown 1.1.0, closing the cheats
+
+User: tags and co-performers still led to other scenes. Root cause was the
+redirect racing the router; also added card-level checks and stripping of
+performer rules on their tabs. See §4.12.
 
 ### 2026-10-09: Lockdown 1.0.0 (new plugin)
 

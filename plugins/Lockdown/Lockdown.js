@@ -50,6 +50,57 @@
     return { bounce: true };
   }
 
+  // A card or list row on any page, as the item it shows: {kind, id} or
+  // null. Scene, image and gallery cards are told apart by class, because a
+  // scene card also links its galleries; a wall item or a queue row takes the
+  // first item link it has.
+  function cardItem(className, hrefs) {
+    const cls = " " + (className || "") + " ";
+    const order = cls.includes(" scene-card ") ? ["scenes"]
+      : cls.includes(" image-card ") ? ["images"]
+      : cls.includes(" gallery-card ") ? ["galleries"]
+      : ["scenes", "images", "galleries"];
+    const kinds = { scenes: "scene", images: "image", galleries: "gallery" };
+    for (const want of order) {
+      const re = new RegExp(`^(?:https?://[^/]+)?/${want}/(\\d+)(?:[/?#]|$)`);
+      for (const h of hrefs || []) {
+        const m = re.exec(h || "");
+        if (m) return { kind: kinds[want], id: m[1] };
+      }
+    }
+    return null;
+  }
+
+  // On the locked performer's own tabs, Stash merges any "performers" rule in
+  // the URL with the performer the page is about; an "any of" rule then lists
+  // other performers' scenes too. Those rules come out of the URL. Returns
+  // the cleaned query string, or null when there was nothing to remove.
+  function stripPerformerRules(search) {
+    let params;
+    try { params = new URLSearchParams(search || ""); } catch { return null; }
+    const cs = params.getAll("c");
+    const keep = cs.filter((raw) => {
+      let inString = false, escaped = false, json = "";
+      for (const ch of raw) {
+        if (escaped) { escaped = false; json += ch; continue; }
+        if (ch === "\\" && inString) { escaped = true; json += ch; continue; }
+        if (ch === '"') inString = !inString;
+        json += (!inString && ch === "(") ? "{" : (!inString && ch === ")") ? "}" : ch;
+      }
+      try { return JSON.parse(json).type !== "performers"; } catch { return true; }
+    });
+    if (keep.length === cs.length) return null;
+    // Rebuild by hand from the raw parts: URLSearchParams would re-encode the
+    // criteria differently from how Stash writes them.
+    const parts = (search || "").replace(/^\?/, "").split("&").filter((part) => {
+      if (!part.startsWith("c=")) return true;
+      let raw;
+      try { raw = decodeURIComponent(part.slice(2).replace(/\+/g, " ")); } catch { return true; }
+      return keep.includes(raw);
+    });
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
   // Gender and circumcision are saved as display labels ("Transgender
   // Female", "Uncut"); GraphQL wants the enum. Stash maps label to enum and
   // falls back to a case-insensitive match; the enums are the labels in upper
@@ -168,7 +219,7 @@
 
   if (window.__LOCKDOWN_TEST__) {
     window.__LockdownTest = { routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration,
-                              historySummary, parseHistory };
+                              historySummary, parseHistory, cardItem, stripPerformerRules };
     return;
   }
 
@@ -260,6 +311,18 @@
     return (d?.r?.performers ?? []).some((p) => String(p.id) === String(pid));
   }
 
+  // Which of these items feature the performer, in one request: aliases of
+  // findScene / findImage / findGallery, which exist under the same names
+  // across Stash versions (the by-id arguments of the list queries do not).
+  async function featuresMany(items, pid) {
+    const field = { scene: "findScene", image: "findImage", gallery: "findGallery" };
+    const parts = items.filter((it) => /^\d+$/.test(it.id) && field[it.kind])
+      .map((it, i) => `a${i}: ${field[it.kind]}(id: "${it.id}") { performers { id } }`);
+    if (!parts.length) return [];
+    const d = await gql(`query { ${parts.join(" ")} }`);
+    return items.map((_, i) => (d?.[`a${i}`]?.performers ?? []).some((p) => String(p.id) === String(pid)));
+  }
+
   // History: read-merge-write of this plugin's config map; every other key
   // rides through, and a history that does not parse is left alone.
   let writeChain = Promise.resolve();
@@ -331,6 +394,13 @@ body.ld-on .top-nav { visibility: hidden !important; }
 #ld-bar .ld-giveup .ld-fill { position: absolute; inset: 0; width: 0; background: rgba(226,87,76,.55); }
 #ld-bar .ld-giveup span { position: relative; }
 #ld-veil { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1064; background: #12161a; display: none; }
+/* Every card stays invisible until it is known to feature the performer, so
+   a list that somehow widens never shows anyone else. */
+body.ld-on .scene-card:not(.ld-ok), body.ld-on .image-card:not(.ld-ok),
+body.ld-on .gallery-card:not(.ld-ok), body.ld-on .wall-item:not(.ld-ok),
+body.ld-on li:has(> .queue-scene-details):not(.ld-ok),
+body.ld-on li:has(.queue-scene-details):not(.ld-ok) { visibility: hidden !important; }
+body.ld-on .ld-no { display: none !important; }
 body.ld-checking #ld-veil { display: block; }
 .ld-modal-back { position: fixed; inset: 0; z-index: 1070; background: rgba(0,0,0,.65); display: flex;
   align-items: center; justify-content: center; }
@@ -505,6 +575,8 @@ body.ld-checking #ld-veil { display: block; }
     try { baseO = await sceneOSum(p.id); } catch (e) { log(`O baseline failed: ${e.message}`, "error"); }
     lock = { pid: String(p.id), name: p.name, image: p.image_path || "", startedAt: Date.now(),
              baseO, roulette: !!roulette, how };
+    allowedCache.clear();
+    itemCache.clear();
     writeState(lock);
     closeModal();
     enforce(true);
@@ -518,6 +590,7 @@ body.ld-checking #ld-veil { display: block; }
     lock = null;
     writeState(null);
     clearBar();
+    for (const el of document.querySelectorAll(".ld-ok, .ld-no")) el.classList.remove("ld-ok", "ld-no");
     const ms = Date.now() - done.startedAt;
     recordHistory({ pid: done.pid, name: done.name, how: done.how, result, ms, at: done.startedAt });
     const box = modal(`<div class="ld-spin ${result === "done" ? "ld-landed" : ""}">
@@ -635,10 +708,22 @@ body.ld-checking #ld-veil { display: block; }
     if (!lock) return;
     renderBar();
     const path = location.pathname;
-    if (!force && path === lastPath) return;
-    lastPath = path;
+    // The query counts too: a filter added on their Scenes tab changes only
+    // the query, and it is exactly what can widen the list.
+    const here = path + location.search;
+    if (!force && here === lastPath) return;
+    lastPath = here;
     const r = routeCheck(path, lock.pid, lock.roulette);
-    if (r.ok) { document.body.classList.remove("ld-checking"); return; }
+    if (r.ok) {
+      const clean = stripPerformerRules(location.search);
+      if (clean !== null) {
+        document.body.classList.add("ld-checking");
+        later(() => { lastPath = null; navigate(path + clean, true); });
+        return;
+      }
+      document.body.classList.remove("ld-checking");
+      return;
+    }
     if (r.bounce) { bounce(); return; }
     const key = `${lock.pid}:${r.check}:${r.id}`;
     if (allowedCache.has(key)) {
@@ -651,15 +736,68 @@ body.ld-checking #ld-veil { display: block; }
     let ok = false;
     try { ok = await features(r.check, r.id, lock.pid); }
     catch (e) { log(`Check failed (${e.message}), treating as not allowed`, "error"); }
-    if (seq !== checkSeq || !lock || location.pathname !== path) return;
+    if (seq !== checkSeq || !lock || location.pathname + location.search !== here) return;
     allowedCache.set(key, ok);
     if (ok) document.body.classList.remove("ld-checking"); else bounce();
   }
 
+  // The router records a navigation in two steps: the URL, then the state
+  // it renders. Redirecting inside the first step (as 1.0.0 did, from the
+  // pushState wrapper) was overwritten by the second, so the forbidden page
+  // rendered under an allowed URL. The veil goes up at once and the redirect
+  // waits for the router to finish.
+  function later(fn) { setTimeout(fn, 0); }
+
   function bounce() {
-    document.body.classList.remove("ld-checking");
-    if (lock.roulette) { goRandom(); return; }
-    navigate(`/performers/${lock.pid}/scenes`, true);
+    document.body.classList.add("ld-checking");
+    later(() => {
+      if (!lock) return;
+      lastPath = null;                   // re-check wherever we land
+      if (lock.roulette) { goRandom(); return; }
+      navigate(`/performers/${lock.pid}/scenes`, true);
+    });
+  }
+
+  // ── Cards ──────────────────────────────────────────────────────────────────
+  // Checked on every page while locked: anything that does not feature the
+  // performer is removed from view (ld-no), the rest shown (ld-ok).
+
+  const CARD_SEL = ".scene-card, .image-card, .gallery-card, .wall-item, .queue-scene-details";
+  const itemCache = new Map();       // "scene:12" -> true/false, for this lock
+  let cardBusy = false;
+
+  function cardOf(el) {
+    return el.classList.contains("queue-scene-details") ? (el.closest("li") || el) : el;
+  }
+
+  async function scanCards() {
+    if (!lock || cardBusy) return;
+    const pending = [];
+    for (const el of document.querySelectorAll(CARD_SEL)) {
+      const card = cardOf(el);
+      if (card.classList.contains("ld-ok") || card.classList.contains("ld-no")) continue;
+      const hrefs = Array.from(card.querySelectorAll("a[href]")).map((a) => a.getAttribute("href"));
+      if (card.tagName === "A") hrefs.unshift(card.getAttribute("href"));
+      const it = cardItem(el.className, hrefs);
+      if (!it) { card.classList.add("ld-no"); continue; }
+      const key = `${lock.pid}:${it.kind}:${it.id}`;
+      if (itemCache.has(key)) { card.classList.add(itemCache.get(key) ? "ld-ok" : "ld-no"); continue; }
+      pending.push({ card, it, key });
+    }
+    if (!pending.length) return;
+    cardBusy = true;
+    try {
+      const unique = [...new Map(pending.map((p) => [p.key, p.it])).entries()].slice(0, 120);
+      const res = await featuresMany(unique.map(([, it]) => it), lock.pid);
+      unique.forEach(([key], i) => itemCache.set(key, !!res[i]));
+    } catch (e) {
+      log(`Card check failed: ${e.message}`, "error");     // they stay hidden
+    } finally {
+      cardBusy = false;
+    }
+    for (const p of pending) {
+      if (itemCache.has(p.key)) p.card.classList.add(itemCache.get(p.key) ? "ld-ok" : "ld-no");
+    }
   }
 
   // ── O detection ────────────────────────────────────────────────────────────
@@ -736,7 +874,7 @@ body.ld-checking #ld-veil { display: block; }
     if (queued) return;
     queued = true;
     // A timer, not requestAnimationFrame: rAF never fires in a hidden tab.
-    setTimeout(() => { queued = false; ensureNav(); if (lock) renderBar(); }, 80);
+    setTimeout(() => { queued = false; ensureNav(); if (lock) { renderBar(); scanCards(); } }, 80);
   }).observe(document.body, { childList: true, subtree: true });
 
   setInterval(() => {
@@ -745,6 +883,7 @@ body.ld-checking #ld-veil { display: block; }
     enforce(false);
     tick();
     checkO();
+    scanCards();
   }, 250);
 
   ensureNav();

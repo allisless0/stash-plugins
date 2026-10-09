@@ -22,7 +22,13 @@ scenes, galleries and images, and **Give up**.
 
 Only that performer's page (Scenes, Galleries and Images tabs) and the scenes,
 images and galleries they appear in can be opened. Anything else goes back to
-their scenes.
+their scenes: another performer, a tag, a studio, a list, a scene they are not
+in.
+
+What a page shows is checked too, not just where you are. Every scene, image
+and gallery card on any page stays hidden until it is known to feature the
+performer, and is removed if it does not. Adding other performers to the
+filter on their own tabs is undone.
 
 ## Ending
 

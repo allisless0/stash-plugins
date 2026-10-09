@@ -18,7 +18,7 @@ const sandbox = {
   window: windowStub,
   document: { head: { appendChild() {} }, body: { appendChild() {} }, addEventListener() {},
               getElementById: () => null, querySelector: () => null },
-  location: { pathname: "/" },
+  location: { pathname: "/" }, URLSearchParams,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   fetch: () => new Promise(() => {}),
   setTimeout: () => 0, setInterval: () => 0,
@@ -56,6 +56,38 @@ check("roulette: their scene list bounces (scenes come at random)",
   eq(rc("/performers/7", true), { bounce: true }) && eq(rc("/performers/7/scenes", true), { bounce: true }));
 check("roulette: galleries, images and a scene still work",
   eq(rc("/performers/7/images", true), { ok: true }) && eq(rc("/scenes/42", true), { check: "scene", id: "42" }));
+
+// ── cards: which item each one shows ────────────────────────────────────────
+check("scene card is its scene, not a gallery it links",
+  eq(T.cardItem("scene-card grid-card card", ["/galleries/3", "/scenes/12", "/performers/7"]), { kind: "scene", id: "12" }));
+check("image card", eq(T.cardItem("image-card grid-card", ["/images/40?x=1"]), { kind: "image", id: "40" }));
+check("gallery card", eq(T.cardItem("gallery-card", ["/scenes/1", "/galleries/8"]), { kind: "gallery", id: "8" }));
+check("wall item or queue row: first item link",
+  eq(T.cardItem("wall-item", ["/performers/2", "/scenes/5"]), { kind: "scene", id: "5" }) &&
+  eq(T.cardItem("queue-scene-details", ["http://h/scenes/9"]), { kind: "scene", id: "9" }));
+check("a card with no item link is nothing", T.cardItem("scene-card", ["/performers/2"]) === null);
+check("scene markers link is not a scene", T.cardItem("wall-item", ["/scenes/markers"]) === null);
+
+// ── performer rules come out of their tabs' URLs ────────────────────────────
+const enc = (o) => {           // Stash's own encoding of one criterion
+  let inS = false, esc = false, out = "";
+  for (const ch of JSON.stringify(o)) {
+    if (esc) { esc = false; out += ch; continue; }
+    if (ch === "\\" && inS) { esc = true; out += ch; continue; }
+    if (ch === '"') inS = !inS;
+    out += (!inS && ch === "{") ? "(" : (!inS && ch === "}") ? ")" : ch;
+  }
+  let s = encodeURI(out);
+  for (const c of "?#&;=+") s = s.split(c).join(encodeURIComponent(c));
+  return s;
+};
+const perfRule = enc({ type: "performers", modifier: "INCLUDES", value: { items: [{ id: "9", label: "Other (x+y)" }], excluded: [] } });
+const tagRule = enc({ type: "tags", modifier: "INCLUDES_ALL", value: { items: [{ id: "3", label: "A&B" }], excluded: [], depth: 0 } });
+check("a performers rule is removed, the rest kept exactly",
+  T.stripPerformerRules(`?c=${perfRule}&c=${tagRule}&sortby=date`) === `?c=${tagRule}&sortby=date`,
+  T.stripPerformerRules(`?c=${perfRule}&c=${tagRule}&sortby=date`));
+check("only a performers rule leaves an empty query", T.stripPerformerRules(`?c=${perfRule}`) === "");
+check("nothing to remove is null", T.stripPerformerRules(`?c=${tagRule}&sortby=date`) === null && T.stripPerformerRules("") === null);
 
 // ── saved performer filter -> GraphQL filter (Stash's toCriterionInput) ────
 const types = {
