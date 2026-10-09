@@ -1,6 +1,6 @@
 name: QuickTools
-description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers (also the card under the mouse in any list), F switches, renames and deletes saved scene and performer filters, double-click or middle-click jumps through the scene queue. Each feature can be turned off."
-version: 1.9.0
+description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers (also the card under the mouse in any list), F switches, renames and deletes saved scene and performer filters, the mouse wheel seeks over the player (and sets volume on its left half), double-click or middle-click jumps through the scene queue. Each feature can be turned off."
+version: 1.10.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
@@ -28,6 +28,30 @@ settings:
     displayName: Disable saved filters (F)
     description: "Turn off the F hotkey that opens the saved filters panel: scene filters on the Scenes page and Scenes tabs, performer filters on the Performers page and Performers tabs. When on, F there opens the panel instead of Stash's own F (edit filter, or favourite on a performer page); pressing F twice quickly still does Stash's."
     type: BOOLEAN
+  disableWheel:
+    displayName: Disable mouse wheel on the player
+    description: "Turn off seeking with the mouse wheel over the video player. (This replaces the VideoScrollWheel plugin; disable that one.)"
+    type: BOOLEAN
+  wheelVolumeLeft:
+    displayName: Wheel on the left half changes volume
+    description: "When on, the wheel over the left half of the player changes volume and the right half seeks. When off, the whole player seeks. Taken from VideoScrollWheel's setting until you change it here."
+    type: BOOLEAN
+  wheelSeekSpeed:
+    displayName: Wheel seek speed
+    description: "(Default 100) How far one wheel notch seeks. Negative reverses the direction."
+    type: NUMBER
+  wheelAcceleration:
+    displayName: Wheel seek acceleration
+    description: "(Default 100) How quickly fast scrolling speeds the seek up. 0 keeps it steady."
+    type: NUMBER
+  wheelMaxSpeed:
+    displayName: Wheel seek top speed
+    description: "(Default 5) The most a fast run of notches multiplies the seek by."
+    type: NUMBER
+  wheelVolumeSpeed:
+    displayName: Wheel volume speed
+    description: "(Default 100) How much one notch changes the volume. Negative reverses the direction."
+    type: NUMBER
   deleteTagName:
     displayName: Delete tag name
     description: "Tag that D toggles. Created the first time you press D. Leave blank for 'Marked for Delete'. Nothing is ever deleted by the plugin: filter the scene list by this tag when you want to clear them out."

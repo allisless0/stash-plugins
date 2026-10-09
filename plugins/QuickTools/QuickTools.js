@@ -10,6 +10,8 @@
  *   T and D also act on the scene or performer card under the pointer, in
  *   any grid or list, so a library can be tagged without opening anything.
  *   F            saved filters: apply, rename, delete (scene and performer lists)
+ *   mouse wheel  over the player: seek, or volume on the left half (from the
+ *                VideoScrollWheel plugin, folded in)
  *   double-click jump through the scene queue (off by default)
  *
  * Merged from the separate QuickRate, QuickMark and QuickNav plugins. The
@@ -230,6 +232,34 @@
       (tag.id && String(it.id) === String(tag.id)) || (name && String(it.label || "").toLowerCase() === name));
   }
 
+  // ── Mouse wheel over the player (folded in from VideoScrollWheel 0.4) ──────
+  // Its velocity model is kept as it was, constants included, so the feel
+  // does not change for people moving over: a quick run of notches speeds
+  // up from `min` towards `max`, and slows back down when the wheel rests.
+  function wheelVelocity(v, dtMs, cfg) {
+    if (dtMs > cfg.timeout || cfg.acceleration === 0) return cfg.min;
+    const friction = v * 0.00015 * dtMs * (cfg.decay / 100);
+    const accel = (1 / Math.max(1, dtMs)) * 0.55 * (cfg.acceleration / 100);
+    return Math.max(cfg.min, Math.min(v - friction + accel, cfg.max));
+  }
+
+  // Seconds to move for one wheel event. At least a second, so a small notch
+  // on a trackpad still moves (VideoScrollWheel looped re-seeking for this).
+  function wheelSeekDelta(delta, velocity, speed) {
+    const d = delta * 0.01 * velocity * (speed / 100);
+    return d === 0 ? 0 : Math.sign(d) * Math.max(1, Math.abs(d));
+  }
+
+  // New volume, 0 to 1. Scrolling up is louder.
+  function wheelVolumeNext(volume, delta, speed) {
+    return Math.max(0, Math.min(1, volume + delta * -0.00065 * (speed / 100)));
+  }
+
+  // Lines and pages (Firefox, some mice) to pixels, so a notch is a notch.
+  function wheelPixels(delta, mode) {
+    return delta * (mode === 1 ? 33 : mode === 2 ? 800 : 1);
+  }
+
   // Tags the Advanced Rating plugin writes ("Body \u2605: 5"). The T panel can
   // hide them; they are never removed by being hidden.
   function isRatingTag(name) {
@@ -377,19 +407,45 @@
     deleteTagName:  "",     // blank means DEFAULT_DELETE_TAG
     disableTags:    false,
     disableFilters: false,
+    disableWheel:   false,
+    wheelVolumeLeft: false,  // left half of the player changes volume
+    wheelSeekSpeed: 100,
+    wheelVolumeSpeed: 100,
+    wheelAcceleration: 100,
+    wheelMaxSpeed:  5,
+  };
+
+  // VideoScrollWheel's tuning that has no QuickTools setting of its own;
+  // carried over from its config when present, else its defaults.
+  const wheelExtra = { min: 1, decay: 100, timeout: 2000 };
+
+  // A QuickTools wheel setting never saved takes VideoScrollWheel's value,
+  // so moving over keeps the same behaviour. The plugin was registered under
+  // two ids over its life (CommunityScripts issue 320); both are read.
+  const FROM_VSW = {
+    wheelVolumeLeft: "allowVolumeChange", wheelSeekSpeed: "timeScrollSpeed",
+    wheelVolumeSpeed: "volumeScrollSpeed", wheelAcceleration: "timeScrollAcceleration",
+    wheelMaxSpeed: "maxTimeScrollSpeed",
   };
 
   async function loadSettings() {
     try {
       const d   = await gql(`query { configuration { plugins } }`);
       const own = d?.configuration?.plugins?.[PLUGIN_ID] ?? {};
+      const vsw = { ...(d?.configuration?.plugins?.videoScrollWheel ?? {}),
+                    ...(d?.configuration?.plugins?.VideoScrollWheel ?? {}) };
       for (const key of Object.keys(settings)) {
         const want = typeof settings[key];
-        const got  = own[key];
+        let got  = own[key];
+        if (got === undefined && FROM_VSW[key]) got = vsw[FROM_VSW[key]];
         if (typeof got !== want) continue;
         if (want === "string") { if (got.trim()) settings[key] = got.trim(); }
+        else if (want === "number") { if (Number.isFinite(got)) settings[key] = got; }
         else settings[key] = got;
       }
+      if (Number.isFinite(vsw.minTimeScrollSpeed)) wheelExtra.min = vsw.minTimeScrollSpeed;
+      if (Number.isFinite(vsw.timeScrollVelocityDecay)) wheelExtra.decay = vsw.timeScrollVelocityDecay;
+      if (Number.isFinite(vsw.timeScrollVelocityTimeout)) wheelExtra.timeout = vsw.timeScrollVelocityTimeout;
       log(`Settings: ${JSON.stringify(settings)}`);
     } catch (e) {
       log(`Settings read failed, using defaults: ${e.message}`);
@@ -2170,6 +2226,87 @@
     return { openPanel, onKey, isOpen: () => open, closePanel, listHere };
   })();
 
+  // ═══ Mouse wheel over the player ═══════════════════════════════════════════
+  // Right half (or anywhere, with volume off) seeks; left half changes volume.
+  // Changes from VideoScrollWheel, which this replaces:
+  //  - the page no longer scrolls along (it never called preventDefault)
+  //  - left or right is measured on the player, not on whatever element is
+  //    under the pointer (the control bar, an overlay)
+  //  - a run of notches is one seek to the summed target, not one per notch
+  //  - a readout shows where it is going, or the volume
+  //  - sideways trackpad scrolling seeks too
+
+  const Wheel = (() => {
+    let velocity = 1;
+    let last = 0;
+    let target = null;        // where a run of notches is heading
+    let from = 0;             // where that run started, for the readout
+    let targetAt = 0;
+    let applyTimer = null;
+
+    const player = () => document.getElementById("VideoJsPlayer")?.player || null;
+
+    function apply() {
+      applyTimer = null;
+      const p = player();
+      const v = videoEl();
+      if (target === null) return;
+      if (p && typeof p.currentTime === "function") p.currentTime(target);
+      else if (v) v.currentTime = target;
+    }
+
+    function seek(delta) {
+      const now = Date.now();
+      const dt = now - last;
+      if (dt === 0) return;              // same millisecond: VideoScrollWheel skipped these too
+      velocity = wheelVelocity(velocity, dt, { ...wheelExtra, acceleration: settings.wheelAcceleration,
+                                               max: Math.max(wheelExtra.min, settings.wheelMaxSpeed) });
+      last = now;
+      const step = wheelSeekDelta(delta, velocity, settings.wheelSeekSpeed);
+      const p = player(), v = videoEl();
+      const now_ = p && typeof p.currentTime === "function" ? p.currentTime() : v.currentTime;
+      const dur = p && typeof p.duration === "function" ? p.duration() : v.duration;
+      const fresh = target === null || now - targetAt > 600;
+      if (fresh) from = now_;
+      const base = fresh ? now_ : target;
+      target = Math.max(0, Math.min(dur || 0, base + step));
+      targetAt = now;
+      clearTimeout(applyTimer);
+      applyTimer = setTimeout(apply, 40);
+      const moved = Math.round(target - from);
+      toast(`${moved >= 0 ? "+" : "\u2212"}${Math.abs(moved)}s \u00b7 ${fmtTime(Math.round(target)).replace(/\.\d$/, "")}`,
+            "qt-info", "", 700);
+    }
+
+    function volume(delta) {
+      const p = player(), v = videoEl();
+      const cur = p && typeof p.volume === "function" ? p.volume() : v.volume;
+      const next = wheelVolumeNext(cur, delta, settings.wheelVolumeSpeed);
+      if (p && typeof p.volume === "function") { p.volume(next); if (next > 0 && p.muted()) p.muted(false); }
+      else { v.volume = next; if (next > 0) v.muted = false; }
+      toast(`Volume ${Math.round(next * 100)}%`, "qt-info", "", 700);
+    }
+
+    function onWheel(ev) {
+      if (settings.disableWheel || !onScenePage() || ev.ctrlKey) return;     // ctrl = pinch zoom
+      if (active && active.el && active.el.contains(ev.target)) return;      // a panel's own list scrolls
+      const box = ev.target.closest?.(".video-js");
+      if (!box || ev.target.closest(".vjs-menu, .vjs-modal-dialog")) return;
+      const v = videoEl();
+      if (!v || !(v.duration > 0)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const dx = wheelPixels(ev.deltaX, ev.deltaMode), dy = wheelPixels(ev.deltaY, ev.deltaMode);
+      const r = box.getBoundingClientRect();
+      const leftHalf = ev.clientX - r.left < r.width / 2;
+      if (Math.abs(dx) > Math.abs(dy)) { seek(dx); return; }
+      if (leftHalf && settings.wheelVolumeLeft) volume(dy);
+      else seek(dy);
+    }
+
+    return { onWheel };
+  })();
+
   // ═══ Queue navigation (double-click) ═══════════════════════════════════════
 
   const Nav = (() => {
@@ -2720,6 +2857,9 @@
 
   document.addEventListener("dblclick", (ev) => Nav.onDblClick(ev), true);
 
+  // Not passive: preventDefault is what stops the page scrolling along.
+  document.addEventListener("wheel", (ev) => Wheel.onWheel(ev), { capture: true, passive: false });
+
   // Resuming playback dismisses the rating panel, committing on the way out.
   document.addEventListener("play", (ev) => {
     if (Rate.isOpen() && ev.target instanceof HTMLMediaElement) Rate.closePanel(true);
@@ -2732,7 +2872,8 @@
     window.__QuickToolsTest = { typeDigit, orderRange, fmtTime, httpErrorText, uiHost, sideOf,
                                 targetFromPath, nextTagIds, cardTarget, isRatingTag,
                                 filterListFor, savedFilterQuery, savedCriteria, criteriaKey,
-                                currentCriteria, isDeleteFilter, encodeCriterion };
+                                currentCriteria, isDeleteFilter, encodeCriterion,
+                                wheelVelocity, wheelSeekDelta, wheelVolumeNext, wheelPixels };
   }
 
   loadSettings().then(() => {
@@ -2742,6 +2883,7 @@
     if (!settings.disableDelete)  { on.push("D delete-tag"); Del.start(); }
     if (!settings.disableTags)    on.push("T tags");
     if (!settings.disableFilters) on.push("F saved filters");
+    if (!settings.disableWheel)   on.push(settings.wheelVolumeLeft ? "wheel seek/volume" : "wheel seek");
     if (settings.enableNav)       on.push("double-click / middle-click queue");
     log(`QuickTools ready. Active: ${on.join(", ") || "nothing (all features disabled)"}`);
   });

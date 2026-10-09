@@ -12,6 +12,7 @@ Shortcuts for the Stash scene player, plus quick tags on performer pages. Each c
 | `D` | on | Toggle the "Marked for Delete" tag (scene page, or the scene card under the mouse) |
 | `T` | on | Add or remove tags on the scene or performer: the page's own, or the card under the mouse |
 | `F` | on | Saved filters: switch, rename, delete (scene and performer lists) |
+| mouse wheel | on | Over the player: seek, or volume on its left half |
 | double-click / middle-click | **off** | Jump through the scene queue |
 
 All of them act on `/scenes/<id>` pages and never fire while you are typing in
@@ -171,6 +172,21 @@ off with "Disable saved filters (F)".
 
 Renaming keeps everything else about the filter as it was; deleting a saved
 filter only removes the filter, never any scenes.
+
+## Mouse wheel on the player
+
+Scroll over the video to seek: down is forward, up is back, and a fast run of
+notches speeds up. A sideways trackpad swipe seeks too. A readout shows how far
+you have moved and where you are, e.g. **+12s · 4:31**.
+
+With **Wheel on the left half changes volume** on, the left half of the player
+sets the volume instead (up is louder) and the right half seeks.
+
+The page does not scroll while the pointer is over the player; anywhere else
+it scrolls as normal.
+
+This replaces the **VideoScrollWheel** plugin. Your settings from it carry over
+until you change them here; disable VideoScrollWheel once QuickTools is updated.
 
 ## Queue navigation — double-click or middle-click
 

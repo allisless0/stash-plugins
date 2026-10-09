@@ -66,7 +66,7 @@ try {
 // click on the video. A third means a feature added its own listener.
 // Middle-click navigation (1.4.0) rides the one pointerdown handler; auxclick
 // is only the swallow guard.
-const expected = { keydown: 1, pointerdown: 1, dblclick: 2, auxclick: 1 };
+const expected = { keydown: 1, pointerdown: 1, dblclick: 2, auxclick: 1, wheel: 1 };
 for (const [type, want] of Object.entries(expected)) {
   const n = listeners.filter(([, t]) => t === type).length;
   check(`${want} global ${type} handler(s)`, n === want, `found ${n}`);
@@ -199,6 +199,22 @@ check("delete filter found by tag id", T.isDeleteFilter(sfDel([{ id: "2143", lab
 check("delete filter found by tag name", T.isDeleteFilter(sfDel([{ id: "9", label: "marked for delete" }]), { id: null, name: "Marked for Delete" }));
 check("excluding the delete tag is not the delete filter", !T.isDeleteFilter(sfDel([{ id: "2143" }], "EXCLUDES"), delTag));
 check("other tag filters are not", !T.isDeleteFilter(sfTags, delTag) && !T.isDeleteFilter(sfRate, delTag));
+
+// ── mouse wheel (VideoScrollWheel folded in) ────────────────────────────────
+const cfgW = { min: 1, max: 5, acceleration: 100, decay: 100, timeout: 2000 };
+check("a pause longer than the timeout resets the speed", T.wheelVelocity(4, 2500, cfgW) === 1);
+check("acceleration 0 means a fixed speed", T.wheelVelocity(3, 50, { ...cfgW, acceleration: 0 }) === 1);
+let vel = 1;
+for (let i = 0; i < 300; i++) vel = T.wheelVelocity(vel, 30, cfgW);   // a long fast scrub
+check("a fast run of notches speeds up, capped at max", vel > 3 && vel <= 5, String(vel));
+check("speed never drops below min", T.wheelVelocity(1, 1900, cfgW) >= 1);
+check("a notch down seeks forward, up seeks back", T.wheelSeekDelta(100, 1, 100) === 1 && T.wheelSeekDelta(-100, 2, 100) === -2);
+check("a tiny trackpad nudge still moves a second", T.wheelSeekDelta(4, 1, 100) === 1 && T.wheelSeekDelta(-4, 1, 100) === -1);
+check("negative speed reverses, as in VideoScrollWheel", T.wheelSeekDelta(100, 1, -100) === -1);
+check("no movement, no seek", T.wheelSeekDelta(0, 3, 100) === 0);
+check("scrolling up is louder, clamped to 0..1",
+  T.wheelVolumeNext(0.5, -100, 100) > 0.5 && T.wheelVolumeNext(0.99, -1000, 100) === 1 && T.wheelVolumeNext(0.01, 1000, 100) === 0);
+check("line and page deltas become pixels", T.wheelPixels(3, 1) === 99 && T.wheelPixels(1, 2) === 800 && T.wheelPixels(100, 0) === 100);
 
 // ── range markers ───────────────────────────────────────────────────────────
 check("range in order", JSON.stringify(T.orderRange(10, 20)) === "[10,20]");
