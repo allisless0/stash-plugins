@@ -16,12 +16,14 @@ it will link to. Click its **x** to add the task without a link, or
   the page, then its tasks.
 - **Scenes include their performers:** on a scene's page, tasks for the
   performers in it are listed too, under each performer.
-- **All:** every open task, grouped by who or what it is about (a performer
+- **Open:** every open task, grouped by who or what it is about (a performer
   with their photo, a scene with its thumbnail and who is in it, a studio,
-  tag or gallery), unlinked tasks last under **General**. Click a group to go
-  to its page.
-- **Done:** finished tasks, newest first, with when. **Clear done** asks once
-  more before clearing.
+  tag or gallery), unlinked tasks last under **General**. Every group looks
+  the same, one task or many: a header, then its tasks indented beneath.
+  Click a header to go to its page.
+- **Done:** finished tasks, grouped the same way so you can still see whose
+  they were, newest first, with when. **Clear done** asks once more before
+  clearing.
 - **Search** appears once you have more than ten tasks.
 
 ## Each task

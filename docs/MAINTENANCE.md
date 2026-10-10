@@ -51,7 +51,7 @@ Keep those greps in step with any refactor of the safety chain.
 | IntifaceSync (vibe fork) | 1.34-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
 | Collections | 1.2.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.2.0 | UI only | none | any page with scene cards | ~150 |
-| Todo | 1.2.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
+| Todo | 1.3.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
 | Insights | 2.1.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
 | Lockdown | 1.4.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
@@ -1271,6 +1271,30 @@ link, tick, edit, clear, a concurrent "phone" write and a corrupted list.
   MutationObserver calls them, and an unconditional textContent write is a
   mutation, which made 1.0 re-render every 80 ms forever.
 
+**1.3.0 (two mockups in chat, signed off: "looks great").** User screenshots
+of 1.2.0: every one-task performer got a full header block, so five
+"Download" tasks were five big headers; Done showed bare "Download" lines
+with no performer; a blank gap sat under the add box. First proposal (single
+rows with the link inline, groups only at 2+) was turned down as
+inconsistent; the user wanted hierarchy and the same shape for one task or
+many.
+- Every group, one task or many, General included, is a slim header
+  (`.todo-ghead`: 28 px picture, name, "performer · 2 tasks", arrow) and its
+  tasks in `.todo-kids`: indented, behind a 2 px guide line. Each group sits
+  in a slightly sunk panel (`.todo-g`), which replaces the divider lines.
+  Task rows (`.todo-r.todo-task`) are now 18 px checkbox, text, actions.
+  This supersedes 1.1.0's single 40 px column for task rows; headers and the
+  page card keep their own columns.
+- **Done** is grouped the same way (`groupDone`, tested): each group
+  newest-finished first, groups by their newest finish, General last. Done
+  tasks always kept their link; 1.2.0 just never showed it.
+- The "All" tab is labelled **Open** (it only ever counted open tasks); the
+  internal value is still `all`.
+- `.todo-linkline:empty` is hidden: off an entity page it reserved 28 px for
+  nothing.
+- This page: the page card, then its own tasks in `.todo-kids`, then each
+  performer as a group.
+
 ### 4.10 QuickTools `T`: quick tags (1.5.0)
 
 User request: quick tags with T for scenes and for performers on their page.
@@ -1809,6 +1833,14 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (late night): Todo 1.3.0, consistent hierarchy
+
+User screenshots of the restyled Todo: heavy headers for single tasks, done
+tasks without their performer, a gap under the add box. Two mockups; the
+second (same header for every group, tasks indented behind a guide line,
+Done grouped too) signed off. 4 new checks (45), harness run of Open, Done
+and a scene page. See §4.9, 1.3.0.
 
 ### 2026-10-10 (late night): Insights 2.1.0, Stash's numbers hidden
 

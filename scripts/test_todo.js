@@ -118,5 +118,17 @@ const nowT = new Date(2026, 9, 10, 12).getTime();
 check("done when", T.fmtAgo(new Date(2026, 9, 10, 1).getTime(), nowT) === "today" &&
   T.fmtAgo(new Date(2026, 9, 9, 1).getTime(), nowT) === "yesterday" && T.fmtAgo(0, nowT) === "");
 
+// ── 1.3.0: done tasks keep their group ──────────────────────────────────────
+const doneT = [
+  P("dj1", { link: jane, done: true, doneAt: 10 }), P("dg", { done: true, doneAt: 99 }), P("ds", { link: scene, done: true, doneAt: 30 }),
+  P("dj2", { link: jane, done: true, doneAt: 50 }),
+];
+const DG = T.groupDone(doneT);
+check("done groups: newest finish first, general last whatever its date",
+  eq(DG.map((g) => g.key), ["performer:5", "scene:12", "general"]), JSON.stringify(DG.map((g) => g.key)));
+check("inside a done group, newest finish first", eq(DG[0].items.map((x) => x.id), ["dj2", "dj1"]));
+check("a done task keeps its link for the header", DG[0].link === jane && DG[2].link === null);
+check("nothing done, no groups", T.groupDone([]).length === 0);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

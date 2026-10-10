@@ -144,6 +144,23 @@
     return general ? linked.concat(general) : linked;
   }
 
+  // "Done", grouped the same way as "Open" so a finished "Download" still
+  // says whose it was: each group newest-finished first, groups by their
+  // newest finish, unlinked ("General") last.
+  function groupDone(done) {
+    const groups = new Map();
+    for (const t of done) {
+      const k = linkKey(t.link) || "general";
+      if (!groups.has(k)) groups.set(k, { key: k, link: t.link || null, items: [] });
+      groups.get(k).items.push(t);
+    }
+    const latest = (g) => Math.max(...g.items.map((t) => t.doneAt || 0));
+    for (const g of groups.values()) g.items.sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+    const linked = [...groups.values()].filter((g) => g.key !== "general").sort((a, b) => latest(b) - latest(a));
+    const general = groups.get("general");
+    return general ? linked.concat(general) : linked;
+  }
+
   // What belongs to this page: its own tasks, and on a scene page the tasks
   // of the performers in it, by performer.
   function tasksForPage(open, here, scenePerformerIds) {
@@ -181,7 +198,7 @@
 
   if (window.__TODO_TEST__) {
     window.__TodoTest = { entityFromPath, entityUrl, sameEntity, applyOp, parseItems, sortForView,
-                          orderTasks, groupTasks, tasksForPage, matches, fmtAgo };
+                          orderTasks, groupTasks, groupDone, tasksForPage, matches, fmtAgo };
     return;
   }
 
@@ -370,6 +387,8 @@
 #todo-panel input.todo-input:focus { border-color: color-mix(in srgb, #879A39 70%, transparent);
   box-shadow: inset 0 2px 5px rgba(0,0,0,.5), 0 0 0 2px color-mix(in srgb, #879A39 22%, transparent); }
 #todo-panel .todo-linkline { display: flex; align-items: center; gap: 6px; min-height: 28px; font-size: 12px; color: #878580; }
+/* off an item's page there is nothing to link; reserving the line left a gap */
+#todo-panel .todo-linkline:empty { display: none; }
 /* a link is a link whatever it points at, so the add-box chip stays blue */
 #todo-panel .todo-lchip { display: inline-flex; align-items: center; gap: 6px; max-width: 290px; padding: 2px 6px 2px 3px;
   border-radius: 999px; background: #343331; background: color-mix(in srgb, #4385BE 22%, #343331);
@@ -395,6 +414,10 @@
 #todo-panel .todo-body { overflow-y: auto; padding: 0 0 10px; scrollbar-color: #403E3C transparent; }
 #todo-panel .todo-r { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; column-gap: 12px; align-items: center;
   min-height: 36px; padding: 0 16px; box-sizing: border-box; }
+/* 1.3.0: a task is a child row under its group's header, so it is narrower
+   than the 40 px media grid: checkbox, text, actions */
+#todo-panel .todo-r.todo-task { grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; min-height: 32px;
+  padding: 3px 6px; border-radius: 6px; }
 #todo-panel .todo-r.todo-task:hover { background: rgba(255,255,255,.04); }
 #todo-panel .todo-m { display: flex; align-items: center; justify-content: center; }
 #todo-panel .todo-m input { width: 16px; height: 16px; margin: 0; accent-color: #879A39; cursor: pointer; }
@@ -411,9 +434,19 @@
 #todo-panel .todo-edit { width: 100%; box-sizing: border-box; background: #1C1B1A; color: #E6E4D9;
   border: 1px solid #879A39; border-radius: 4px; padding: 3px 6px; font: inherit; outline: none;
   box-shadow: inset 0 2px 4px rgba(0,0,0,.5); }
-/* engraved divider: a dark line with a faint lit edge under it */
-#todo-panel .todo-g { margin-top: 8px; padding-top: 8px; border-top: 1px solid #1C1B1A; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
-#todo-panel .todo-g:first-child { margin-top: 0; padding-top: 2px; border-top: 0; box-shadow: none; }
+/* Every group has the same shape, one task or many: a slim header, then its
+   tasks indented behind a guide line. Each group sits in a slightly sunk
+   panel, which separates groups without divider lines. */
+#todo-panel .todo-g { margin: 8px 10px 0; padding: 7px 6px 5px; border-radius: 10px; background: rgba(0,0,0,.14);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+#todo-panel .todo-ghead { grid-template-columns: 28px minmax(0, 1fr) auto; column-gap: 10px; min-height: 36px; padding: 0 6px; border-radius: 6px; }
+#todo-panel .todo-ghead .todo-av { width: 28px; height: 28px; font-size: 10px; }
+#todo-panel .todo-ghead .todo-th { width: 28px; height: 28px; border-radius: 6px; }
+#todo-panel .todo-ghead .todo-ic { width: 28px; height: 28px; border-radius: 7px; }
+#todo-panel .todo-ghead .todo-ic svg { width: 14px; height: 14px; }
+#todo-panel .todo-ghead .todo-gsub { font-size: 11px; }
+#todo-panel .todo-kids { margin: 5px 0 0 19px; padding-left: 12px; border-left: 2px solid #343331; }
+#todo-panel .todo-card + .todo-kids { margin: 0 16px 10px 35px; }
 #todo-panel .todo-gh { cursor: pointer; }
 #todo-panel .todo-gh:hover .todo-gname { text-decoration: underline; }
 #todo-panel .todo-gname { font-weight: 600; color: #E6E4D9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -702,11 +735,12 @@
     const r = document.createElement("div");
     r.className = "todo-r todo-gh" + (card ? " todo-card" : "");
     if (!link) {
+      r.className = "todo-r todo-ghead";
       r.innerHTML = `<div class="todo-m">${mediaHtml(null)}</div><div><div class="todo-gname">General</div>` +
         `<div class="todo-gsub">not linked · ${count}</div></div><span></span>`;
-      r.classList.remove("todo-gh");
       return r;
     }
+    if (!card) r.classList.add("todo-ghead");
     let sub = card ? count : `${KIND_NAME[link.kind]} · ${count}`;
     if (link.kind === "scene") {
       const who = scenePerformerLine(link);
@@ -722,13 +756,20 @@
     return r;
   }
 
+  function kids(rows) {
+    const k = document.createElement("div");
+    k.className = "todo-kids";
+    rows.forEach((x) => k.appendChild(x));
+    return k;
+  }
   function group(head, rows) {
     const g = document.createElement("div");
     g.className = "todo-g";
     g.appendChild(head);
-    rows.forEach((x) => g.appendChild(x));
+    g.appendChild(kids(rows));
     return g;
   }
+  const nTasks = (n, word = "task") => `${n} ${word}${n === 1 || word === "done" ? "" : "s"}`;
 
   function empty(html) {
     const e = document.createElement("div");
@@ -776,7 +817,7 @@
     const showSearch = todo.length > SEARCH_FROM || (tab === "done" && done.length > SEARCH_FROM) || !!query;
     tabs.innerHTML =
       (here ? `<button class="todo-tab${tab === "here" ? " todo-on" : ""}" data-t="here">This ${escapeHtml(KIND_NAME[here.kind])}<b>${hi.count}</b></button>` : "") +
-      `<button class="todo-tab${tab === "all" ? " todo-on" : ""}" data-t="all">All<b>${todo.length}</b></button>` +
+      `<button class="todo-tab${tab === "all" ? " todo-on" : ""}" data-t="all">Open<b>${todo.length}</b></button>` +
       `<button class="todo-tab${tab === "done" ? " todo-on" : ""}" data-t="done">Done<b>${done.length}</b></button>` +
       (showSearch ? `<input class="todo-input todo-search" placeholder="Search" aria-label="Search tasks">` : "");
     tabs.querySelectorAll(".todo-tab").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.t; render(); }));
@@ -808,11 +849,11 @@
       const hi = tasksForPage(todo, here, scenePerformerIds());
       const doneHere = doneAll.filter((t) => sameEntity(t.link, here)).length;
       body.appendChild(groupHead(here, `${hi.own.length} open · ${doneHere} done`, true));
-      if (hi.own.length) hi.own.forEach((t) => body.appendChild(taskRow(t)));
+      if (hi.own.length) body.appendChild(kids(hi.own.map((t) => taskRow(t))));
       else if (!hi.byPerformer.length) body.appendChild(empty(`No tasks for this ${KIND_NAME[here.kind]} yet. Type one above.`));
       for (const g of hi.byPerformer) {
         const link = { kind: "performer", id: g.pid, label: (meta.get(linkKey(here))?.performers || []).find((p) => p.id === g.pid)?.name };
-        body.appendChild(group(groupHead(link, g.items.length), g.items.map((t) => taskRow(t))));
+        body.appendChild(group(groupHead(link, nTasks(g.items.length)), g.items.map((t) => taskRow(t))));
       }
       return;
     }
@@ -836,13 +877,15 @@
       });
       bar.appendChild(btn);
       body.appendChild(bar);
-      done.forEach((t) => body.appendChild(taskRow(t, { when: true })));
+      for (const g of groupDone(done)) {
+        body.appendChild(group(groupHead(g.link, nTasks(g.items.length, "done")), g.items.map((t) => taskRow(t, { when: true }))));
+      }
       return;
     }
 
     if (!todo.length) { body.appendChild(empty(query ? "Nothing matches." : "All done. Add another above.")); return; }
     for (const g of groupTasks(todo)) {
-      body.appendChild(group(groupHead(g.link, g.items.length), g.items.map((t) => taskRow(t))));
+      body.appendChild(group(groupHead(g.link, nTasks(g.items.length)), g.items.map((t) => taskRow(t))));
     }
   }
 
