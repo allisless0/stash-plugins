@@ -155,5 +155,84 @@ check("O Stats old format", T.mergeOStats({}, { "2026-01-01": 42, "2026-01-02": 
 check("tracked seconds add onto what is stored", eq(T.addWatch({ "2026-10-10": 60 }, { "2026-10-10": 30, "2026-10-11": 5 }), { "2026-10-10": 90, "2026-10-11": 5 }));
 check("durations read well", T.fmtDur(59) === "59s" && T.fmtDur(3720) === "1h 2m" && T.fmtBytes(1536) === "1.5 KB");
 
+// ── 2.0: countries ──────────────────────────────────────────────────────────
+check("country codes pass through, upper-cased", T.countryCode("cz") === "CZ" && T.countryCode("US") === "US");
+check("country names become codes", T.countryCode("United States") === "US" && T.countryCode("czech republic") === "CZ" && T.countryCode("Germany") === "DE");
+check("no country, no code; unknown text kept", T.countryCode("") === null && T.countryCode("Atlantis") === "Atlantis");
+
+// ── 2.0: files ──────────────────────────────────────────────────────────────
+check("codec names", T.codecName("h264") === "H.264" && T.codecName("hevc") === "HEVC" && T.codecName("wmv3") === "WMV" &&
+  T.codecName("msmpeg4v3") === "MPEG-4" && T.codecName("prores") === "ProRes" && T.codecName("weird") === "WEIRD" && T.codecName("") === "unknown");
+check("audio codec names", T.codecName("aac", true) === "AAC" && T.codecName("pcm_s16le", true) === "PCM" && T.codecName("", true) === "none");
+check("containers: ffprobe names and extensions", T.containerName("matroska", "a.mkv") === "mkv" && T.containerName("mp4") === "mp4" &&
+  T.containerName("", "clip.WEBM") === "webm" && T.containerName("", "") === "unknown");
+check("resolution by the shorter side", T.resBucket(1920, 1080) === "1080p" && T.resBucket(1080, 1920) === "1080p" && T.resBucket(3840, 2160) === "4K");
+check("a cinema crop is still 1080p, VR is 5K+", T.resBucket(1920, 800) === "1080p" && T.resBucket(5760, 2880) === "5K+" && T.resBucket(640, 360) === "below 480p");
+check("no size, no resolution", T.resBucket(0, 0) === null && T.resBucket(0, 720) === "720p");
+check("frame rate groups", T.fpsBucket(23.976) === "24/25" && T.fpsBucket(29.97) === "30" && T.fpsBucket(59.94) === "60" && T.fpsBucket(120) === "over 60" && T.fpsBucket(0) === null);
+check("shapes, VR told by size", T.shapeOf(5760, 2880) === "VR" && T.shapeOf(1920, 960) === "landscape" && T.shapeOf(1080, 1920) === "portrait" &&
+  T.shapeOf(1080, 1080) === "square" && T.shapeOf(4096, 4096) === "VR");
+check("percentiles", T.percentile([1, 2, 3, 4, 5], 0.5) === 3 && T.percentile([1, 2, 3, 4, 5], 0.1) === 1 && T.percentile([], 0.5) === 0);
+const vf = (o) => ({ nfiles: 1, size: o.fsize, fsize: 1e9, dur: 1000, w: 1920, h: 1080, vc: "h264", ac: "aac", fps: 30, br: 8e6, fmt: "mp4", phash: true, ...o });
+const FS = T.fileStats([vf({}), vf({ vc: "hevc", br: 4e6 }), vf({ nfiles: 2, size: 3e9 }), vf({ phash: false, w: 640, h: 480, vc: "wmv3" }),
+                        { nfiles: 0, size: 0 }]);
+check("file totals: files, multi-file, no file, no phash", FS.files === 5 && FS.multi === 1 && FS.noFile === 1 && FS.noPhash === 1);
+check("codec and resolution counts", FS.vcodec.get("H.264").n === 2 && FS.vcodec.get("HEVC").n === 1 && FS.res.get("1080p").n === 3 && FS.res.get("480p").n === 1);
+check("bitrate spread per resolution", FS.bitrate["1080p"].n === 3 && FS.bitrate["1080p"].p50 === 8e6);
+check("the raw codec rides along for links", FS.vcodec.get("WMV").raw === "wmv3");
+const UP = T.upgrades([vf({ id: "a", w: 640, h: 480, o: 0 }), vf({ id: "b", vc: "mpeg4", o: 3 }), vf({ id: "c" })]);
+check("worth upgrading: below 720p or legacy, most watched first", UP.n === 2 && UP.list[0].id === "b");
+const many = Array.from({ length: 20 }, (_, i) => vf({ id: `n${i}`, br: 6e6 + i * 1e5 }));
+const hogScene = vf({ id: "hog", br: 40e6, fsize: 5e9 });
+const HG = T.spaceHogs(many.concat([hogScene]), T.fileStats(many.concat([hogScene])));
+check("space hogs: far over the usual bitrate", HG.n === 1 && HG.list[0].s.id === "hog" && HG.list[0].saving > 4e9);
+check("not enough files at a resolution, no hogs", T.spaceHogs([hogScene], T.fileStats([hogScene])).n === 0);
+const DP = T.dupPlan([{ id: "1", w: 1280, h: 720, vc: "h264", fsize: 2 }, { id: "2", w: 1920, h: 1080, vc: "h264", fsize: 5 }, { id: "3", w: 1920, h: 1080, vc: "hevc", fsize: 3 }]);
+check("duplicates: keep the sharpest, then the better codec", DP.keep.id === "3" && DP.frees === 7 && DP.drop.length === 2);
+
+// ── 2.0: metadata health ────────────────────────────────────────────────────
+check("health score is weighted", Math.abs(T.healthScore([{ missing: 0, total: 10, weight: 1 }, { missing: 10, total: 10, weight: 3 }]) - 0.25) < 1e-9);
+check("rows with no count are left out", T.healthScore([{ missing: null, total: 10, weight: 5 }, { missing: 5, total: 10, weight: 1 }]) === 0.5 &&
+  T.healthScore([]) === null);
+check("grades", T.gradeOf(0.95) === "A" && T.gradeOf(0.8) === "B+" && T.gradeOf(0.55) === "C" && T.gradeOf(0.1) === "E" && T.gradeOf(null) === "–");
+check("raw age keeps what ageAt drops", T.rawAge("2010-06-01", "2020-05-31") === 9 && T.ageAt("2010-06-01", "2020-05-31") === null);
+const pmap = new Map([["p1", { id: "p1", name: "A", birth: "2000-06-01" }], ["p2", { id: "p2", name: "B", birth: "1990-01-01" }]]);
+const DC = T.dateConflicts([{ id: "s1", date: "2017-01-01", perf: ["p1", "p2"] }, { id: "s2", date: "2019-01-01", perf: ["p1"] }, { id: "s3", perf: ["p1"] }], pmap);
+check("scene before a performer turned 18 is flagged, once per pair", DC.length === 1 && DC[0].s.id === "s1" && DC[0].p.id === "p1" && DC[0].age === 16);
+const SN = T.sameNames([{ name: "Mia Hart" }, { name: "mia hart " }, { name: "Mia Hart", disamb: "UK" }, { name: "Eva" }]);
+check("same name, same disambiguation", SN.length === 1 && SN[0].length === 2);
+check("future release dates", T.futureDates([{ date: "2026-10-11" }, { date: "2026-10-10" }, { date: null }], now).length === 1);
+
+// ── 2.0: collection ─────────────────────────────────────────────────────────
+const GR = T.growth([{ created: at(2026, 7, 5), size: 1 }, { created: at(2026, 9, 1), size: 2 }, { created: at(2026, 9, 2), size: 3 }], now);
+check("growth: every month to now, running total", eq(GR.map((x) => x.key), ["2026-07", "2026-08", "2026-09", "2026-10"]) &&
+  eq(GR.map((x) => x.total), [1, 1, 3, 3]) && GR[2].added === 2 && GR[3].size === 6);
+check("growth of nothing", T.growth([], now).length === 0);
+const tg = (ids) => ids.map((i) => [i, `t${i}`]);
+const TS = [{ tags: tg(["a", "b"]) }, { tags: tg(["a", "b"]) }, { tags: tg(["a", "b", "c"]) }, { tags: tg(["c"]) }, { tags: tg(["c"]) }, { tags: tg(["b"]) }];
+check("tag counts", eq(T.tagCounts(TS).map((t) => [t.id, t.n]), [["b", 4], ["a", 3], ["c", 3]]));
+const CO = T.coTags(TS, "a", 1);
+check("what goes with a tag, by lift", CO.n === 3 && CO.rows[0].id === "b" && Math.abs(CO.rows[0].lift - 1.5) < 1e-9 && CO.rows[1].id === "c");
+check("rare pairs are left out", T.coTags(TS, "a", 3).rows.length === 1);
+const NW = T.networks([{ id: "1", name: "Net" }, { id: "2", name: "Site A", parent: "1" }, { id: "3", name: "Site B", parent: "2" }, { id: "4", name: "Indie" }],
+  [{ studio: { id: "2", name: "Site A" }, size: 1 }, { studio: { id: "3", name: "Site B" }, size: 1 }, { studio: { id: "1", name: "Net" }, size: 1 },
+   { studio: { id: "4", name: "Indie" }, size: 1 }, { studio: null }]);
+check("networks gather sites under the top parent", NW.networks.length === 1 && NW.networks[0].name === "Net" && NW.networks[0].sites === 2 && NW.networks[0].scenes === 3);
+check("independents are counted apart", NW.independent.studios === 1 && NW.independent.scenes === 1 && NW.independent.list[0].name === "Indie" && NW.studios.length === 4);
+const PR = T.pairs([{ perf: ["1", "2"] }, { perf: ["2", "1", "3"] }, { perf: ["1", "2", "3", "4", "5", "6", "7"] }]);
+check("pairs, big casts left out", PR[0].a === "1" && PR[0].b === "2" && PR[0].n === 2 && PR.length === 3);
+check("new faces by first release year", eq(T.newFaces([{ date: "2020-01-01", perf: ["1"] }, { date: "2018-01-01", perf: ["1", "2"] }, { date: null, perf: ["3"] }]),
+  [{ year: 2018, n: 2 }]));
+const AC = T.ageCounts([{ date: "2020-06-01", o: 2, perf: ["p2"] }], pmap);
+check("age counts on the scene date", AC.get(30).n === 1 && AC.get(30).o === 2);
+const NB = T.notable([{ id: "1", dur: 100, fsize: 5, date: "2001-01-01", created: 5, perf: ["a", "b"], plays: 2, tags: [1, 2], studio: { id: "s", name: "S" } },
+                      { id: "2", dur: 50, fsize: 9, date: "1999-01-01", created: 9, perf: ["a"], plays: 0, tags: [], studio: { id: "s", name: "S" } }],
+                     new Map([["a", { id: "a", name: "A" }]]));
+check("notable: longest, shortest, biggest, oldest, newest", NB.longest.id === "1" && NB.shortest.id === "2" && NB.biggest.id === "2" && NB.oldest.id === "2" && NB.newest.id === "2");
+check("notable: cast, played, tagged, performer, studio", NB.cast.id === "1" && NB.played.id === "1" && NB.tagged.id === "1" &&
+  NB.performer.p.name === "A" && NB.performer.n === 2 && NB.studio.n === 2);
+check("nonstop reads like speech", T.nonstop(3 * 3600) === "3 hours" && T.nonstop(86400 * 2.5) === "2 days and 12 hours" &&
+  T.nonstop(86400 * 132) === "4 months and 10 days" && T.nonstop(86400 * 400) === "1 year and 1 month");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

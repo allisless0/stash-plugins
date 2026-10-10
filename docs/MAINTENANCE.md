@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.1.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
-| Insights | 1.0.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~1500 |
+| Insights | 2.0.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
 | Lockdown | 1.3.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1521,7 +1521,7 @@ Its source was read from the user's Stash (`/plugin/VideoScrollWheel/javascript`
   made one seek, volume and sideways and line-mode deltas checked, page
   scroll prevented only over the player.
 
-### 4.14 Insights (1.0.0)
+### 4.14 Insights (1.0.0, 2.0.0)
 
 User request: a stats plugin combining O Stats 1.0 and Stats Enhancer 1.1.1
 (both read from the user's Stash and inventoried first; neither is published
@@ -1564,8 +1564,15 @@ ranked by (lift - 1) x sqrt(scenes). Rows link to filtered performer or scene
 lists (`traitLink`; criteria in Stash's URL encoding, same as QuickTools F);
 cup, natural, career, weight, resolution, length have no link.
 
-**Flags:** Windows has no flag emoji (two letters render), so countries get
-a code badge (`.ins-cc`) and the name from `Intl.DisplayNames`.
+**Flags:** Windows has no flag emoji (two letters render). Stash ships the
+flag-icons stylesheet (performer cards use `fi fi-xx`), so 2.0 uses
+`<span class="fi fi-xx ins-flag">`; `flagsAvailable()` checks once that the
+class has a background image and falls back to the code badge (`.ins-cc`).
+`.ins-flag` forces `position: static`, `margin: 0`, `filter: none`: Stash
+positions `.fi` absolutely inside its own cards and those rules would
+otherwise drag our flags into a corner. Countries go through `countryCode`
+first: old data stores names ("United States", "czech republic"), which map
+back to codes via `Intl.DisplayNames` plus a few aliases.
 
 **Watch tracker** (replaces O Stats' Python task and its `watch_data.json`):
 a 1 s tick counts a second while `#VideoJsPlayer video` on a `/scenes/<id>`
@@ -1579,6 +1586,65 @@ map that does not parse stops the write (rule 5).
 **O Stats import:** `/plugin/ostats/assets/watch_data.json` if present;
 `mergeOStats` takes both its formats and keeps the larger value per day
 (both trackers may have run the same day); sets `ostatsImported`.
+
+**2.0.0 redesign.** User feedback on 1.0: "boring, feels like a corporate
+dashboard", too centred on O's; wanted the library itself, codecs,
+"comprehensive". Signed off in chat over four mockups: style "mix" (bold for
+the big picture, console for files), You tab first, then the user chose
+**Flexoki** (Steph Ango's ink-and-paper palette) over three other warm
+palettes and asked for depth; then asked for exact values on every graph,
+flags, more icons (not overdone), and tabs that change colour when active.
+
+- **Tabs** (`TABS`): You (magenta; the old Overview, Activity, People and
+  Backlog), Library (orange), Files and quality (cyan), Metadata health
+  (yellow), Collection (green). `#insights[data-tab]` sets `--acc`; each tab
+  button carries `--tc` and tints with `color-mix` when on. Old `tab` prefs
+  fall back to You.
+- **Depth:** cards are raised (lit top border, gradient, drop shadow);
+  data wells (`.ins-well`, chart backgrounds, tracks, the tab strip) are sunk
+  (inner shadow, dark top edge). The dashboard has its own `#100F0F` panel so
+  the warm palette does not sit on Stash's blue-grey.
+- **Charts** (`barChart`): every bar has its value above and its label
+  below; past 16 bars with labels or values over 2 characters, both turn
+  sideways (`.dense`). Year timelines fill empty years with a zero bar so
+  gaps show. Future days in a month are blanked. Calendar month labels carry
+  the month total; the weekday/hour map has row and column totals. Clicks go
+  through a `CLICKS` array (`data-bar`), reset each render.
+- **Data added:** files (`FILE_WANT` via `__type VideoFile`: width, codecs,
+  frame rate, bit rate, format, `fingerprints { type }` for phash), studios
+  with `parent_studio`, `stats`, and **counts** (`loadCounts`): one aliased
+  query of `findX(filter: {is_missing: ...}, per_page 1) { count }` for every
+  completeness row, plus organized, has_markers, scene_count 0/1. Stash
+  counting with the same filter the row links to means the number always
+  matches the list, and no `details` text is downloaded to count it. If the
+  batched query fails (an `is_missing` value an older Stash lacks), each runs
+  alone and failures drop just their row. Cache key bumped to `v2`.
+  `size` is now every file of a scene; `fsize` and the rest describe the first.
+- **Files** (`fileStats` etc., tested): `codecName` normalises ffprobe names
+  (wmv1-3 are WMV, msmpeg4v* MPEG-4); `LEGACY` codecs plus below-720p are
+  upgrade candidates, most O's and plays first. `resBucket` uses the larger of
+  the short side and the long side x 9/16, so portrait and cinema crops land
+  where people expect (Stash's own resolution filter, which the rows link to,
+  uses its own steps, so counts can differ a little; the tooltip says so).
+  VR is told by shape (`shapeOf`). Space hogs: over 2.5x the median bitrate of
+  their resolution, over 1 GB, at least 10 files at that resolution; saving =
+  size minus duration x the median HEVC/AV1 bitrate there (half the median if
+  under 5 such files). Duplicates: `findDuplicateScenes(distance: 0,
+  duration_diff: 1)` (retried without `duration_diff` for older Stash), only
+  on a click; `dupPlan` keeps the sharpest, then the better codec, then the one
+  with more history. Read-only; links to `/sceneDuplicateChecker`.
+- **Health:** weights per field (`HEALTH`; a missing studio, performers or
+  tags hurts finding things more than missing details), groups 70/22/8 for
+  scenes, performers, studios. Percentages and the grade use the score
+  rounded down so 79.7% never shows as 80% with a B. Quickest wins = the gaps
+  whose filling raises the score most. Checks: no file (`file_count` 0), scene
+  dated before a performer's 18th birthday (`rawAge`, unfiltered; counted per
+  scene, pills per pair), same name and disambiguation, future release dates,
+  no phash, tags used once, performers and studios with no scenes.
+- **Collection:** `growth` fills every month from the first added; `coTags`
+  lift = share of A's scenes with B over B's share of all scenes (pairs seen
+  under 3 times dropped); `networks` walks parents to the top (guarded against
+  loops) and lists independents apart; `pairs` skips casts over six.
 
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
@@ -1657,6 +1723,7 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Insights | 2.0.0 tested on a synthetic 1500-scene library in a harness (with Stash's flag stylesheet), not a real Stash. Check on the real library: the counts query is accepted in one go (else it falls back to one query per row), `is_missing` links open the same counts, the `video_codec`/`audio_codec`/`resolution`/`framerate`/`file_count`/`has_markers` criterion shapes open the right lists, `findDuplicateScenes` time on a big library, and flags render next to the text. |
 | Insights | 1.0.0 tested on a synthetic 400-scene library in a harness, not a real Stash. Check on the real library: load time and progress text, the dashboard placement on /stats, trait links open the right filtered lists (some criterion shapes, e.g. `filter_favorites`, `performer_count`, `created_at`, were not verified against the bundle), and the O Stats import count matches its file. |
 | Insights | Performance on very large libraries (tens of thousands of scenes) unmeasured; the compute is linear but every trait dimension is computed on first view. |
 | Lockdown | 1.3.0 dialog and history view checked in the harness at desktop and narrow widths, not in a real Stash. Check the dialog's fit on a phone, and that the search finds performers on a large library quickly (it asks for 8 by name). |
@@ -1683,6 +1750,16 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (late night): Insights 2.0.0, redesign
+
+User found 1.0 "boring, corporate" and too O-centred; asked for the library,
+codecs, depth. Four rounds of mockups in chat: a mixed bold/console style, You
+first, then warm palettes; user picked Flexoki and asked for depth, then for
+exact values on graphs, flags, more icons and coloured active tabs. Built in
+parts (helpers, data, styles, five tabs), 40 new unit checks (97 in all), and
+a harness with 1500 scenes, studios with parents, counts and duplicates. Flags
+come from Stash's own flag-icons stylesheet. See §4.14, 2.0.0.
 
 ### 2026-10-10 (night): Insights 1.0.0 (new plugin)
 

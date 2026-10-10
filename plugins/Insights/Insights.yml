@@ -1,6 +1,6 @@
 name: Insights
-description: "A stats dashboard on Stash's Stats page: your O's, streaks, a year calendar, a day's timeline and watch time; who and what works for you by performer traits (nationality, height, hair, age in the scene and more) and scene traits; your library over time; and your backlog. Every bar and row leads into Stash. Replaces O Stats and Stats Enhancer."
-version: 1.0.0
+description: "A stats dashboard on Stash's Stats page, in five tabs: You (O's, streaks, a year calendar, watch time, what works for you by performer and scene traits, your queue), Library (size, records, timelines), Files and quality (codecs, resolutions, bitrates, upgrade candidates, space hogs, duplicates), Metadata health (a grade, what is missing, what is probably wrong) and Collection (growth, tags, studio networks, countries, pairs). Every bar and row leads into Stash. Replaces O Stats and Stats Enhancer."
+version: 2.0.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:
