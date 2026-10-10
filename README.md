@@ -22,7 +22,7 @@ The plugins then appear under **Available Plugins**. Install the ones you want.
 | **IntifaceSync** | `E` `\` `[` `]` `0` | Syncs funscripts to toys via Intiface Central / Buttplug.io, or to a Handy over WiFi. Supports vibrators, not just strokers. |
 | **Collections** | top-bar tab | Gives a studio (Cock Hero by default) its own tab sorted by O count, keeps it out of the main Scenes list, and scores Cock Hero rounds: how far you got before pressing O, as Hardcore and Easy records. |
 | **ScriptBadges** | none | A badge on every scene card saying whether the scene has a funscript, so you can see what still needs one. |
-| **Insights** | Stats page | A stats dashboard in five tabs: you (O's, streaks, calendar, watch time, what works for you), your library, files and quality (codecs, bitrates, upgrades, space hogs, duplicates), metadata health and your collection. Replaces O Stats and Stats Enhancer. |
+| **Insights** | Stats page | A stats dashboard in six tabs: you (O's, streaks, calendar, watch time, what works for you), actions (a duplicate cleaner that keeps HEVC/AV1 and merges the rest in, re-encode and upgrade lists, fixes), your library, files and quality, metadata health and your collection. Replaces O Stats and Stats Enhancer. |
 | **Lockdown** | top-bar button | Locks Stash to one performer (searched for, or spun from your favourites or a saved filter) until an O on one of their scenes. Optional scene roulette; hold Give up to quit early. This browser only. |
 | **Todo** | top-bar button | A simple task list, saved in Stash so it is the same on every device. Tasks link to the scene, performer or other page they are about, and those pages show a chip with their tasks. |
 

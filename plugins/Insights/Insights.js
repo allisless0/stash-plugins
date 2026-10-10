@@ -668,18 +668,6 @@
     return { n: out.length, saving: out.reduce((a, x) => a + x.saving, 0), list: out };
   }
 
-  // A duplicate group: keep the best copy (sharper, then a better codec,
-  // then the one with more history), the rest could go.
-  function dupPlan(group) {
-    const score = (s) => [resRank(s), CODEC_RANK[codecName(s.vc)] || 1, (s.o || 0) + (s.plays || 0), -(Number(s.id) || 0)];
-    const sorted = group.slice().sort((a, b) => {
-      const x = score(a), y = score(b);
-      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return y[i] - x[i];
-      return 0;
-    });
-    const drop = sorted.slice(1);
-    return { keep: sorted[0], drop, frees: drop.reduce((a, s) => a + (s.fsize || 0), 0) };
-  }
   const resRank = (s) => { const r = resBucket(s.w, s.h); return r ? RES_ORDER.length - RES_ORDER.indexOf(r) : 0; };
 
   // ── Metadata health ───────────────────────────────────────────────────────
@@ -909,6 +897,156 @@
     return mo ? `${plural(y, "year")} and ${plural(mo, "month")}` : plural(y, "year");
   }
 
+  // ── 2.2: actions ──────────────────────────────────────────────────────────
+
+  // HEVC and AV1 are both the target: either is a copy worth keeping.
+  const isEfficient = (vc) => { const n = codecName(vc); return n === "HEVC" || n === "AV1"; };
+
+  // Which copies of a duplicate group to keep and which to remove.
+  // mode "hevc": keep the sharpest HEVC/AV1 copy; remove the others, but
+  //   with `sharp` on, never one sharper than what is kept, and a group with
+  //   no HEVC/AV1 copy at all is left for a look, nothing ticked.
+  // mode "best": keep the sharpest, then the better codec, then more history.
+  // mode "smallest": keep the smallest file among the sharpest copies.
+  // Returns { keep, items: [{ s, remove, why }], review, reason }.
+  function dupChoose(group, mode = "hevc", opts = {}) {
+    const sharp = opts.sharp !== false;
+    const hist = (s) => (s.o || 0) + (s.plays || 0);
+    const byQuality = (a, b) => resRank(b) - resRank(a) || (CODEC_RANK[codecName(b.vc)] || 1) - (CODEC_RANK[codecName(a.vc)] || 1) ||
+      (b.br || 0) - (a.br || 0) || hist(b) - hist(a) || (Number(a.id) || 0) - (Number(b.id) || 0);
+    let keep, review = false, reason = "";
+    if (mode === "smallest") {
+      const top = Math.max(...group.map(resRank));
+      keep = group.filter((s) => resRank(s) === top).sort((a, b) => (a.fsize || 0) - (b.fsize || 0) || byQuality(a, b))[0];
+    } else if (mode === "best") {
+      keep = group.slice().sort(byQuality)[0];
+    } else {
+      const eff = group.filter((s) => isEfficient(s.vc)).sort(byQuality);
+      if (!eff.length) {
+        keep = group.slice().sort(byQuality)[0];
+        return { keep, items: group.filter((s) => s !== keep).map((s) => ({ s, remove: false, why: "no HEVC or AV1 copy" })),
+                 review: true, reason: "No HEVC or AV1 copy in this group" };
+      }
+      keep = eff[0];
+    }
+    const items = group.filter((s) => s !== keep).map((s) => {
+      if (mode === "hevc" && sharp && resRank(s) > resRank(keep)) {
+        review = true;
+        reason = `A ${resBucket(s.w, s.h)} copy is sharper than the ${resBucket(keep.w, keep.h)} ${codecName(keep.vc)} one`;
+        return { s, remove: false, why: "sharper than the kept copy" };
+      }
+      return { s, remove: true, why: "" };
+    });
+    return { keep, items, review, reason };
+  }
+
+  // What the kept scene should look like after a merge: its own fields win;
+  // empty ones are filled from the copies; lists (tags, performers,
+  // galleries, groups, URLs, StashDB ids) are the union, so removing a copy
+  // never loses anything set on it (rule 5). `have` is the set of
+  // SceneUpdateInput fields this Stash accepts.
+  function mergeValues(keep, drops, have) {
+    const all = [keep].concat(drops);
+    const ok = (f) => !have || have.has(f);
+    const v = { id: keep.id };
+    const first = (get) => { for (const s of all) { const x = get(s); if (x !== null && x !== undefined && x !== "") return x; } return undefined; };
+    const uniq = (list) => [...new Set(list.map(String))];
+    if (ok("title")) { const x = first((s) => s.title); if (x !== undefined) v.title = x; }
+    if (ok("code")) { const x = first((s) => s.code); if (x !== undefined) v.code = x; }
+    if (ok("details")) { const x = first((s) => s.details); if (x !== undefined) v.details = x; }
+    if (ok("director")) { const x = first((s) => s.director); if (x !== undefined) v.director = x; }
+    if (ok("date")) { const x = first((s) => s.date); if (x !== undefined) v.date = x; }
+    if (ok("rating100")) { const x = first((s) => s.rating100); if (x !== undefined) v.rating100 = x; }
+    if (ok("studio_id")) { const x = first((s) => s.studio && s.studio.id); if (x !== undefined) v.studio_id = String(x); }
+    if (ok("organized")) v.organized = all.some((s) => s.organized);
+    if (ok("tag_ids")) v.tag_ids = uniq(all.flatMap((s) => (s.tags || []).map((t) => t.id)));
+    if (ok("performer_ids")) v.performer_ids = uniq(all.flatMap((s) => (s.performers || []).map((p) => p.id)));
+    if (ok("gallery_ids")) v.gallery_ids = uniq(all.flatMap((s) => (s.galleries || []).map((g) => g.id)));
+    if (ok("urls")) v.urls = [...new Set(all.flatMap((s) => s.urls || []))];
+    if (ok("groups")) {
+      const seen = new Map();
+      for (const s of all) for (const g of s.groups || []) {
+        const id = String(g.group ? g.group.id : g.group_id);
+        if (!seen.has(id)) seen.set(id, { group_id: id, ...(g.scene_index !== null && g.scene_index !== undefined ? { scene_index: g.scene_index } : {}) });
+      }
+      v.groups = [...seen.values()];
+    }
+    if (ok("stash_ids")) {
+      const seen = new Map();
+      for (const s of all) for (const x of s.stash_ids || []) {
+        const k = `${x.endpoint}|${x.stash_id}`;
+        if (!seen.has(k)) seen.set(k, { endpoint: x.endpoint, stash_id: x.stash_id });
+      }
+      v.stash_ids = [...seen.values()];
+    }
+    return v;
+  }
+
+  // Files not in HEVC or AV1 yet, with what they would take at this
+  // library's usual HEVC/AV1 bitrate for their resolution. Biggest gain first.
+  function notEfficient(scenes, fs) {
+    const out = [];
+    for (const s of scenes) {
+      if (!s.nfiles || !s.dur || isEfficient(s.vc)) continue;
+      const b = fs.bitrate[resBucket(s.w, s.h)];
+      const gain = b ? Math.max(0, (s.fsize || 0) - (s.dur * b.efficient) / 8) : 0;
+      out.push({ s, gain });
+    }
+    out.sort((a, b) => b.gain - a.gain);
+    return { n: out.length, gain: out.reduce((a, x) => a + x.gain, 0), size: out.reduce((a, x) => a + (x.s.fsize || 0), 0), list: out };
+  }
+
+  // ── 2.2: what works for you, read better ──────────────────────────────────
+
+  // Dimensions with a natural order keep it (height runs short to tall);
+  // the rest sort strongest first.
+  const ORDER = {
+    height: ["under 155 cm", "155–164 cm", "165–174 cm", "175 cm and up"],
+    weight: ["under 50 kg", "50–59 kg", "60–69 kg", "70 kg and up"],
+    cup: ["A", "B", "C", "D", "DD+"],
+    age: ["18–21", "22–25", "26–30", "31–35", "36–40", "41 and up"],
+    career: ["first 2 years", "years 3–5", "years 6–10", "over 10 years in"],
+    length: ["under 10 min", "10–30 min", "30–60 min", "over an hour"],
+    resolution: ["SD", "720p", "1080p", "4K and up"],
+    cast: ["solo", "two performers", "three or more"],
+  };
+  const isOrdinal = (dimId) => !!ORDER[dimId] || dimId === "era";
+  function ordinalKey(dimId, value) {
+    if (dimId === "era") return value === "before 2005" ? 0 : parseInt(value, 10) || 0;
+    const i = (ORDER[dimId] || []).indexOf(value);
+    return i < 0 ? 999 : i;
+  }
+
+  // Strength: how far above its share a group is, on a log scale (2x and
+  // 0.5x are equally far from even), weighted by how many scenes back it,
+  // so six scenes at 12x do not outrank 600 at 1.7x.
+  const strength = (lift, scenes) => (lift > 0 ? Math.log(lift) : -5) * Math.sqrt(scenes);
+
+  // rows from traitRows plus the metric ("o" or "watch") -> rows with lift,
+  // score and rank (1 = strongest), the top three flagged, in display order.
+  // Small groups: under max(5, 0.1% of the library) scenes, or too little
+  // activity to say anything.
+  function rankTraits(T, dimId, metric = "o", opts = {}) {
+    const minScenes = Math.max(5, Math.round((T.total.scenes || 0) * 0.001));
+    const share = (r) => (metric === "watch" ? r.watchShare : r.oShare);
+    const rows = T.rows.map((r) => {
+      const lift = r.libShare ? share(r) / r.libShare : 0;
+      return { ...r, mShare: share(r), mLift: lift, score: strength(lift, r.scenes),
+               small: r.scenes < minScenes || (r.o < 2 && r.plays < 3) };
+    });
+    const shown = rows.filter((r) => opts.small || !r.small);
+    const byScore = shown.slice().sort((a, b) => b.score - a.score || b.scenes - a.scenes);
+    byScore.forEach((r, i) => { r.rank = i + 1; r.top = i < 3 && r.mLift >= 1.25; });
+    let ordered;
+    if (opts.sort === "size") ordered = shown.slice().sort((a, b) => b.scenes - a.scenes);
+    else if (isOrdinal(dimId) && opts.sort !== "pull") ordered = shown.slice().sort((a, b) => ordinalKey(dimId, a.value) - ordinalKey(dimId, b.value));
+    else ordered = byScore;
+    return { rows: ordered, hidden: rows.length - shown.length, minScenes };
+  }
+
+  // Position on a log scale centred on 1x: 1/4x is -1, 4x is +1.
+  const liftPos = (lift) => (lift > 0 ? Math.max(-1, Math.min(1, Math.log(lift) / Math.log(4))) : -1);
+
   if (window.__INSIGHTS_TEST__) {
     window.__InsightsTest = { dayKey, parseDay, daysBetween, weekStart, toMs, fmtDur, fmtBytes, collectOs, countByDay,
       streaks, recordDay, periodBars, calendar, weekdayHour, dayEvents, cupOf, heightGroup, weightGroup, ageAt,
@@ -916,8 +1054,9 @@
       PERFORMER_TRAITS, SCENE_TRAITS, traitRows, liftTone, performerTable, topScenes, library, ratingBands,
       backlog, BACKLOG, encodeCriterion, listUrl, watchPerO, mergeOStats, addWatch, yesNo,
       countryCode, codecName, containerName, resBucket, fpsBucket, shapeOf, percentile, fileStats, upgrades, spaceHogs,
-      dupPlan, healthScore, gradeOf, rawAge, dateConflicts, sameNames, futureDates, growth, tagCounts, coTags, networks,
-      pairs, newFaces, ageCounts, notable, nonstop };
+      healthScore, gradeOf, rawAge, dateConflicts, sameNames, futureDates, growth, tagCounts, coTags, networks,
+      pairs, newFaces, ageCounts, notable, nonstop,
+      isEfficient, dupChoose, mergeValues, notEfficient, isOrdinal, ordinalKey, strength, rankTraits, liftPos };
     return;
   }
 
@@ -1080,7 +1219,7 @@
   // Stash's own phash match, exact, run only when asked: it is the one
   // heavy query here. duration_diff is newer than findDuplicateScenes.
   async function loadDuplicates() {
-    const ff = pick(await fieldsOf("VideoFile"), ["size", "width", "height", "video_codec", "bit_rate", "duration", "basename"]);
+    const ff = pick(await fieldsOf("VideoFile"), ["id", "size", "width", "height", "video_codec", "bit_rate", "duration", "basename"]);
     const q = (diff) => `query { findDuplicateScenes(distance: 0${diff ? ", duration_diff: 1" : ""}) { id title o_counter play_count paths { screenshot } files { ${ff} } } }`;
     let d;
     try { d = await gql(q(true)); } catch (_) { d = await gql(q(false)); }
@@ -1088,8 +1227,90 @@
       const f = (s.files || [])[0] || {};
       return { id: String(s.id), title: s.title || f.basename || `Scene ${s.id}`, o: s.o_counter || 0, plays: s.play_count || 0,
                shot: s.paths?.screenshot || null, fsize: (s.files || []).reduce((a, x) => a + (x.size || 0), 0),
-               w: f.width || 0, h: f.height || 0, vc: f.video_codec || "", br: f.bit_rate || 0, dur: f.duration || 0 };
+               w: f.width || 0, h: f.height || 0, vc: f.video_codec || "", br: f.bit_rate || 0, dur: f.duration || 0,
+               fid: f.id ? String(f.id) : null, nfiles: (s.files || []).length };
     }));
+  }
+
+  // ═══ Writes (Actions tab only, each one on a click) ═══════════════════════
+
+  // Input types list inputFields, not fields.
+  const inputFields = new Map();
+  async function inputFieldsOf(type) {
+    if (inputFields.has(type)) return inputFields.get(type);
+    let names = new Set();
+    try {
+      const d = await gql(`query ($t: String!) { __type(name: $t) { inputFields { name } } }`, { t: type });
+      names = new Set((d?.__type?.inputFields || []).map((f) => f.name));
+    } catch (e) { log(`Schema read failed for ${type}: ${e.message}`); }
+    inputFields.set(type, names);
+    return names;
+  }
+
+  const MERGE_WANT = ["id", "title", "code", "details", "director", "date", "rating100", "organized", "urls", "studio { id }",
+    "tags { id }", "performers { id }", "galleries { id }", "groups { group { id } scene_index }", "stash_ids { endpoint stash_id }",
+    "files { id }"];
+  // Everything a merge carries over, read fresh at the moment of the merge
+  // (not from the scan, which may be minutes old).
+  async function loadForMerge(ids) {
+    const sf = pick(await fieldsOf("Scene"), MERGE_WANT);
+    const d = await gql(`query { ${ids.map((id, i) => `s${i}: findScene(id: ${JSON.stringify(String(id))}) { ${sf} }`).join(" ")} }`);
+    return ids.map((_, i) => d?.[`s${i}`] || null);
+  }
+
+  // One duplicate group. With `merge`, the copies are merged into the kept
+  // scene first (Stash's sceneMerge: their files, markers, O and play
+  // history move over, the copy scenes go; tags, performers and the rest are
+  // carried in `values`), then exactly the files that came from the copies
+  // are deleted from disk. Without it, the copy scenes and their files are
+  // deleted outright. Refuses if anything changed since the scan.
+  async function removeCopies(keep, drops, merge) {
+    const fresh = await loadForMerge([keep.id].concat(drops.map((s) => s.id)));
+    const [k, ...ds] = fresh;
+    if (!k) throw new Error("the scene to keep is gone");
+    if (ds.some((x) => !x)) throw new Error("a copy is already gone");
+    if (keep.fid && String((k.files || [])[0]?.id) !== keep.fid) throw new Error("the kept scene's file changed since the scan");
+    const fileIds = ds.flatMap((x) => (x.files || []).map((f) => String(f.id)));
+    if (!merge) {
+      await gql(`mutation ($i: ScenesDestroyInput!) { scenesDestroy(input: $i) }`,
+                { i: { ids: ds.map((x) => String(x.id)), delete_file: true, delete_generated: true } });
+      return fileIds.length;
+    }
+    const have = await inputFieldsOf("SceneUpdateInput");
+    const values = mergeValues(k, ds, have.size ? have : null);
+    await gql(`mutation ($i: SceneMergeInput!) { sceneMerge(input: $i) { id } }`,
+              { i: { source: ds.map((x) => String(x.id)), destination: String(k.id), values, play_history: true, o_history: true } });
+    if (fileIds.length) await gql(`mutation ($ids: [ID!]!) { deleteFiles(ids: $ids) }`, { ids: fileIds });
+    return fileIds.length;
+  }
+
+  // QuickTools' D tag, so "Marked for Delete" here is the same tag there.
+  async function deleteTagName() {
+    try {
+      const p = (await gql(`query { configuration { plugins } }`))?.configuration?.plugins || {};
+      return (p.QuickTools && String(p.QuickTools.deleteTagName || "").trim()) || "Marked for Delete";
+    } catch (_) { return "Marked for Delete"; }
+  }
+  async function tagId(name) {
+    const d = await gql(`query ($f: TagFilterType) { findTags(tag_filter: $f, filter: {per_page: 5}) { tags { id name } } }`,
+                        { f: { name: { value: name, modifier: "EQUALS" } } });
+    const hit = (d?.findTags?.tags || []).find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (hit) return String(hit.id);
+    const c = await gql(`mutation ($i: TagCreateInput!) { tagCreate(input: $i) { id } }`, { i: { name } });
+    return String(c.tagCreate.id);
+  }
+  // ADD mode: every other tag on these scenes rides through (rule 5).
+  async function tagScenes(ids, name) {
+    const id = await tagId(name);
+    for (let i = 0; i < ids.length; i += 500) {
+      await gql(`mutation ($i: BulkSceneUpdateInput!) { bulkSceneUpdate(input: $i) { id } }`,
+                { i: { ids: ids.slice(i, i + 500).map(String), tag_ids: { mode: "ADD", ids: [id] } } });
+    }
+  }
+  async function generatePhashes(ids) {
+    const d = await gql(`mutation ($i: GenerateMetadataInput!) { metadataGenerate(input: $i) }`,
+                        { i: { phashes: true, sceneIDs: ids.map(String) } });
+    return d?.metadataGenerate || null;
   }
 
   // ── Cache: IndexedDB, 30 minutes; Refresh skips it ────────────────────────
@@ -1291,6 +1512,7 @@
   box-shadow: 0 20px 50px -20px rgba(0,0,0,.7); }
 #insights[data-tab="library"] { --acc: var(--or); } #insights[data-tab="files"] { --acc: var(--cy); }
 #insights[data-tab="health"] { --acc: var(--ye); } #insights[data-tab="collection"] { --acc: var(--gr); }
+#insights[data-tab="actions"] { --acc: var(--re); }
 #insights * { box-sizing: border-box; }
 #insights button { font: inherit; }
 #insights a { color: inherit; }
@@ -1506,6 +1728,79 @@
 .ins-scroll { max-height: 420px; overflow-y: auto; overflow-x: hidden; padding: 0 8px; margin: 0 -8px;
   scrollbar-width: thin; scrollbar-color: var(--ui3) transparent; }
 .ins-scroll::-webkit-scrollbar { width: 8px; } .ins-scroll::-webkit-scrollbar-thumb { background: var(--ui3); border-radius: 4px; }
+/* 2.2 What works: a sidebar of dimensions, rows with a bar centred on 1x */
+.ins-ww { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 16px; align-items: start; }
+.ins-side { display: flex; flex-direction: column; gap: 1px; position: sticky; top: 60px; }
+.ins-side .h { font-size: 10.5px; color: var(--tx2b); letter-spacing: .09em; margin: 8px 8px 4px; }
+.ins-side .h:first-child { margin-top: 0; }
+.ins-side-b { text-align: left; background: none; border: 0; color: var(--tx1b); padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+.ins-side-b:hover { color: var(--hi); background: rgba(255,255,255,.03); }
+.ins-side-b.on { color: var(--hi); background: color-mix(in srgb, var(--gr) 18%, var(--ui)); box-shadow: inset 3px 0 0 var(--gr); }
+.ins-wbody { min-width: 0; max-width: 980px; }
+.ins-lr { display: grid; grid-template-columns: 26px minmax(110px, 210px) minmax(140px, 1fr) 170px 52px; gap: 12px; align-items: center;
+  min-height: 32px; padding: 2px 8px; border-radius: 7px; font-size: 13px; }
+.ins-lr.click { cursor: pointer; } .ins-lr.click:hover { background: rgba(255,255,255,.04); }
+.ins-lr .rk { text-align: right; color: var(--tx3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ins-lr .l { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.ins-lr .l span { overflow: hidden; text-overflow: ellipsis; }
+.ins-lr .nums { color: var(--tx2); font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ins-lr.top { background: color-mix(in srgb, var(--gr) 12%, transparent); box-shadow: inset 3px 0 0 var(--gr); }
+.ins-lr.top .rk { color: var(--up); font-weight: 700; }
+.ins-lr.top .l { color: var(--hi); font-weight: 600; }
+.ins-lr.ins-axis { min-height: 22px; font-size: 11px; color: var(--tx2b); }
+.ins-lr.ins-axis .l { color: var(--tx2); font-weight: 600; }
+.ins-lr .ax { display: flex; justify-content: space-between; }
+.ins-div { position: relative; height: 10px; border-radius: 5px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
+.ins-div::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--tx3); }
+.ins-div i { position: absolute; top: 1px; bottom: 1px; border-radius: 4px; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
+/* 2.2 Where the space goes: a ranked list */
+.ins-sr { display: grid; grid-template-columns: minmax(120px, 240px) minmax(0, 1fr) 80px 46px 96px; gap: 12px; align-items: center;
+  min-height: 30px; padding: 2px 8px; border-radius: 7px; font-size: 13px; }
+.ins-sr.click { cursor: pointer; } .ins-sr.click:hover { background: rgba(255,255,255,.04); }
+.ins-sr .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ins-sr .l small { color: var(--tx2); }
+.ins-sr .v { text-align: right; color: var(--hi); font-variant-numeric: tabular-nums; }
+.ins-sr .p, .ins-sr .n { text-align: right; color: var(--tx2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 2.2 Actions */
+.ins-opts { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin: 4px 0 12px; font-size: 12px; color: var(--tx1b); }
+.ins-seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.5); }
+.ins-seg button { background: none; border: 0; color: var(--tx1b); padding: 4px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.ins-seg button.on { color: var(--hi); background: color-mix(in srgb, var(--bl) 26%, var(--ui2)); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 2px rgba(0,0,0,.4); }
+.ins-tog { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; color: var(--tx1b); cursor: pointer; font-size: 12px; padding: 0; text-align: left; }
+.ins-tog i { position: relative; width: 30px; height: 16px; border-radius: 8px; background: var(--ui3); box-shadow: inset 0 1px 2px rgba(0,0,0,.5); flex: none; transition: background .12s; }
+.ins-tog i::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--tx1b); transition: left .12s; }
+.ins-tog.on i { background: var(--gr); } .ins-tog.on i::after { left: 16px; background: var(--hi); }
+.ins-tog:disabled, .ins-seg button:disabled { opacity: .5; cursor: default; }
+.ins-sum { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin-bottom: 10px; font-size: 12px; }
+.ins-sum em { font-style: normal; color: var(--tx2b); letter-spacing: .06em; margin-right: 7px; font-size: 11px; }
+.ins-sum b { color: var(--hi); font-weight: 600; }
+.ins-dups { max-height: 560px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ui3) transparent; }
+.ins-dg { padding: 6px 0; } .ins-dg + .ins-dg { border-top: 1px solid #262524; }
+.ins-dg.review { background: color-mix(in srgb, var(--ye) 6%, transparent); border-radius: 8px; padding: 6px 6px; }
+.ins-dg .why { color: var(--ye); font-size: 12px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 30px; }
+.ins-cp { display: grid; grid-template-columns: 20px 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 34px; font-size: 12.5px; }
+.ins-cp .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ins-cp .m { color: var(--tx2); }
+.ins-cp .v { text-align: right; color: var(--tx2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ins-k { display: inline-block; min-width: 54px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; margin-right: 8px; }
+.ins-k.keep { background: #2B3016; color: var(--up); } .ins-k.del { background: #3A1C19; color: var(--down); } .ins-k.look { background: #3A3014; color: var(--ye); }
+.ins-bx { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--tx3); background: var(--bg2); cursor: pointer; padding: 0; position: relative;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
+.ins-bx.on { background: var(--re); border-color: #AF3029; }
+.ins-bx.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #100F0F; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ins-bx:disabled { cursor: default; opacity: .6; }
+.ins-btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; align-items: center; margin-top: 12px; }
+.ins-btn.danger { background: linear-gradient(180deg, #D14D41, #AF3029); color: #100F0F; font-weight: 600; border-top-color: #E8705F; }
+.ins-btn.danger:hover { color: #100F0F; filter: brightness(1.08); }
+.ins-btn.danger.armed { background: linear-gradient(180deg, #E8705F, #D14D41); box-shadow: 0 0 0 3px color-mix(in srgb, var(--re) 35%, transparent), 0 1px 2px rgba(0,0,0,.5); }
+.ins-btn:disabled { opacity: .45; cursor: default; filter: none; }
+.ins-run { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--tx1b); }
+.ins-run .bar { flex: 0 0 220px; height: 8px; border-radius: 4px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); overflow: hidden; }
+.ins-run .bar i { display: block; height: 100%; background: var(--re); border-radius: 4px; transition: width .2s; }
+@media (max-width: 900px) { .ins-ww { grid-template-columns: minmax(0, 1fr); } .ins-side { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .ins-side .h { width: 100%; } .ins-lr { grid-template-columns: 22px minmax(90px, 140px) minmax(80px, 1fr) 48px; } .ins-lr .nums { display: none; }
+  .ins-sr { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) 70px; } .ins-sr .p, .ins-sr .n { display: none; } }
 .ins-foot { color: var(--tx3); font-size: 11px; text-align: center; padding: 4px 0 8px; }
 #ins-tip { position: fixed; z-index: 2000; pointer-events: none; background: #1C1B1A; border: 1px solid #403E3C; color: #E6E4D9;
   border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px; box-shadow: 0 10px 28px rgba(0,0,0,.6);
@@ -1639,7 +1934,7 @@
   const prefs = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch (_) { return {}; } };
   const setPref = (k, v) => { try { localStorage.setItem(PREF_KEY, JSON.stringify({ ...prefs(), [k]: v })); } catch (_) {} };
 
-  const TABS = [["you", "You", "user", "ma"], ["library", "Library", "film", "or"], ["files", "Files and quality", "chip", "cy"],
+  const TABS = [["you", "You", "user", "ma"], ["actions", "Actions", "check", "re"], ["library", "Library", "film", "or"], ["files", "Files and quality", "chip", "cy"],
                 ["health", "Metadata health", "pulse", "ye"], ["collection", "Collection", "layers", "gr"]];
   const firstTab = TABS.some((t) => t[0] === prefs().tab) ? prefs().tab : "you";
 
@@ -1647,11 +1942,19 @@
     root: null, data: null, model: null, watch: {}, config: {}, loading: false, error: "", progress: "",
     ostats: null, tab: firstTab,
     you: { metric: "o", kind: "month", offset: 0, day: null, top: "byO", mode: "byO", dim: prefs().dim || "country",
-           wmetric: "o", sort: "pull", small: false },
+           wmetric: "o", sort: "auto", small: false },
     lib: { timeline: "released", year: null },
-    files: { dups: null, dupState: "idle", dupErr: "" },
+    files: { space: "studio", spaceAll: false },
+    acts: freshActs(),
     col: { tag: null, gender: prefs().gender || "FEMALE", studios: "networks" },
   };
+
+  // Actions state: the last duplicate scan and what the user ticked. A
+  // refresh starts it over (the scan would describe the old library).
+  function freshActs() {
+    return { dups: null, state: "idle", err: "", mode: "hevc", merge: true, sharp: true, ticks: new Map(), armed: false,
+             run: null, showAll: false, scanned: 0, msg: "", tagMsg: "", phashMsg: "" };
+  }
 
   function buildModel(data, watch) {
     const now = Date.now();
@@ -1736,7 +2039,7 @@
     const body = root.querySelector(".ins-body");
     if (app.error) { body.innerHTML = `<div class="ins-error">Insights could not load your library: ${esc(app.error)}. <button class="ins-btn" data-act="refresh">Try again</button></div>`; return; }
     if (!app.model) { body.innerHTML = `<div class="ins-progress">${esc(app.progress || "Getting ready…")}<div class="bar"><i></i></div></div>`; return; }
-    ({ you: renderYou, library: renderLibrary, files: renderFiles, health: renderHealth, collection: renderCollection }[app.tab] || renderYou)(body);
+    ({ you: renderYou, actions: renderActions, library: renderLibrary, files: renderFiles, health: renderHealth, collection: renderCollection }[app.tab] || renderYou)(body);
   }
 
   const chipFor = (grp, key, v, label, c) => `<button class="ins-chip${app[grp][key] === v ? " on" : ""}" ${c ? `style="--c:var(--${c})"` : ""} data-set="${grp}.${key}=${v}">${label}</button>`;
@@ -1870,18 +2173,6 @@
     const dayO = ev.filter((e) => e.o).length, dayScenes = new Set(ev.map((e) => e.scene.id)).size;
     const isToday = day === dayKey(m.now);
 
-    // what works for you
-    const pulls = strongestPulls();
-    const dim = ALL_DIMS.find((d) => d.id === y.dim) || ALL_DIMS[0];
-    const T = traits(dim.id);
-    const share = (r) => (y.wmetric === "watch" ? r.watchShare : r.oShare);
-    const lift = (r) => (r.libShare ? share(r) / r.libShare : 0);
-    const tRows = T.rows.filter((r) => y.small || !r.small)
-      .sort(y.sort === "size" ? (a, b) => b.scenes - a.scenes : (a, b) => lift(b) - lift(a) || b.scenes - a.scenes);
-    const hiddenSmall = T.rows.filter((r) => r.small).length;
-    const tMax = Math.max(0.0001, ...tRows.slice(0, 40).map((r) => Math.max(r.libShare, share(r))));
-    const dimChips = (list) => list.map((d) => `<button class="ins-chip${y.dim === d.id ? " on" : ""}" style="--c:var(--gr)" data-set="you.dim=${d.id}">${esc(d.label)}</button>`).join("");
-
     const plist = { byO: m.people.byO, byRate: m.people.byRate, byWatch: m.people.byWatch, neglected: m.people.neglected }[y.mode].slice(0, 10);
     const pmax = plist.length ? (y.mode === "byRate" ? plist[0].perScene : y.mode === "byWatch" ? plist[0].watch : Math.max(1, ...plist.map((r) => r.o))) : 1;
     const tops = { byO: m.top.byO, byPlays: m.top.byPlays, unvisited: m.top.unvisited }[y.top] || [];
@@ -1934,28 +2225,7 @@
           statRow("drop", "ma", "Record day", m.record ? os(m.record.n) : "–", m.record ? fmtDate(parseDay(m.record.day)) : "") +
           statRow("drop", "pu", "All time", os(m.events.length + m.undated), `${fmtN(m.lib.totals.withO)} scenes have one`))}
       </div>
-      ${card({ title: "What works for you", icon: "spark", c: "gr", id: "ins-works",
-        right: `${chipFor("you", "wmetric", "o", "O's", "gr")}${chipFor("you", "wmetric", "watch", "Watched", "gr")} &nbsp; ${chipFor("you", "sort", "pull", "Strongest", "gr")}${chipFor("you", "sort", "size", "Biggest", "gr")}`,
-        sub: `Lift is your share of ${y.wmetric === "watch" ? "watching" : "O's"} over the library's share: <span class="ins-lift up">1.5×</span> gets you there half again as often as its size suggests.` },
-        `${pulls.length ? `<div class="ins-pulls">${pulls.map(({ d, r }) => `<div class="ins-well ins-pull" data-set="you.dim=${d.id}"
-          data-tip="${esc(`${r.scenes} scenes (${pct(r.libShare)} of the library)\n${os(r.o)} (${pct(r.oShare)} of yours)\nwatched: ${pct(r.watchShare)} of your time`)}">
-          <div class="k">${esc(d.label)}</div><div class="n">${traitIcon(d.id, r.value)}<span>${esc(traitLabel(d.id, r.value))}</span></div><span class="ins-lift up">${r.lift.toFixed(1)}×</span>
-          <div class="d">${pct(r.oShare)} of O's from ${pct(r.libShare)} of scenes</div></div>`).join("")}</div>` : ""}
-        <div class="ins-dims"><span class="g">Performers</span>${dimChips(PERFORMER_TRAITS)}</div>
-        <div class="ins-dims"><span class="g">Scenes</span>${dimChips(SCENE_TRAITS)}</div>
-        <div class="ins-well" style="margin-top:10px">
-        ${tRows.length ? tRows.slice(0, 40).map((r) => {
-          const l = lift(r), tone = liftTone(l), link = traitLink(dim.id, r.value);
-          return `<div class="ins-row${link ? " click" : ""}" style="--lw:minmax(120px,230px);--vw:150px;--c:var(--${y.wmetric === "watch" ? "cy" : "ma"})" ${link ? `data-go="${esc(link)}"` : ""}
-            data-tip="${esc(`${traitLabel(dim.id, r.value)}\n${r.scenes} scenes · ${pct(r.libShare)} of the library\n${os(r.o)} · ${pct(r.oShare)} of yours\nplayed ${r.plays}× · watched ${fmtDur(r.watch)} (${pct(r.watchShare)})`)}">
-            <span class="l">${traitIcon(dim.id, r.value)}<span>${esc(traitLabel(dim.id, r.value))}</span></span>
-            <div class="ins-dual"><div class="ins-trk"><i style="width:${((r.libShare / tMax) * 100).toFixed(1)}%"></i></div><div class="ins-trk"><i style="width:${((share(r) / tMax) * 100).toFixed(1)}%"></i></div></div>
-            <span class="v"><small>${pct(share(r))} of ${pct(r.libShare)}</small> <span class="ins-lift ${tone}">${l.toFixed(1)}×</span></span></div>`; }).join("")
-          : `<div class="ins-empty">Nothing to compare yet for ${esc(dim.label.toLowerCase())}${hiddenSmall ? "; the groups are all small" : ""}.</div>`}</div>
-        <div class="ins-note"><span style="display:inline-block;width:18px;height:6px;border-radius:3px;background:var(--tx3);vertical-align:middle"></span> share of the library &nbsp;
-          <span style="display:inline-block;width:18px;height:6px;border-radius:3px;background:var(--${y.wmetric === "watch" ? "cy" : "ma"});vertical-align:middle"></span> share of your ${y.wmetric === "watch" ? "watching" : "O's"} &nbsp;
-          <span class="ins-lift up">1.3×</span> above its weight, <span class="ins-lift down">0.8×</span> below.
-          ${hiddenSmall ? `<button class="ins-chip" data-set="you.small=${y.small ? "false" : "true"}">${y.small ? "hide" : "show"} ${plural(hiddenSmall, "small group")}</button>` : ""}</div>`)}
+      ${worksCard(m, y)}
       <div class="ins-grid">
         ${card({ title: "Your performers", icon: "users", c: "ma",
           right: `${chipFor("you", "mode", "byO", "O's", "ma")}${chipFor("you", "mode", "byRate", "Per scene", "ma")}${chipFor("you", "mode", "byWatch", "Watched", "ma")}${chipFor("you", "mode", "neglected", "Gone quiet", "ma")}` },
@@ -1986,7 +2256,8 @@
   const CYCLE = ["#3AA99F", "#DA702C", "#8B7EC8", "#4385BE", "#D0A215", "#879A39", "#CE5D97", "#D14D41"];
   function ago(ms) {
     const min = Math.round((Date.now() - ms) / 60000);
-    if (min < 60) return `${Math.max(1, min)} min ago`;
+    if (min < 1) return "just now";
+    if (min < 60) return `${min} min ago`;
     if (min < 48 * 60) return plural(Math.round(min / 60), "hour") + " ago";
     if (min < 60 * 24 * 60) return plural(Math.round(min / 1440), "day") + " ago";
     return fmtDate(ms);
@@ -2141,24 +2412,12 @@
   }
 
   function renderFiles(el) {
-    const m = app.model, f = app.files;
+    const m = app.model;
     const fs = m.get("files", () => fileStats(m.scenes));
-    const up = m.get("upgrades", () => upgrades(m.scenes));
-    const hog = m.get("hogs", () => spaceHogs(m.scenes, fs));
     const net = m.get("networks", () => networks(m.studios, m.scenes));
     const first = [...fs.vcodec.values()].reduce((a, r) => a + r.size, 0);
     const avgBr = fs.brN ? fs.brSum / fs.brN : 0;
     const con = (html) => `<div class="ins-well ins-con">${html}</div>`;
-
-    // storage by studio
-    const bySize = net.studios.slice().sort((a, b) => b.size - a.size);
-    const noStudio = m.scenes.filter((s) => !s.studio).reduce((a, s) => a + (s.size || 0), 0);
-    const top = bySize.slice(0, 9), rest = bySize.slice(9);
-    const blocks = top.map((s, i) => ({ name: s.name, size: s.size, n: s.scenes, color: CYCLE[i % CYCLE.length], go: S([{ type: "studios", modifier: "INCLUDES", value: items(s.id, s.name) }], "filesize") }));
-    if (rest.length) blocks.push({ name: `${plural(rest.length, "more studio")}`, size: rest.reduce((a, s) => a + s.size, 0), n: rest.reduce((a, s) => a + s.scenes, 0), color: "#575653" });
-    if (noStudio) blocks.push({ name: "no studio", size: noStudio, n: m.scenes.filter((s) => !s.studio).length, color: "#403E3C",
-                                go: S([{ type: "studios", modifier: "IS_NULL", value: { items: [], excluded: [], depth: 0 } }], "filesize") });
-    const bTotal = Math.max(1, blocks.reduce((a, b) => a + b.size, 0));
 
     const brRows = RES_ORDER.filter((r) => fs.bitrate[r]).map((r) => {
       const b = fs.bitrate[r];
@@ -2171,28 +2430,6 @@
         <td style="color:var(--hi)">${fmtBytes((r.size / r.secs) * 3600)}</td><td>${avgShort ? `${Math.round(avgShort)}p` : "–"}</td><td>${pct(r.size / Math.max(1, first))}</td></tr>`;
     }).join("");
 
-    const sceneLine = (s, right, color, extra) => `<div class="ins-li click" data-go="/scenes/${esc(s.id)}">${thumb(s)}
-      <div style="min-width:0"><div class="n">${esc(s.title)}</div><div class="sub">${esc(resOf(s))} · ${esc(codecName(s.vc))} · ${fmtBytes(s.fsize)}${extra || (s.o || s.plays ? ` · ${os(s.o)}, played ${s.plays}×` : "")}</div></div>
-      <div class="v" style="color:${color}">${right}</div></div>`;
-
-    let dupBody;
-    if (f.dupState === "loading") dupBody = `<div class="ins-progress" style="padding:24px 0">Asking Stash for exact matches…<div class="bar"><i></i></div></div>`;
-    else if (f.dupState === "error") dupBody = `<div class="ins-error">Stash could not run the match: ${esc(f.dupErr)}</div><div style="margin-top:10px"><button class="ins-btn" data-act="dups">${ic("search")} Try again</button></div>`;
-    else if (f.dupState === "done") {
-      const plans = f.dups.map(dupPlan).sort((a, b) => b.frees - a.frees);
-      const frees = plans.reduce((a, p) => a + p.frees, 0);
-      dupBody = plans.length ? `<div class="hd"><span>${plural(plans.length, "group").toUpperCase()}</span><span>COULD FREE ${fmtBytes(frees)}</span></div>
-        ${plans.slice(0, 12).map((p) => `<div style="padding:6px 0;border-top:1px solid #262524">
-          <div class="ins-li click" data-go="/scenes/${esc(p.keep.id)}" style="min-height:34px">${thumb(p.keep)}<div style="min-width:0"><div class="n">${esc(p.keep.title)}</div>
-            <div class="sub" style="color:var(--gr)">keep · ${esc(resOf(p.keep))} ${esc(codecName(p.keep.vc))} · ${fmtBytes(p.keep.fsize)}</div></div><span class="v" style="color:var(--gr)">${ic("check")}</span></div>
-          ${p.drop.map((d) => `<div class="ins-li click" data-go="/scenes/${esc(d.id)}" style="min-height:34px">${thumb(d)}<div style="min-width:0"><div class="n">${esc(d.title)}</div>
-            <div class="sub" style="color:var(--down)">could go · ${esc(resOf(d))} ${esc(codecName(d.vc))}</div></div><span class="v" style="color:var(--down)">${fmtBytes(d.fsize)}</span></div>`).join("")}</div>`).join("")}
-        ${plans.length > 12 ? `<div class="ins-note">${plural(plans.length - 12, "more group")}.</div>` : ""}`
-        : `<div class="ins-empty">${ic("check")} No exact duplicates among files that have a phash.</div>`;
-      dupBody += `<div class="ins-note">Insights only reads; nothing is deleted. ${go("/sceneDuplicateChecker", "Open Stash's duplicate checker")}</div>`;
-    } else dupBody = `<div style="text-align:center;padding:14px 0 6px"><div style="color:var(--tx2);margin-bottom:12px">Stash's exact phash match, with the copy worth keeping in each group.</div>
-        <button class="ins-btn big" data-act="dups">${ic("search")} Find duplicates</button></div>`;
-
     el.innerHTML = `
       <div class="ins-card ins-well ins-con ins-strip" style="--c:var(--cy)">
         <div><span>FILES</span><b>${fmtN(fs.files)}</b></div><div><span>SIZE</span><b>${fmtBytes(fs.size)}</b></div>
@@ -2200,7 +2437,7 @@
         <div><span>PER HOUR</span><b>${fs.secs ? fmtBytes((first / fs.secs) * 3600) : "–"}</b></div>
         <div class="click" data-go="${esc(S([{ type: "file_count", modifier: "GREATER_THAN", value: { value: 1 } }]))}" style="cursor:pointer" data-tip="Scenes with more than one file: open them"><span>MULTI-FILE</span><b>${fmtN(fs.multi)}</b></div>
         ${fs.noFile ? `<div class="warn" data-go="${esc(S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]))}" style="cursor:pointer" data-tip="Scenes whose file is gone: open them"><span>NO FILE</span><b>${fmtN(fs.noFile)}</b></div>` : ""}
-        ${fs.noPhash ? `<div class="warn" data-tip="Files without a phash cannot be matched as duplicates. Stash: Tasks > Generate > Phashes."><span>NO PHASH</span><b>${fmtN(fs.noPhash)}</b></div>` : ""}
+        ${fs.noPhash ? `<div class="warn" data-tab="actions" style="cursor:pointer" data-tip="Files without a phash cannot be matched as duplicates. Generate them on the Actions tab."><span>NO PHASH</span><b>${fmtN(fs.noPhash)}</b></div>` : ""}
       </div>
       <div class="ins-grid3">
         ${card({ title: "Video codec", icon: "film", c: "cy" }, con(dist(fs.vcodec, null, { head: "CODEC", color: (r, i) => (LEGACY.has(r.key) ? "#D14D41" : CYCLE[i % CYCLE.length]),
@@ -2222,29 +2459,318 @@
         ${card({ title: "Cost per hour", icon: "disk", c: "cy", sub: "Storage an hour of video takes, by codec. Click a codec to list its files, largest first." },
           con(`<table><tr><th>CODEC</th><th>FILES</th><th>PER HOUR</th><th>AVG RES</th><th>OF SPACE</th></tr>${costRows}</table>`))}
       </div>
-      ${card({ title: "Where the space goes", icon: "disk", c: "cy", sub: "By studio, largest first. Click one to list its scenes by file size." },
-        `<div class="ins-tm">${blocks.map((b) => `<div style="flex:${(b.size / bTotal * 100).toFixed(2)} 1 ${Math.max(60, Math.round((b.size / bTotal) * 900))}px;background:${b.color};${b.color === "#575653" || b.color === "#403E3C" ? "color:var(--hi)" : ""}"
-          ${b.go ? `data-go="${esc(b.go)}"` : ""} data-tip="${esc(`${b.name}\n${fmtBytes(b.size)} · ${pct(b.size / bTotal)}\n${plural(b.n, "scene")}`)}"><b>${esc(b.name)}</b>${fmtBytes(b.size)} · ${pct(b.size / bTotal)}</div>`).join("")}</div>`)}
-      <div class="ins-grid3">
-        ${card({ title: "Worth upgrading", icon: "up", c: "re", right: `<b style="color:var(--hi)">${fmtN(up.n)}</b>`,
-          sub: `Below 720p or a legacy codec (${fmtBytes(up.size)}). The ones you watch most come first.` },
-          con(up.list.length ? up.list.slice(0, 8).map((s) => sceneLine(s, s.o ? `${s.o}${ic("drop")}` : "", "var(--ma)")).join("") : `<div class="ins-empty">${ic("check")} Nothing below 720p or in a legacy codec.</div>`) +
-          (up.n ? `<div class="ins-note">${go(S([{ type: "resolution", modifier: "LESS_THAN", value: "720p" }], "o_counter"), "All below 720p")}</div>` : ""))}
-        ${card({ title: "Space hogs", icon: "box", c: "ye", right: `<b style="color:var(--hi)">${fmtN(hog.n)}</b>`,
-          sub: `Over 2.5× the usual bitrate for their resolution. Re-encoded at this library's usual HEVC/AV1 rate they would free about <b style="color:var(--hi)">${fmtBytes(hog.saving)}</b>.` },
-          con(hog.list.length ? hog.list.slice(0, 8).map((x) => sceneLine(x.s, `−${fmtBytes(x.saving)}`, "var(--ye)", ` · ${fmtMbps(bitrateOf(x.s))} Mbps, ${x.ratio.toFixed(1)}× usual`)).join("")
-            : `<div class="ins-empty">${ic("check")} No file stands out for its size.</div>`))}
-        ${card({ title: "Duplicates", icon: "copy", c: "bl", right: f.dupState === "done" ? `<button class="ins-chip" data-act="dups">scan again</button>` : "" },
-          con(dupBody) + (fs.noPhash ? `<div class="ins-note">${plural(fs.noPhash, "file")} without a phash cannot be matched. Stash: Tasks › Generate › Phashes.</div>` : ""))}
-      </div>`;
+      ${spaceCard(m, fs, net)}
+      <div class="ins-note" style="text-align:center">Duplicates, files to re-encode or upgrade, and space hogs are on the ${go("#", "Actions")} tab.</div>`;
+    const lnk = el.querySelector('.ins-note .ins-go[data-go="#"]');
+    if (lnk) { lnk.removeAttribute("data-go"); lnk.dataset.tab = "actions"; }
   }
 
-  async function runDuplicates() {
-    const f = app.files;
-    f.dupState = "loading"; render();
-    try { f.dups = await loadDuplicates(); f.dupState = "done"; }
-    catch (e) { f.dupErr = e.message; f.dupState = "error"; }
-    if (app.tab === "files") render();
+
+
+  // ── What works for you (2.2) ──────────────────────────────────────────────
+  // A sidebar of dimensions, and for the chosen one a row per value: rank,
+  // name, a bar centred on 1x (right and green: more than its share, left
+  // and coral: less), the two shares, the lift. Strongest first, except
+  // dimensions with a natural order (height, age, length...), which keep it;
+  // either way the three strongest are highlighted.
+
+  function worksCard(m, y) {
+    const pulls = strongestPulls();
+    const dim = ALL_DIMS.find((d) => d.id === y.dim) || ALL_DIMS[0];
+    const ordinal = isOrdinal(dim.id);
+    // "auto" is the dimension's natural reading: in order where it has one,
+    // strongest first where it does not
+    const sort = y.sort === "size" ? "size" : ordinal && y.sort !== "pull" ? "order" : "pull";
+    const R = rankTraits(traits(dim.id), dim.id, y.wmetric, { small: y.small, sort: sort === "order" ? undefined : sort });
+    const color = y.wmetric === "watch" ? "cy" : "ma";
+    const side = (title, list) => `<div class="h">${title}</div>` + list.map((d) =>
+      `<button class="ins-side-b${y.dim === d.id ? " on" : ""}" data-set="you.dim=${d.id}">${esc(d.label)}</button>`).join("");
+    const what = y.wmetric === "watch" ? "watching" : "O's";
+    const rowsHtml = R.rows.slice(0, 60).map((r) => {
+      const x = liftPos(r.mLift), w = Math.abs(x) * 50, tone = liftTone(r.mLift), link = traitLink(dim.id, r.value);
+      return `<div class="ins-lr${r.top ? " top" : ""}${link ? " click" : ""}" ${link ? `data-go="${esc(link)}"` : ""}
+        data-tip="${esc(`${traitLabel(dim.id, r.value)}\n${fmtN(r.scenes)} scenes · ${pct(r.libShare)} of the library\n${os(r.o)} · ${pct(r.oShare)} of yours\nplayed ${r.plays}× · watched ${fmtDur(r.watch)} (${pct(r.watchShare)})\nrank ${r.rank} by strength`)}">
+        <span class="rk">${r.rank}</span>
+        <span class="l">${traitIcon(dim.id, r.value)}<span>${esc(traitLabel(dim.id, r.value))}</span></span>
+        <div class="ins-div"><i style="left:${x >= 0 ? 50 : 50 - w}%;width:${Math.max(0.8, w).toFixed(1)}%;background:var(--${tone === "up" ? "gr" : tone === "down" ? "re" : "tx3"})"></i></div>
+        <span class="nums">${pct(r.mShare)} of ${what} · ${pct(r.libShare)} of scenes</span>
+        <span class="ins-lift ${tone}">${r.mLift.toFixed(1)}×</span></div>`;
+    }).join("");
+    return card({ title: "What works for you", icon: "spark", c: "gr", id: "ins-works",
+      right: `${chipFor("you", "wmetric", "o", "O's", "gr")}${chipFor("you", "wmetric", "watch", "Watched", "gr")} &nbsp;
+        ${ordinal ? `${chipFor("you", "sort", "auto", "In order", "gr")}${chipFor("you", "sort", "pull", "Strongest", "gr")}` : chipFor("you", "sort", "auto", "Strongest", "gr")}${chipFor("you", "sort", "size", "Biggest", "gr")}`,
+      sub: `How each group does for you against its share of the library. Right of the line gets you there more often. The three strongest are highlighted.` },
+      `${pulls.length ? `<div class="ins-pulls">${pulls.map(({ d, r }) => `<div class="ins-well ins-pull" data-set="you.dim=${d.id}"
+        data-tip="${esc(`${r.scenes} scenes (${pct(r.libShare)} of the library)\n${os(r.o)} (${pct(r.oShare)} of yours)`)}">
+        <div class="k">${esc(d.label)}</div><div class="n">${traitIcon(d.id, r.value)}<span>${esc(traitLabel(d.id, r.value))}</span></div><span class="ins-lift up">${r.lift.toFixed(1)}×</span>
+        <div class="d">${pct(r.oShare)} of O's from ${pct(r.libShare)} of scenes</div></div>`).join("")}</div>` : ""}
+      <div class="ins-ww">
+        <nav class="ins-side">${side("PERFORMER", PERFORMER_TRAITS)}${side("SCENE", SCENE_TRAITS)}</nav>
+        <div class="ins-wbody">
+          <div class="ins-lr ins-axis"><span></span><span class="l">${esc(dim.label)}${sort === "order" ? " · in order" : sort === "size" ? " · biggest first" : " · strongest first"}</span>
+            <div class="ax"><span>¼×</span><span>1×</span><span>4×</span></div><span class="nums">your ${what} · library</span><span>lift</span></div>
+          <div class="ins-well" style="--c:var(--${color})">${rowsHtml || `<div class="ins-empty">Nothing to compare yet for ${esc(dim.label.toLowerCase())}${R.hidden ? "; the groups are all small" : ""}.</div>`}</div>
+          <div class="ins-note">${R.hidden ? `${plural(R.hidden, "small group")} hidden (under ${fmtN(R.minScenes)} scenes, or too little played to say). <button class="ins-chip" data-set="you.small=${y.small ? "false" : "true"}">${y.small ? "hide" : "show"} them</button>` : ""}</div>
+        </div>
+      </div>`);
+  }
+
+  // ── Where the space goes (2.2): a ranked list, by studio, network, codec
+  // or resolution ─────────────────────────────────────────────────────────
+
+  function spaceCard(m, fs, net) {
+    const f = app.files, mode = f.space;
+    let list;
+    if (mode === "codec") list = [...fs.vcodec.values()].map((r) => ({ name: r.key, size: r.size, n: r.n, color: LEGACY.has(r.key) ? "var(--re)" : isEfficient(r.raw) ? "var(--gr)" : "var(--cy)",
+                                go: S([{ type: "video_codec", modifier: "INCLUDES", value: VC_MATCH[r.key] || r.raw }], "filesize") }));
+    else if (mode === "resolution") list = [...fs.res.values()].map((r) => ({ name: r.key, size: r.size, n: r.n, color: RES_COLOR[r.key],
+                                go: S([{ type: "resolution", modifier: RES_LINK[r.key][0], value: RES_LINK[r.key][1] }], "filesize") }));
+    else if (mode === "network") list = net.networks.map((x) => ({ name: `${x.name}`, sub: `${plural(x.sites, "site")}`, size: x.size, n: x.scenes, go: `/studios/${x.id}` }))
+      .concat(net.independent.list.map((x) => ({ name: x.name, size: x.size, n: x.scenes, go: `/studios/${x.id}` })));
+    else list = net.studios.map((x) => ({ name: x.name, size: x.size, n: x.scenes, go: S([{ type: "studios", modifier: "INCLUDES", value: items(x.id, x.name) }], "filesize") }));
+    const noStudio = mode === "studio" || mode === "network" ? m.scenes.filter((s) => !s.studio) : [];
+    if (noStudio.length) list.push({ name: "no studio", size: noStudio.reduce((a, s) => a + (s.size || 0), 0), n: noStudio.length, color: "var(--tx3)",
+                                     go: S([{ type: "studios", modifier: "IS_NULL", value: { items: [], excluded: [], depth: 0 } }], "filesize") });
+    list.sort((a, b) => b.size - a.size);
+    const total = Math.max(1, list.reduce((a, x) => a + x.size, 0));
+    const shown = list.slice(0, f.spaceAll ? 40 : 15), rest = list.slice(shown.length);
+    const max = Math.max(1, ...shown.map((x) => x.size));
+    const rowsHtml = shown.map((x) => `<div class="ins-sr${x.go ? " click" : ""}" ${x.go ? `data-go="${esc(x.go)}"` : ""}
+      data-tip="${esc(`${x.name}${x.sub ? ` (${x.sub})` : ""}\n${fmtBytes(x.size)} · ${pct(x.size / total)}\n${plural(x.n, "scene")} · ${fmtBytes(x.size / Math.max(1, x.n))} each on average`)}">
+      <span class="l">${esc(x.name)}${x.sub ? ` <small>${esc(x.sub)}</small>` : ""}</span>
+      <div class="ins-trk"><i style="width:${Math.max(0.8, (x.size / max) * 100).toFixed(1)}%;${x.color ? `background:${x.color}` : ""}"></i></div>
+      <span class="v">${fmtBytes(x.size)}</span><span class="p">${pct(x.size / total)}</span><span class="n">${plural(x.n, "scene")}</span></div>`).join("");
+    const restSize = rest.reduce((a, x) => a + x.size, 0);
+    return card({ title: "Where the space goes", icon: "disk", c: "cy",
+      right: ["studio", "network", "codec", "resolution"].map((k) => chipFor("files", "space", k, k[0].toUpperCase() + k.slice(1), "cy")).join(""),
+      sub: `${fmtBytes(total)} in all, largest first. Click one to list its scenes by file size.` },
+      `<div class="ins-well" style="--c:var(--cy)">${rowsHtml}</div>` +
+      (rest.length ? `<div class="ins-note">+ ${fmtN(rest.length)} more · ${fmtBytes(restSize)} (${pct(restSize / total)}) ${f.spaceAll || list.length <= 15 ? "" : `<button class="ins-chip" data-set="files.spaceAll=true">show 25 more</button>`}</div>`
+        : f.spaceAll && list.length > 15 ? `<div class="ins-note"><button class="ins-chip" data-set="files.spaceAll=false">show fewer</button></div>` : ""));
+  }
+
+  // ── Probably wrong (shared by Actions and the Health hero) ───────────────
+
+  function problemChecks(m) {
+    const fs = m.get("files", () => fileStats(m.scenes));
+    const conflicts = m.get("conflicts", () => dateConflicts(m.scenes, m.perfById));
+    const twins = m.get("twins", () => sameNames(m.performers));
+    const future = m.get("future", () => futureDates(m.scenes, m.now));
+    const c = m.counts, today = dayKey(m.now);
+    const checks = [
+      { n: fs.noFile, icon: "alert", c: "re", title: "Scenes with no file", sub: "The file was moved or deleted outside Stash; a scan or clean sorts it out",
+        go: S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]) },
+      { n: new Set(conflicts.map((x) => x.s.id)).size, icon: "alert", c: "re", title: "Scenes dated before a performer turned 18", sub: "Nearly always a wrong birthdate or a wrong scene date (a re-release, a typo)",
+        more: conflicts.length, pills: conflicts.slice(0, 10).map((x) => ({ label: `${x.s.title} · ${x.p.name}, ${x.age}`, go: `/scenes/${x.s.id}` })) },
+      { n: twins.length, icon: "users", c: "re", title: "Performers with the same name", sub: "Probably one person added twice; Stash can merge them",
+        pills: twins.slice(0, 12).map((g) => ({ label: `${g[0].name} ×${g.length}`, go: `/performers?q=${encodeURIComponent(g[0].name)}` })) },
+      { n: future.length, icon: "calendar", c: "ye", title: "Release date in the future", sub: "Pre-release dates are fine; typos are not",
+        go: S([{ type: "date", modifier: "GREATER_THAN", value: { value: today } }], "date", "asc") },
+      { n: c["t.once"], icon: "tag", c: "or", title: "Tags used on one scene", sub: "Often a typo or a near-twin of another tag",
+        go: listUrl("/tags", [{ type: "scene_count", modifier: "EQUALS", value: { value: 1 } }], "name", "asc") },
+      { n: c["p.noscenes"], icon: "user", c: "tx2", title: "Performers with no scenes", sub: "Fine if you keep them on purpose",
+        go: P([{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name") },
+      { n: c["st.noscenes"], icon: "studio", c: "tx2", title: "Studios with no scenes", sub: "Often a parent network, which is fine",
+        go: listUrl("/studios", [{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name", "asc") },
+    ].filter((x) => x.n !== null && x.n !== undefined);
+    const open = checks.filter((x) => x.n > 0);
+    return { open, clear: checks.filter((x) => !x.n), serious: open.filter((x) => x.c === "re" || x.c === "ye").reduce((a, x) => a + x.n, 0) };
+  }
+  const checkRow = (x) => `<div class="ins-chk${x.go ? " click" : ""}" ${x.go ? `data-go="${esc(x.go)}"` : ""}>
+    <span class="ins-sq" style="--c:var(--${x.c})">${ic(x.icon)}</span>
+    <div><div class="n">${esc(x.title)}</div><div class="sub">${esc(x.sub)}</div></div>
+    <div class="v">${fmtN(x.n)}${x.go ? `<span class="ins-go">${ic("arrow")}</span>` : ""}</div>
+    ${x.pills && x.pills.length ? `<div class="more">${x.pills.map((p) => `<span class="ins-pill" data-go="${esc(p.go)}">${esc(p.label)}</span>`).join("")}${(x.more ?? x.n) > x.pills.length ? `<span class="ins-pill" style="cursor:default">+${fmtN((x.more ?? x.n) - x.pills.length)} more</span>` : ""}</div>` : ""}
+  </div>`;
+
+  // ── Actions (2.2) ─────────────────────────────────────────────────────────
+  // Everything that asks for something to be done, in one place. Writes only
+  // ever happen on a button press; the destructive one asks twice.
+
+  function dupState() {
+    const a = app.acts;
+    if (!a.dups) return null;
+    const plans = a.dups.map((g) => dupChoose(g, a.mode, { sharp: a.sharp }));
+    let files = 0, bytes = 0, ready = 0, review = 0;
+    for (const p of plans) {
+      let any = false;
+      for (const it of p.items) {
+        const on = a.ticks.has(it.s.id) ? a.ticks.get(it.s.id) : it.remove;
+        it.on = on;
+        if (on) { files += 1; bytes += it.s.fsize || 0; any = true; }
+      }
+      if (p.review) review += 1; else if (any) ready += 1;
+    }
+    plans.sort((x, y) => (x.review ? 1 : 0) - (y.review ? 1 : 0) || y.items.reduce((n, i) => n + (i.on ? i.s.fsize : 0), 0) - x.items.reduce((n, i) => n + (i.on ? i.s.fsize : 0), 0));
+    return { plans, files, bytes, ready, review };
+  }
+
+  function renderActions(el) {
+    const m = app.model, a = app.acts;
+    const fs = m.get("files", () => fileStats(m.scenes));
+    const up = m.get("upgrades", () => upgrades(m.scenes));
+    const hog = m.get("hogs", () => spaceHogs(m.scenes, fs));
+    const ne = m.get("noteff", () => notEfficient(m.scenes, fs));
+    const H = m.get("health", () => healthModel(m));
+    const P2 = problemChecks(m);
+    const D = dupState();
+    const noPhashIds = m.scenes.filter((s) => s.phash === false).map((s) => s.id);
+    const con = (html) => `<div class="ins-well ins-con">${html}</div>`;
+    const sceneLine = (s, right, color, extra) => `<div class="ins-li click" data-go="/scenes/${esc(s.id)}">${thumb(s)}
+      <div style="min-width:0"><div class="n">${esc(s.title)}</div><div class="sub">${esc(resOf(s))} · ${esc(codecName(s.vc))} · ${fmtBytes(s.fsize)}${extra || ""}</div></div>
+      <div class="v" style="color:${color}">${right}</div></div>`;
+    const tileA = (icon, c, label, value, sub, target) => `<div class="ins-card ins-tile click" style="--c:var(--${c})" data-jump="${target}">
+      <div class="l">${ic(icon)}${esc(label)}</div><div class="v">${value}</div><div class="s">${sub}</div></div>`;
+
+    // the duplicate cleaner
+    let dupBody;
+    if (a.state === "scanning") dupBody = `<div class="ins-progress" style="padding:24px 0">Asking Stash for exact matches…<div class="bar"><i></i></div></div>`;
+    else if (a.state === "error" && !a.dups) dupBody = `<div class="ins-error">Stash could not run the match: ${esc(a.err)}</div>`;
+    else if (!a.dups) dupBody = `<div style="text-align:center;padding:16px 0 8px"><div style="color:var(--tx2);margin-bottom:12px">Finds exact copies with Stash's phash match, then picks the copy to keep in each group.</div>
+      <button class="ins-btn big" data-act="dups">${ic("search")} Find duplicates</button>
+      ${fs.noPhash ? `<div class="ins-note">${plural(fs.noPhash, "file")} have no phash yet and cannot be matched; generate them below first.</div>` : ""}</div>`;
+    else {
+      const run = a.run;
+      // only a cleanup in progress locks the controls; a finished one does not
+      const busy = !!(run && !run.finished);
+      const seg = (k, l) => `<button class="${a.mode === k ? "on" : ""}" data-set="acts.mode=${k}" ${busy ? "disabled" : ""}>${l}</button>`;
+      const tog = (k, l) => `<button class="ins-tog${a[k] ? " on" : ""}" data-set="acts.${k}=${a[k] ? "false" : "true"}" ${busy ? "disabled" : ""}><i></i>${l}</button>`;
+      const item = (it, keep) => `<div class="ins-cp">${keep ? "<span></span>" : `<button class="ins-bx${it.on ? " on" : ""}" data-act="dtick" data-id="${esc(it.s.id)}" ${busy ? "disabled" : ""} aria-label="Remove this copy"></button>`}
+        ${thumb(it.s)}<span class="t"><span class="ins-k ${keep ? "keep" : it.on ? "del" : "look"}">${keep ? "KEEP" : it.on ? "REMOVE" : "LOOK"}</span>
+        <span class="ins-go" data-go="/scenes/${esc(it.s.id)}" style="color:var(--tx)">${esc(it.s.title)}</span>
+        <span class="m"> · ${esc(codecName(it.s.vc))} ${esc(resOf(it.s))} · ${fmtBytes(it.s.fsize)}${it.s.o ? ` · ${os(it.s.o)}` : ""}${!keep && it.why ? ` · ${esc(it.why)}` : ""}${!keep && it.on && a.merge && (it.s.o || it.s.plays) ? " · history moves over" : ""}</span></span>
+        <span class="v">${keep ? `scene ${esc(it.s.id)}` : it.on ? `<b style="color:var(--down)">${fmtBytes(it.s.fsize)}</b>` : "kept"}</span></div>`;
+      const shown = D.plans.slice(0, a.showAll ? 400 : 25);
+      dupBody = `<div class="ins-opts"><span>Keep</span><span class="ins-seg">${seg("hevc", "HEVC or AV1")}${seg("best", "Best quality")}${seg("smallest", "Smallest")}</span>
+          ${tog("merge", "Move O's, plays, tags and performers to the kept scene first")}
+          ${a.mode === "hevc" ? tog("sharp", "Only if the HEVC/AV1 copy is at least as sharp") : ""}</div>
+        <div class="ins-con ins-sum"><span><em>GROUPS</em><b>${fmtN(D.plans.length)}</b></span><span><em>READY</em><b style="color:var(--up)">${fmtN(D.ready)}</b></span>
+          <span><em>TO REMOVE</em><b style="color:var(--down)">${plural(D.files, "file")} · ${fmtBytes(D.bytes)}</b></span><span><em>NEEDS A LOOK</em><b style="color:var(--ye)">${fmtN(D.review)}</b></span>
+          <span style="margin-left:auto"><button class="ins-chip" data-act="dups" ${busy ? "disabled" : ""}>scan again</button></span></div>
+        ${D.plans.length ? `<div class="ins-well ins-dups">${shown.map((p) => `<div class="ins-dg${p.review ? " review" : ""}">${p.review ? `<div class="why">${ic("alert")} ${esc(p.reason)}</div>` : ""}
+          ${item({ s: p.keep }, true)}${p.items.map((it) => item(it, false)).join("")}</div>`).join("")}</div>
+          ${D.plans.length > shown.length ? `<div class="ins-note"><button class="ins-chip" data-set="acts.showAll=true">show all ${fmtN(D.plans.length)} groups</button></div>` : ""}`
+          : `<div class="ins-empty">${ic("check")} No exact duplicates among files that have a phash.</div>`}
+        ${run ? `<div class="ins-run"><div class="bar"><i style="width:${(run.done / Math.max(1, run.total) * 100).toFixed(1)}%"></i></div>
+            <span>${run.finished ? `Done: ${plural(run.ok, "group")} cleaned, ${plural(run.files, "file")} removed, ${fmtBytes(run.bytes)} freed${run.errors.length ? `, ${plural(run.errors.length, "group")} skipped` : ""}.` : `Group ${run.done + 1} of ${run.total}…`}</span></div>
+            ${run.errors.length ? `<div class="ins-note" style="color:var(--down)">${run.errors.slice(0, 6).map((e) => esc(e)).join("<br>")}</div>` : ""}` : ""}
+        ${a.msg ? `<div class="ins-note" style="color:var(--up)">${esc(a.msg)}</div>` : ""}
+        <div class="ins-btns">
+          <button class="ins-btn" data-act="dtag" ${!D.files || busy ? "disabled" : ""}>${ic("tag")} Tag ${plural(D.files, "copy", "copies")} for delete</button>
+          <button class="ins-btn danger${a.armed ? " armed" : ""}" data-act="dremove" ${!D.files || busy ? "disabled" : ""}>${ic("alert")}
+            ${a.armed ? `Really remove ${plural(D.files, "file")} (${fmtBytes(D.bytes)}) from disk? Click again` : `Remove ${plural(D.files, "file")} · ${fmtBytes(D.bytes)}…`}</button></div>
+        <div class="ins-note" style="text-align:right">Tagging is safe and uses QuickTools' delete tag. Removing deletes the copies' files from disk${a.merge ? "; their O's, plays, markers, tags and performers move to the kept scene first" : ""}. Nothing happens to a group that changed since the scan.</div>`;
+    }
+
+    const wins = H.wins.slice(0, 3);
+    el.innerHTML = `
+      <div class="ins-tiles">
+        ${tileA("copy", "bl", "Duplicates", a.dups ? plural(a.dups.length, "group") : "scan", a.dups && D ? `${fmtBytes(D.bytes)} to free` : "exact phash matches", "ins-a-dups")}
+        ${tileA("disk", "cy", "Not HEVC or AV1", fmtN(ne.n), `~${fmtBytes(ne.gain)} to gain`, "ins-a-hevc")}
+        ${tileA("up", "re", "Worth upgrading", fmtN(up.n), "below 720p or legacy", "ins-a-up")}
+        ${tileA("pulse", "ye", "Metadata", esc(H.grade), wins.length ? `${plural(wins.length, "quick win")}` : "nothing quick", "ins-a-fix")}
+        ${tileA("alert", "or", "Probably wrong", fmtN(P2.serious), `${plural(P2.open.length, "kind")} of problem`, "ins-a-fix")}
+        ${tileA("search", "pu", "No phash", fmtN(fs.noPhash), "cannot be matched yet", "ins-a-fix")}
+      </div>
+      ${card({ title: "Duplicate cleaner", icon: "copy", c: "bl", id: "ins-a-dups", right: a.scanned ? `scanned ${ago(a.scanned)}` : "",
+        sub: "Keeps one copy per group and removes the rest. Nothing is changed until you press a button at the bottom." }, dupBody)}
+      <div class="ins-grid">
+        ${card({ title: "Not HEVC or AV1 yet", icon: "disk", c: "cy", id: "ins-a-hevc", right: `<b style="color:var(--hi)">${fmtN(ne.n)}</b>`,
+          sub: `${fmtBytes(ne.size)} of files; at this library's usual HEVC/AV1 rates they would take about ${fmtBytes(ne.size - ne.gain)}. Biggest gain first. Tag them so a re-encoder (Tdarr, Unmanic) can pick them up.` },
+          con(ne.list.length ? ne.list.slice(0, 8).map((x) => sceneLine(x.s, `−${fmtBytes(x.gain)}`, "var(--cy)", ` · ${fmtMbps(bitrateOf(x.s))} Mbps`)).join("") : `<div class="ins-empty">${ic("check")} Every file is HEVC or AV1.</div>`) +
+          (ne.n ? `<div class="ins-btns"><button class="ins-btn" data-act="reencode" data-n="100">${ic("tag")} Tag the top ${fmtN(Math.min(100, ne.n))} "Re-encode"</button>
+            ${ne.n > 100 ? `<button class="ins-btn" data-act="reencode" data-n="all">Tag all ${fmtN(ne.n)}</button>` : ""}
+            <span class="ins-go" data-go="${esc(S([{ type: "video_codec", modifier: "NOT_MATCHES_REGEX", value: "hevc|av1" }], "filesize"))}">Open all in Stash${ic("arrow")}</span></div>` : "") +
+          (a.tagMsg ? `<div class="ins-note" style="color:var(--up)">${esc(a.tagMsg)}</div>` : ""))}
+        ${card({ title: "Worth upgrading", icon: "up", c: "re", id: "ins-a-up", right: `<b style="color:var(--hi)">${fmtN(up.n)}</b>`,
+          sub: `Below 720p or a legacy codec (${fmtBytes(up.size)}). The ones you watch most come first: a better copy of those is worth the most.` },
+          con(up.list.length ? up.list.slice(0, 8).map((s) => sceneLine(s, s.o ? `${s.o}${ic("drop")}` : "", "var(--ma)", s.o || s.plays ? ` · played ${s.plays}×` : "")).join("") : `<div class="ins-empty">${ic("check")} Nothing below 720p or in a legacy codec.</div>`) +
+          (up.n ? `<div class="ins-btns"><span class="ins-go" data-go="${esc(S([{ type: "resolution", modifier: "LESS_THAN", value: "720p" }], "o_counter"))}">All below 720p${ic("arrow")}</span></div>` : ""))}
+      </div>
+      <div class="ins-grid">
+        ${card({ title: "Space hogs", icon: "box", c: "ye", right: `<b style="color:var(--hi)">${fmtN(hog.n)}</b>`,
+          sub: `Over 2.5× the usual bitrate for their resolution, any codec. Re-encoded they would free about ${fmtBytes(hog.saving)}.` },
+          con(hog.list.length ? hog.list.slice(0, 8).map((x) => sceneLine(x.s, `−${fmtBytes(x.saving)}`, "var(--ye)", ` · ${fmtMbps(bitrateOf(x.s))} Mbps, ${x.ratio.toFixed(1)}× usual`)).join("") : `<div class="ins-empty">${ic("check")} No file stands out for its size.</div>`))}
+        ${card({ title: "Fix next", icon: "pulse", c: "ye", id: "ins-a-fix", sub: "The metadata gaps that would lift your grade most, and things that look wrong." },
+          (wins.length ? wins.map((w) => `<div class="ins-chk click" data-go="${esc(missingLink(w.p.g, w.p.key))}"><span class="ins-sq" style="--c:var(--ye)">${ic("pulse")}</span>
+            <div><div class="n">${esc(winText(w.p).replace(/^./, (c) => c.toUpperCase()))}</div><div class="sub">${w.grade !== H.grade ? `to ${esc(w.grade)}` : `+${(w.gain * 100).toFixed(1)} points`}</div></div>
+            <div class="v"><span class="ins-go">${ic("arrow")}</span></div></div>`).join("") : "") +
+          (fs.noPhash ? `<div class="ins-chk"><span class="ins-sq" style="--c:var(--pu)">${ic("search")}</span>
+            <div><div class="n">${plural(fs.noPhash, "file")} without a phash</div><div class="sub">They cannot be matched as duplicates. Generating runs a Stash task for just these scenes.</div></div>
+            <div class="v">${a.phashMsg ? `<span style="color:var(--up);font-weight:400;font-size:12px">${esc(a.phashMsg)}</span>` : `<button class="ins-btn" data-act="phash">Generate</button>`}</div></div>` : "") +
+          P2.open.map(checkRow).join("") +
+          (!wins.length && !P2.open.length && !fs.noPhash ? `<div class="ins-empty">${ic("check")} Nothing to fix.</div>` : "") +
+          (P2.clear.length ? `<div class="ins-note" style="color:var(--gr)">${ic("check")} All clear: ${P2.clear.map((x) => esc(x.title.toLowerCase())).join(", ")}.</div>` : ""))}
+      </div>`;
+    a._noPhashIds = noPhashIds;
+    a._noteff = ne;
+  }
+
+  async function scanDuplicates() {
+    const a = app.acts;
+    a.state = "scanning"; a.err = ""; a.msg = ""; a.run = null; a.armed = false;
+    render();
+    try { a.dups = await loadDuplicates(); a.ticks = new Map(); a.state = "done"; a.scanned = Date.now(); }
+    catch (e) { a.err = e.message; a.state = "error"; }
+    if (app.tab === "actions") render();
+  }
+
+  // Group by group, one at a time, so a failure stops at that group and the
+  // rest still get done; each re-reads its scenes before touching them.
+  async function removeTicked() {
+    const a = app.acts, D = dupState();
+    const work = D.plans.map((p) => ({ keep: p.keep, drops: p.items.filter((i) => i.on).map((i) => i.s) })).filter((w) => w.drops.length);
+    a.armed = false;
+    a.run = { total: work.length, done: 0, ok: 0, files: 0, bytes: 0, errors: [], finished: false };
+    render();
+    const doneIds = new Set();
+    for (const w of work) {
+      try {
+        a.run.files += await removeCopies(w.keep, w.drops, a.merge);
+        a.run.bytes += w.drops.reduce((n, s) => n + (s.fsize || 0), 0);
+        a.run.ok += 1;
+        w.drops.forEach((s) => doneIds.add(s.id));
+      } catch (e) {
+        a.run.errors.push(`${w.keep.title}: ${e.message}`);
+      }
+      a.run.done += 1;
+      if (app.tab === "actions") render();
+    }
+    a.run.finished = true;
+    // the cleaned groups leave the list; the library cache is stale now
+    a.dups = a.dups.map((g) => g.filter((s) => !doneIds.has(s.id))).filter((g) => g.length > 1);
+    cachePut({ at: 0 });
+    a.msg = "Refresh (top right) to read the library again with these changes.";
+    render();
+  }
+
+  async function tagTicked(btn) {
+    const a = app.acts, D = dupState();
+    const ids = D.plans.flatMap((p) => p.items.filter((i) => i.on).map((i) => i.s.id));
+    btn.disabled = true;
+    try {
+      const name = await deleteTagName();
+      await tagScenes(ids, name);
+      a.msg = `Tagged ${plural(ids.length, "copy", "copies")} "${name}". Filter the scene list by that tag to review and delete them.`;
+    } catch (e) { a.msg = ""; a.err = e.message; a.msg = `Tagging failed: ${e.message}`; }
+    render();
+  }
+
+  async function tagReencode(btn) {
+    const a = app.acts, ne = a._noteff;
+    const list = btn.dataset.n === "all" ? ne.list : ne.list.slice(0, 100);
+    btn.disabled = true;
+    try { await tagScenes(list.map((x) => x.s.id), "Re-encode"); a.tagMsg = `Tagged ${plural(list.length, "scene")} "Re-encode".`; }
+    catch (e) { a.tagMsg = `Tagging failed: ${e.message}`; }
+    render();
+  }
+
+  async function runPhash(btn) {
+    const a = app.acts;
+    btn.disabled = true;
+    try { await generatePhashes(a._noPhashIds || []); a.phashMsg = "Started in Stash's task queue. Refresh when it is done."; }
+    catch (e) { a.phashMsg = `Could not start: ${e.message}`; }
+    render();
   }
 
   // ── Metadata health ───────────────────────────────────────────────────────
@@ -2305,12 +2831,6 @@
   function renderHealth(el) {
     const m = app.model;
     const H = m.get("health", () => healthModel(m));
-    const fs = m.get("files", () => fileStats(m.scenes));
-    const conflicts = m.get("conflicts", () => dateConflicts(m.scenes, m.perfById));
-    const twins = m.get("twins", () => sameNames(m.performers));
-    const future = m.get("future", () => futureDates(m.scenes, m.now));
-    const c = m.counts;
-
     const block = (g) => {
       const list = H.parts[g];
       if (!list.length) return `<div class="ins-empty">Stash did not report these counts.</div>`;
@@ -2323,25 +2843,7 @@
       }).join("");
     };
 
-    const today = dayKey(m.now);
-    const checks = [
-      { n: fs.noFile, icon: "alert", c: "re", title: "Scenes with no file", sub: "The file was moved or deleted outside Stash; a scan or clean sorts it out",
-        go: S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]) },
-      { n: new Set(conflicts.map((x) => x.s.id)).size, icon: "alert", c: "re", title: "Scenes dated before a performer turned 18", sub: "Nearly always a wrong birthdate or a wrong scene date (a re-release, a typo)",
-        more: conflicts.length, pills: conflicts.slice(0, 10).map((x) => ({ label: `${x.s.title} · ${x.p.name}, ${x.age}`, go: `/scenes/${x.s.id}` })) },
-      { n: twins.length, icon: "users", c: "re", title: "Performers with the same name", sub: "Probably one person added twice; Stash can merge them",
-        pills: twins.slice(0, 12).map((g) => ({ label: `${g[0].name} ×${g.length}`, go: `/performers?q=${encodeURIComponent(g[0].name)}` })) },
-      { n: future.length, icon: "calendar", c: "ye", title: "Release date in the future", sub: "Pre-release dates are fine; typos are not",
-        go: S([{ type: "date", modifier: "GREATER_THAN", value: { value: today } }], "date", "asc") },
-      { n: fs.noPhash, icon: "copy", c: "ye", title: "Files without a phash", sub: "Cannot be matched as duplicates. Stash: Tasks › Generate › Phashes" },
-      { n: c["t.once"], icon: "tag", c: "or", title: "Tags used on one scene", sub: "Often a typo or a near-twin of another tag",
-        go: listUrl("/tags", [{ type: "scene_count", modifier: "EQUALS", value: { value: 1 } }], "name", "asc") },
-      { n: c["p.noscenes"], icon: "user", c: "tx2", title: "Performers with no scenes", sub: "Fine if you keep them on purpose",
-        go: P([{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name") },
-      { n: c["st.noscenes"], icon: "studio", c: "tx2", title: "Studios with no scenes", sub: "Often a parent network, which is fine",
-        go: listUrl("/studios", [{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name", "asc") },
-    ].filter((x) => x.n !== null && x.n !== undefined);
-    const open = checks.filter((x) => x.n > 0), clear = checks.filter((x) => !x.n);
+    const P2 = problemChecks(m);
     const ringColor = H.score === null ? "#575653" : H.score >= 0.8 ? "#879A39" : H.score >= 0.66 ? "#D0A215" : H.score >= 0.5 ? "#DA702C" : "#D14D41";
 
     el.innerHTML = `
@@ -2358,14 +2860,8 @@
           ${card({ title: "Studios", icon: "studio", c: "cy", right: fmtN(m.studios.length) }, block("studios"))}
         </div>
       </div>
-      ${card({ title: "Worth a look", icon: "alert", c: "re", sub: "Things that are probably wrong, not just missing" },
-        (open.length ? open.map((x) => `<div class="ins-chk${x.go ? " click" : ""}" ${x.go ? `data-go="${esc(x.go)}"` : ""}>
-          <span class="ins-sq" style="--c:var(--${x.c})">${ic(x.icon)}</span>
-          <div><div class="n">${esc(x.title)}</div><div class="sub">${esc(x.sub)}</div></div>
-          <div class="v">${fmtN(x.n)}${x.go ? `<span class="ins-go">${ic("arrow")}</span>` : ""}</div>
-          ${x.pills && x.pills.length ? `<div class="more">${x.pills.map((p) => `<span class="ins-pill" data-go="${esc(p.go)}">${esc(p.label)}</span>`).join("")}${(x.more ?? x.n) > x.pills.length ? `<span class="ins-pill" style="cursor:default">+${fmtN((x.more ?? x.n) - x.pills.length)} more</span>` : ""}</div>` : ""}
-        </div>`).join("") : `<div class="ins-empty">${ic("check")} Nothing looks wrong.</div>`) +
-        (clear.length ? `<div class="ins-note" style="color:var(--gr)">${ic("check")} All clear: ${clear.map((x) => esc(x.title.toLowerCase())).join(", ")}.</div>` : ""))}`;
+      <div class="ins-note" style="text-align:center">${P2.serious ? `${plural(P2.serious, "thing")} look wrong rather than missing; ` : ""}fixes and checks are on the
+        <span class="ins-go" data-tab="actions">Actions${ic("arrow")}</span> tab.</div>`;
   }
 
   // ── Collection ────────────────────────────────────────────────────────────
@@ -2498,9 +2994,10 @@
   // ── Controls (one delegated click handler on the root) ────────────────────
 
   function onClick(ev) {
-    const t = ev.target.closest && ev.target.closest("[data-tab],[data-set],[data-nav],[data-daynav],[data-day],[data-bar],[data-go],[data-act]");
+    const t = ev.target.closest && ev.target.closest("[data-tab],[data-set],[data-nav],[data-daynav],[data-day],[data-bar],[data-go],[data-act],[data-jump]");
     if (!t || !app.root.contains(t)) return;
-    if (t.dataset.tab) { app.tab = t.dataset.tab; setPref("tab", app.tab); render(); return; }
+    if (t.dataset.tab) { app.tab = t.dataset.tab; setPref("tab", app.tab); render(); app.root.scrollIntoView({ block: "start" }); return; }
+    if (t.dataset.jump) { document.getElementById(t.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
     if (t.dataset.set) {
       const i = t.dataset.set.indexOf("=");
       const path = t.dataset.set.slice(0, i), raw = t.dataset.set.slice(i + 1);
@@ -2508,7 +3005,9 @@
       const val = raw === "null" ? null : raw === "true" ? true : raw === "false" ? false : raw;
       app[grp][key] = val;
       if (grp === "you" && key === "kind") app.you.offset = 0;
-      if (grp === "you" && key === "dim") setPref("dim", val);
+      if (grp === "you" && key === "dim") { setPref("dim", val); app.you.sort = "auto"; }
+      // a different rule makes a different selection: hand ticks start over
+      if (grp === "acts" && (key === "mode" || key === "sharp")) { app.acts.ticks = new Map(); app.acts.armed = false; }
       if (grp === "col" && key === "gender") setPref("gender", val);
       if (grp === "lib" && key === "timeline") app.lib.year = null;
       render();
@@ -2530,9 +3029,28 @@
     }
     if (t.dataset.bar) { const f = CLICKS[+t.dataset.bar]; if (f) f(); return; }
     if (t.dataset.go) { navigate(t.dataset.go); return; }
-    if (t.dataset.act === "refresh") { app.files = { dups: null, dupState: "idle", dupErr: "" }; load(true); return; }
+    if (t.dataset.act === "refresh") { if (!app.acts.run || app.acts.run.finished) { app.acts = freshActs(); load(true); } return; }
     if (t.dataset.act === "import") { importOStats(t); return; }
-    if (t.dataset.act === "dups") { runDuplicates(); return; }
+    if (t.dataset.act === "dups") { scanDuplicates(); return; }
+    if (t.dataset.act === "dtick") {
+      const a = app.acts, id = t.dataset.id;
+      const it = dupState().plans.flatMap((p) => p.items).find((i) => i.s.id === id);
+      if (it) a.ticks.set(id, !it.on);
+      a.armed = false; render(); return;
+    }
+    if (t.dataset.act === "dtag") { tagTicked(t); return; }
+    if (t.dataset.act === "dremove") {
+      const a = app.acts;
+      if (!a.armed) {
+        a.armed = true; render();
+        clearTimeout(a.armTimer);
+        a.armTimer = setTimeout(() => { if (a.armed) { a.armed = false; if (app.tab === "actions") render(); } }, 6000);
+        return;
+      }
+      removeTicked(); return;
+    }
+    if (t.dataset.act === "reencode") { tagReencode(t); return; }
+    if (t.dataset.act === "phash") { runPhash(t); return; }
   }
 
   async function importOStats(btn) {

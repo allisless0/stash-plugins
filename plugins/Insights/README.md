@@ -1,7 +1,7 @@
 # Insights
 
-A stats dashboard on Stash's **Stats** page, below Stash's own numbers. Five
-tabs, each with its own colour; every bar shows its exact value, and every
+A stats dashboard on Stash's **Stats** page, in place of Stash's own numbers.
+Six tabs, each with its own colour; every bar shows its exact value, and every
 bar, day, row and tile leads into Stash.
 
 ## You
@@ -13,7 +13,12 @@ totals, a day's timeline, and your rhythm (longest break, how often).
 
 **What works for you:** for each trait, how your O's (or your watching)
 compare with how much of the library has it. **1.5x** means it gets you there
-half again as often as its share of the library would suggest. Performer
+half again as often as its share of the library would suggest. Pick a trait
+in the list on the left; each value gets a bar centred on 1x (right and green:
+more than its share, left and coral: less). Values are ranked by strength,
+which weighs the lift by how many scenes back it, and the three strongest are
+highlighted. Traits with a natural order (height, age, length, resolution...)
+stay in that order. Groups too small to judge are hidden; show them below. Performer
 traits (nationality with flags, ethnicity, hair, eyes, height, weight, cup
 size, natural or enhanced, tattoos, piercings, age and career stage in the
 scene, favourites, performer tags) and scene traits (tags, studios, cast,
@@ -24,6 +29,33 @@ Also: your performers (by O's, per scene, time watched, favourites gone
 quiet), your scenes (most O's, most played, not revisited), and your queue:
 never watched, started, watched but not rated, played three or more times
 without an O, rated four stars and up without an O, not organized.
+
+## Actions
+
+Everything that asks for something to be done, in one place.
+
+- **Duplicate cleaner.** Finds exact copies with Stash's phash match and picks
+  the copy to keep in each group: **HEVC or AV1** (the default), **best
+  quality** or **smallest**. In HEVC mode a group is left for you to look at
+  (nothing ticked) when it has no HEVC/AV1 copy, or when another copy is
+  sharper than the HEVC/AV1 one. Untick or tick any copy yourself.
+  - **Tag for delete** puts QuickTools' delete tag on the ticked copies. Safe;
+    nothing is removed.
+  - **Remove** (asks twice) works group by group: it first merges the copies
+    into the kept scene with Stash's own merge, so their O's, plays, markers,
+    tags, performers, galleries, groups, links and StashDB ids move over, and
+    then deletes the copies' files from disk. A group that changed since the
+    scan is skipped. Turn the merge off to delete the copies outright.
+- **Not HEVC or AV1 yet:** biggest gain first, with what re-encoding would
+  save. Tag them "Re-encode" (top 100 or all) for a tool like Tdarr or
+  Unmanic, or open them all in Stash.
+- **Worth upgrading:** below 720p or a legacy codec, most watched first.
+- **Space hogs:** files far over the usual bitrate for their resolution.
+- **Fix next:** the metadata gaps that would lift your grade most, files
+  without a phash (one button generates them, for just those scenes), and
+  things that look wrong (scenes with no file, dates before a performer turned
+  18, performers who share a name, future dates, tags used once, performers
+  and studios with no scenes).
 
 ## Library
 
@@ -40,24 +72,14 @@ scene, cast sizes, and how much is played, organized, rated, marked up.
 A console-style read of your files: video and audio codec, container,
 resolution, frame rate and shape (landscape, portrait, VR). Bitrate spread per
 resolution, what an hour of video costs in each codec, and where the space
-goes by studio. Three to-do lists:
-
-- **Worth upgrading:** below 720p or a legacy codec (WMV, MPEG-4 and the like),
-  the ones you watch most first.
-- **Space hogs:** files far over the usual bitrate for their resolution, with
-  how much a re-encode would free.
-- **Duplicates:** Stash's exact phash match, run when you ask, with the copy
-  worth keeping in each group. Insights only reads; nothing is deleted.
+goes: a ranked list by studio, network, codec or resolution.
 
 ## Metadata health
 
 A grade for how complete your metadata is, the quickest ways to raise it, and
 completeness for scenes, performers and studios. Each row opens the items
-missing it. **Worth a look** lists things that are probably wrong rather than
-missing: scenes with no file, scenes dated before a performer turned 18
-(usually a wrong date), performers who share a name, release dates in the
-future, files without a phash, tags used once, and performers and studios with
-no scenes.
+missing it. Things that look wrong rather than missing are on the Actions
+tab.
 
 ## Collection
 
@@ -82,6 +104,7 @@ used **O Stats**, Insights finds its watch history and offers to import it.
 - Stash's own rows of numbers on the Stats page are hidden, since Insights
   shows all of them. To keep them, turn on **Show Stash's own numbers** in
   Settings > Plugins > Insights.
-- Everything is computed in your browser; nothing is sent anywhere.
+- Everything is computed in your browser; nothing is sent anywhere. Insights
+  only changes your library from the Actions tab, when you press a button.
 - Replaces **O Stats** and **Stats Enhancer**: disable both once Insights is
   installed (import O Stats' watch history first).

@@ -187,8 +187,55 @@ const hogScene = vf({ id: "hog", br: 40e6, fsize: 5e9 });
 const HG = T.spaceHogs(many.concat([hogScene]), T.fileStats(many.concat([hogScene])));
 check("space hogs: far over the usual bitrate", HG.n === 1 && HG.list[0].s.id === "hog" && HG.list[0].saving > 4e9);
 check("not enough files at a resolution, no hogs", T.spaceHogs([hogScene], T.fileStats([hogScene])).n === 0);
-const DP = T.dupPlan([{ id: "1", w: 1280, h: 720, vc: "h264", fsize: 2 }, { id: "2", w: 1920, h: 1080, vc: "h264", fsize: 5 }, { id: "3", w: 1920, h: 1080, vc: "hevc", fsize: 3 }]);
-check("duplicates: keep the sharpest, then the better codec", DP.keep.id === "3" && DP.frees === 7 && DP.drop.length === 2);
+const DP = T.dupChoose([{ id: "1", w: 1280, h: 720, vc: "h264", fsize: 2 }, { id: "2", w: 1920, h: 1080, vc: "h264", fsize: 5 }, { id: "3", w: 1920, h: 1080, vc: "hevc", fsize: 3 }], "best");
+check("duplicates, best quality: keep the sharpest, then the better codec", DP.keep.id === "3" && DP.items.every((i) => i.remove) && DP.items.length === 2);
+
+// ── 2.2: actions ────────────────────────────────────────────────────────────
+const cp = (id, w, h, vc, fsize, o = 0) => ({ id, w, h, vc, fsize, o, br: fsize });
+check("HEVC and AV1 both count as the target", T.isEfficient("hevc") && T.isEfficient("av1") && !T.isEfficient("h264") && !T.isEfficient(""));
+const H1 = T.dupChoose([cp("a", 1920, 1080, "h264", 9), cp("b", 1920, 1080, "hevc", 3), cp("c", 1280, 720, "wmv3", 2)], "hevc");
+check("HEVC mode keeps the HEVC copy and ticks the rest", H1.keep.id === "b" && !H1.review && H1.items.every((i) => i.remove));
+const H2 = T.dupChoose([cp("a", 1920, 1080, "h264", 9), cp("b", 1280, 720, "hevc", 3)], "hevc");
+check("a sharper non-HEVC copy is not ticked; the group needs a look", H2.keep.id === "b" && H2.review && !H2.items[0].remove && /sharper/.test(H2.reason));
+check("unless that safeguard is off", T.dupChoose([cp("a", 1920, 1080, "h264", 9), cp("b", 1280, 720, "hevc", 3)], "hevc", { sharp: false }).items[0].remove);
+const H3 = T.dupChoose([cp("a", 1920, 1080, "h264", 9), cp("b", 1280, 720, "h264", 3)], "hevc");
+check("no HEVC or AV1 copy: nothing ticked, a look", H3.review && H3.items.every((i) => !i.remove));
+const H4 = T.dupChoose([cp("a", 3840, 2160, "av1", 9), cp("b", 1920, 1080, "hevc", 3)], "hevc");
+check("AV1 is kept like HEVC, the sharper of the two wins", H4.keep.id === "a" && H4.items[0].remove);
+check("smallest: the smallest of the sharpest copies", T.dupChoose([cp("a", 1920, 1080, "h264", 9), cp("b", 1920, 1080, "hevc", 3), cp("c", 1280, 720, "hevc", 1)], "smallest").keep.id === "b");
+const MV = T.mergeValues(
+  { id: "1", title: "Kept", date: null, rating100: null, organized: false, studio: null, tags: [{ id: "t1" }], performers: [{ id: "p1" }],
+    galleries: [], urls: ["u1"], groups: [{ group: { id: "g1" }, scene_index: 2 }], stash_ids: [{ endpoint: "e", stash_id: "x" }] },
+  [{ id: "2", title: "Copy", date: "2020-01-01", rating100: 80, organized: true, studio: { id: "s9" }, tags: [{ id: "t2" }, { id: "t1" }],
+     performers: [{ id: "p2" }], galleries: [{ id: "gal" }], urls: ["u1", "u2"], groups: [{ group: { id: "g1" }, scene_index: 5 }, { group: { id: "g2" } }],
+     stash_ids: [{ endpoint: "e", stash_id: "x" }, { endpoint: "e", stash_id: "y" }] }], null);
+check("merge: the kept scene's own fields win", MV.id === "1" && MV.title === "Kept");
+check("merge: empty fields are filled from the copies", MV.date === "2020-01-01" && MV.rating100 === 80 && MV.studio_id === "s9" && MV.organized === true);
+check("merge: lists are the union, nothing dropped", eq(MV.tag_ids, ["t1", "t2"]) && eq(MV.performer_ids, ["p1", "p2"]) && eq(MV.gallery_ids, ["gal"]) &&
+  eq(MV.urls, ["u1", "u2"]) && MV.groups.length === 2 && MV.groups[0].scene_index === 2 && MV.stash_ids.length === 2);
+check("merge: only fields this Stash accepts", Object.keys(T.mergeValues({ id: "1", tags: [] }, [], new Set(["id", "tag_ids"]))).sort().join() === "id,tag_ids");
+const NE = T.notEfficient(many.concat([hogScene, vf({ id: "hv", vc: "hevc" })]), T.fileStats(many.concat([hogScene, vf({ id: "hv", vc: "hevc" })])));
+check("not HEVC/AV1 yet: HEVC files left out, biggest gain first", NE.n === 21 && NE.list[0].s.id === "hog" && NE.gain > 0 && !NE.list.some((x) => x.s.id === "hv"));
+
+// ── 2.2: what works, ranked ─────────────────────────────────────────────────
+check("ordinal dimensions keep their order", T.isOrdinal("height") && T.isOrdinal("era") && !T.isOrdinal("country") &&
+  T.ordinalKey("height", "under 155 cm") < T.ordinalKey("height", "175 cm and up") && T.ordinalKey("era", "before 2005") < T.ordinalKey("era", "2010–2014"));
+check("strength weighs lift by scenes", T.strength(12, 6) < T.strength(1.7, 600) && T.strength(0.5, 100) < 0);
+const RT = { total: { scenes: 1000 }, rows: [
+  { value: "NZ", scenes: 6, o: 12, plays: 9, libShare: 0.006, oShare: 0.07, watchShare: 0 },
+  { value: "IS", scenes: 3, o: 9, plays: 9, libShare: 0.003, oShare: 0.05, watchShare: 0 },
+  { value: "DE", scenes: 300, o: 120, plays: 300, libShare: 0.3, oShare: 0.5, watchShare: 0 },
+  { value: "US", scenes: 600, o: 100, plays: 300, libShare: 0.6, oShare: 0.4, watchShare: 0 },
+  { value: "CZ", scenes: 50, o: 30, plays: 40, libShare: 0.05, oShare: 0.1, watchShare: 0 } ] };
+const RK = T.rankTraits(RT, "country", "o");
+check("a tiny group is hidden; strongest first by strength, not raw lift", RK.hidden === 1 && RK.rows[0].value === "DE" && RK.rows[0].rank === 1 && RK.rows[0].top);
+check("only groups above 1.25x get the highlight", RK.rows.find((r) => r.value === "US").top === false);
+check("shown on request", T.rankTraits(RT, "country", "o", { small: true }).rows.length === 5);
+const RH = T.rankTraits({ total: { scenes: 100 }, rows: [
+  { value: "175 cm and up", scenes: 30, o: 30, plays: 9, libShare: 0.3, oShare: 0.5 },
+  { value: "under 155 cm", scenes: 30, o: 10, plays: 9, libShare: 0.3, oShare: 0.1 } ] }, "height", "o");
+check("height stays in height order, ranks still by strength", RH.rows[0].value === "under 155 cm" && RH.rows[1].rank === 1);
+check("lift bar: 1x in the middle, 4x and 1/4x at the ends", T.liftPos(1) === 0 && T.liftPos(4) === 1 && T.liftPos(0.25) === -1 && T.liftPos(100) === 1 && T.liftPos(0) === -1);
 
 // ── 2.0: metadata health ────────────────────────────────────────────────────
 check("health score is weighted", Math.abs(T.healthScore([{ missing: 0, total: 10, weight: 1 }, { missing: 10, total: 10, weight: 3 }]) - 0.25) < 1e-9);

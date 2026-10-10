@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.2.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.2.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.3.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
-| Insights | 2.1.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
+| Insights | 2.2.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
 | Lockdown | 1.4.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1679,6 +1679,67 @@ flags, more icons (not overdone), and tabs that change colour when active.
   under 3 times dropped); `networks` walks parents to the top (guarded against
   loops) and lists independents apart; `pairs` skips casts over six.
 
+### 4.14b Insights 2.2.0: Actions tab, readable What works
+
+User (with screenshots): wanted the actionable parts in one place with real
+functions, "a proper duplicate checker" whose target is HEVC so other copies
+can go in one click; What works did not show the highest, sorting made no
+sense for things like height, bars too long to read, pills laid out badly;
+the space treemap hard to read. Mockup signed off; "AV1 is as good as HEVC".
+
+**Actions tab** (red, second). Upgrade, space hogs and duplicates left Files;
+the checks left Health (both now point to Actions). `problemChecks(m)` is
+shared; `checkRow` renders a check.
+
+**Duplicate cleaner.** `loadDuplicates` (now with file ids) on a click;
+`dupChoose(group, mode, {sharp})` (tested) decides per group:
+- `hevc` (default): `isEfficient` = HEVC or AV1. Keep the sharpest of those
+  (then codec rank, bitrate, history, lower id). No HEVC/AV1 copy: a "look"
+  group, nothing ticked. With `sharp` on, a copy sharper than the kept one is
+  not ticked and the group is a "look".
+- `best`: sharpest, then codec, then bitrate. `smallest`: smallest file
+  among the sharpest copies.
+User ticks override per scene (`acts.ticks`, reset when the mode or the
+safeguard changes). Two writes:
+- **Tag for delete**: `bulkSceneUpdate` ADD of QuickTools' `deleteTagName`
+  (read from QuickTools' config, default "Marked for Delete"), created if
+  missing. Reversible.
+- **Remove** (two clicks, 6 s arm): `removeCopies` per group, sequentially.
+  It re-reads the group (`loadForMerge`, aliased `findScene`) and refuses if
+  the kept scene or a copy is gone or the kept scene's first file id changed
+  since the scan. With merge on (default): `sceneMerge(source, destination,
+  values, play_history, o_history)` moves the copies' files and markers to
+  the kept scene and deletes the copy scenes (Stash keeps the destination's
+  primary file); `values` = `mergeValues` (tested): kept fields win, empty
+  ones filled from copies, union of tags, performers, galleries, groups, URLs,
+  StashDB ids, limited to the `SceneUpdateInput` fields this Stash has
+  (`inputFieldsOf`). Rule 5: nothing set on a copy is lost. Then
+  `deleteFiles` on exactly the file ids that belonged to the copies. With
+  merge off: `scenesDestroy(delete_file, delete_generated)`. Errors stop that
+  group only. Afterwards the cache is marked stale (`cachePut({at: 0})`).
+  Merge behaviour checked against Stash's `pkg/scene/merge.go` (files and
+  markers move, sources destroyed without their files, tags/performers only
+  through `values`).
+- **Not HEVC or AV1 yet** (`notEfficient`, tested): gain = size minus duration
+  x the library's median HEVC/AV1 bitrate at that resolution. Tag top 100 or
+  all "Re-encode" (`tagScenes`, ADD, 500 per call); "Open all" uses
+  `video_codec NOT_MATCHES_REGEX hevc|av1`.
+- **Generate phashes**: `metadataGenerate({phashes, sceneIDs})` for exactly
+  the scenes without one.
+
+**What works.** Sidebar of dimensions (`.ins-side`), rows `.ins-lr`: rank,
+name, a bar on a log scale centred on 1x (`liftPos`: 1/4x to 4x), shares,
+lift. `rankTraits` (tested): small = under max(5, 0.1% of scenes) or too
+little activity; strength = ln(lift) x sqrt(scenes) (the 2.0 sort by raw
+lift put six New Zealand scenes at 12x on top; `(lift-1) x sqrt` still did);
+ranks by strength; top three with lift >= 1.25 highlighted. Ordinal
+dimensions (`ORDER`, plus era by year) keep their order under "In order"
+(sort `auto`); others are strongest first. Changing dimension resets sort.
+
+**Where the space goes** (`spaceCard`): a ranked list by studio, network
+(networks plus independents), codec or resolution; 15 rows, 40 with "show
+more". The treemap is gone.
+
 ### 4.15 Shared Flexoki theme (all plugins)
 
 User asked, after Insights 2.0.0, to "apply the same theme to all my other
@@ -1805,6 +1866,7 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| Insights | 2.2.0 duplicate removal was tested only against a fake Stash that imitates `sceneMerge`/`deleteFiles`. Before the first real cleanup, try one group: check the kept scene shows the merged O's, plays and tags, the copy scene is gone, and the copy's file is gone from disk (and the kept file is not). Also check `NOT_MATCHES_REGEX` on `video_codec` opens the right list. |
 | All | The Flexoki restyle (QuickTools 1.11.0, Collections 1.2.0, ScriptBadges 1.2.0, Todo 1.2.0, Lockdown 1.4.0, IntifaceSync 1.34-vibe) passed every unit test but was not looked at in a browser. Check each panel in the real Stash, especially elements inside Stash's own UI (navbar buttons, card badges, studio tabs) and the IntifaceSync toolbar over the player. |
 | Insights | 2.0.0 tested on a synthetic 1500-scene library in a harness (with Stash's flag stylesheet), not a real Stash. Check on the real library: the counts query is accepted in one go (else it falls back to one query per row), `is_missing` links open the same counts, the `video_codec`/`audio_codec`/`resolution`/`framerate`/`file_count`/`has_markers` criterion shapes open the right lists, `findDuplicateScenes` time on a big library, and flags render next to the text. |
 | Insights | 1.0.0 tested on a synthetic 400-scene library in a harness, not a real Stash. Check on the real library: load time and progress text, the dashboard placement on /stats, trait links open the right filtered lists (some criterion shapes, e.g. `filter_favorites`, `performer_count`, `created_at`, were not verified against the bundle), and the O Stats import count matches its file. |
@@ -1833,6 +1895,18 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-11: Insights 2.2.0, Actions tab and a real duplicate cleaner
+
+User asked for actionable insights in one place, a duplicate cleaner targeting
+HEVC (AV1 counts too) that removes the other copies in a click, and fixes to
+What works (no highlight of the best, odd sorting for height, long bars,
+messy pills) and the space treemap. Mockup signed off. Stash's merge and
+delete mutations were confirmed by introspecting the user's Stash (read only)
+and its merge source. 19 new checks (116), harness run of scan, tick, tag,
+remove (merge then deleteFiles per group), re-encode tagging and phash
+generation; one bug found and fixed there (a finished cleanup kept the
+controls disabled). See §4.14b.
 
 ### 2026-10-10 (late night): Todo 1.3.0, consistent hierarchy
 
