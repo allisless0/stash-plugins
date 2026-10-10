@@ -1,7 +1,13 @@
 name: Insights
 description: "A stats dashboard on Stash's Stats page, in five tabs: You (O's, streaks, a year calendar, watch time, what works for you by performer and scene traits, your queue), Library (size, records, timelines), Files and quality (codecs, resolutions, bitrates, upgrade candidates, space hogs, duplicates), Metadata health (a grade, what is missing, what is probably wrong) and Collection (growth, tags, studio networks, countries, pairs). Every bar and row leads into Stash. Replaces O Stats and Stats Enhancer."
-version: 2.0.0
+version: 2.1.0
 url: https://github.com/allisless0/stash-plugins
+
+settings:
+  showStashNumbers:
+    displayName: Show Stash's own numbers
+    description: Keep Stash's rows of numbers above Insights on the Stats page. Off by default; Insights shows all of them.
+    type: BOOLEAN
 
 ui:
   javascript:

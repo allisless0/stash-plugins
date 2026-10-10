@@ -79,6 +79,9 @@ used **O Stats**, Insights finds its watch history and offers to import it.
 - The library is read once and kept for 30 minutes; **Refresh** reads it again.
   Missing-field counts come from Stash's own filters, so a number always
   matches the list it opens.
+- Stash's own rows of numbers on the Stats page are hidden, since Insights
+  shows all of them. To keep them, turn on **Show Stash's own numbers** in
+  Settings > Plugins > Insights.
 - Everything is computed in your browser; nothing is sent anywhere.
 - Replaces **O Stats** and **Stats Enhancer**: disable both once Insights is
   installed (import O Stats' watch history first).

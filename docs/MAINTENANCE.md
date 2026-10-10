@@ -52,7 +52,7 @@ Keep those greps in step with any refactor of the safety chain.
 | Collections | 1.2.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
 | ScriptBadges | 1.2.0 | UI only | none | any page with scene cards | ~150 |
 | Todo | 1.2.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
-| Insights | 2.0.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
+| Insights | 2.1.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
 | Lockdown | 1.4.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
@@ -1530,10 +1530,19 @@ People, Library, Backlog), then the user asked for in-depth performer
 analysis ("height, nationality, etc."), colours, good UX. Decisions: on the
 Stats page, own watch tracker with O Stats import, name Insights.
 
-**Placement.** Inserted after Stash's `.stats` element, before the
-changelog; nothing native is hidden or restyled (Stats Enhancer hid a tile
-by `nth-child` and set `.stats .title` to 2.5vw). A MutationObserver runs
-only while on `/stats`, to put it back after React redraws.
+**Placement.** Stash's Stats page draws three `.stats` rows (sizes and
+counts; images, galleries, studios, tags; O's and plays). Up to 2.0.0
+Insights went after the *first* one, which put it between them (user
+screenshot); since 2.1.0 it goes after the last. A MutationObserver runs only
+while on `/stats`, to put it back after React redraws.
+**Stash's own numbers are hidden** (2.1.0, user request: Insights shows all of
+them). `syncNative()` adds one `<style id="insights-hide-native">` with
+`.stats { display: none }` while on `/stats` and removes it elsewhere; React's
+elements are never removed or moved (Stats Enhancer hid a tile by
+`nth-child` and resized the rest). Hidden from the first tick so they do not
+flash; plugin setting `showStashNumbers` (BOOLEAN, off) brings them back,
+read once at load (`readConfig`). `updateConfig` merges, so the watch-time
+writes keep the setting.
 
 **Data.** One paged pass: scenes 500 per page, performers 1000 per page,
 fields chosen by introspecting `Scene` and `Performer` (`fieldsOf`, `pick`),
@@ -1800,6 +1809,13 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (late night): Insights 2.1.0, Stash's numbers hidden
+
+User screenshot: Insights sat between Stash's stat rows, and they asked to
+hide them. Stash has three `.stats` rows; Insights now mounts after the last
+and hides all three with a stylesheet, unless the new "Show Stash's own
+numbers" setting is on. Checked in the harness both ways. See §4.14.
 
 ### 2026-10-10 (late night): Flexoki theme on every plugin
 

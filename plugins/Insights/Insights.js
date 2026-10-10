@@ -2590,14 +2590,33 @@
   }
 
   // ── Mounting on the Stats page ────────────────────────────────────────────
-  // Below Stash's own numbers; nothing of Stash's is hidden or restyled
-  // (Stats Enhancer hid a native tile by position and resized the rest).
+  // Stash draws its numbers as three ".stats" rows; Insights goes after the
+  // last one (after the first put it between them). Insights covers every
+  // one of those numbers, so by user request Stash's rows are hidden unless
+  // the "Show Stash's own numbers" setting is on. Hidden with one stylesheet
+  // that exists only while on /stats, never by removing React's elements,
+  // and hidden from the start so they do not flash before the setting is
+  // read (Stats Enhancer hid a tile by position and resized the rest).
 
   const onStats = () => /^\/stats\/?$/.test(location.pathname);
+  let showNative = false;
+  function syncNative() {
+    const want = onStats() && !showNative;
+    const el = document.getElementById("insights-hide-native");
+    if (want && !el) {
+      const s = document.createElement("style");
+      s.id = "insights-hide-native";
+      s.textContent = ".stats { display: none !important; }";
+      document.head.appendChild(s);
+    } else if (!want && el) el.remove();
+  }
+  readConfig().then((c) => { showNative = c.showStashNumbers === true || c.showStashNumbers === "true"; syncNative(); });
   function mount() {
+    syncNative();
     if (!onStats()) return;
     if (app.root && app.root.isConnected) return;
-    const native = document.querySelector(".stats");
+    const rows = document.querySelectorAll(".stats");
+    const native = rows[rows.length - 1];
     if (!native) return;
     injectStyles();
     if (!app.root) {
@@ -2622,7 +2641,7 @@
     trackTick();
     if (ticks % 30 === 0) { try { localStorage.setItem(ALIVE, String(Date.now())); } catch (_) {} }
     if (ticks % 60 === 0) flushWatch();
-    if (onStats()) mount();
+    if (onStats()) mount(); else syncNative();
   }, 1000);
 
   // React redraws the Stats page after data loads; put the dashboard back
