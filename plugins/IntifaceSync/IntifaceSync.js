@@ -11,7 +11,7 @@
   const BACKEND_HOST    = window.location.hostname;
   const BACKEND_URL     = `ws://${BACKEND_HOST}:7880`;
   const PLUGIN_ID       = "IntifaceSync";
-  const PLUGIN_VERSION  = "1.33-vibe";   // must match the backend; see updateToolbarStatus
+  const PLUGIN_VERSION  = "1.34-vibe";   // must match the backend; see updateToolbarStatus
   const MIN_STROKE_GAP  = 5;
   const LS_KEY          = "IntifaceSync.settings";
 
@@ -1387,14 +1387,19 @@ function injectStyles() {
   const st = document.createElement("style");
   st.id = `${PLUGIN_ID}-style`;
   st.textContent = `
+    /* Flexoki dark (1.34). Magenta is the brand accent; green, red and yellow
+       keep their meaning (live/connected, stop/muted/error, warning). The bar
+       sits in Stash's player chrome, so it stays a translucent strip rather
+       than a raised card; the popover and dock get the panel depth. */
+
     /* ── Toolbar Container ──────────────────────────────────── */
     #${PLUGIN_ID}-toolbar {
-      background: linear-gradient(180deg, rgba(20,22,28,0.92), rgba(14,16,20,0.95)) !important;
+      background: linear-gradient(180deg, rgba(28,27,26,0.92), rgba(16,15,15,0.95)) !important;
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      border-top: 1px solid rgba(255,255,255,0.08) !important;
+      border-top: 1px solid rgba(72,70,63,0.7) !important;
       box-shadow: 0 -4px 20px rgba(0,0,0,0.4);
-      color: #e8eaed !important;
+      color: #CECDC3 !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
       font-size: 12px !important;
       padding: 8px 14px !important;
@@ -1402,17 +1407,19 @@ function injectStyles() {
     }
     #${PLUGIN_ID}-toolbar span,
     #${PLUGIN_ID}-toolbar label {
-      color: #c4c8cf;
+      color: #B7B5AC;
       font-weight: 500;
       letter-spacing: 0.2px;
     }
 
     /* ── Buttons ────────────────────────────────────────────── */
     #${PLUGIN_ID}-toolbar button {
-      background: rgba(255,255,255,0.06);
-      color: #e8eaed;
-      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, #343331, #282726);
+      color: #CECDC3;
+      border: 1px solid #0b0a0a;
+      border-top-color: #403E3C;
       border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       padding: 5px 12px;
       font-size: 11px;
       font-weight: 500;
@@ -1420,9 +1427,9 @@ function injectStyles() {
       transition: all 0.15s ease;
     }
     #${PLUGIN_ID}-toolbar button:hover {
-      background: rgba(90,169,255,0.15);
-      border-color: rgba(90,169,255,0.4);
-      color: #fff;
+      background: linear-gradient(180deg, #403E3C, #343331);
+      border-top-color: #575653;
+      color: #E6E4D9;
     }
     #${PLUGIN_ID}-toolbar button:active {
       transform: translateY(1px);
@@ -1431,9 +1438,11 @@ function injectStyles() {
     /* ── Number / Text Inputs ──────────────────────────────── */
     #${PLUGIN_ID}-toolbar input[type=number],
     #${PLUGIN_ID}-toolbar input[type=text] {
-      background: rgba(0,0,0,0.35);
-      color: #fff;
-      border: 1px solid rgba(255,255,255,0.12);
+      background: #1C1B1A;
+      color: #E6E4D9;
+      border: 1px solid #000;
+      border-bottom-color: #343331;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       border-radius: 6px;
       padding: 5px 8px;
       font-size: 11px;
@@ -1444,8 +1453,8 @@ function injectStyles() {
     }
     #${PLUGIN_ID}-toolbar input[type=number]:focus,
     #${PLUGIN_ID}-toolbar input[type=text]:focus {
-      border-color: #5aa9ff;
-      box-shadow: 0 0 0 2px rgba(90,169,255,0.2);
+      border-color: #CE5D97;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5), 0 0 0 2px rgba(206,93,151,0.25);
     }
     #${PLUGIN_ID}-toolbar input[type=number]::-webkit-inner-spin-button,
     #${PLUGIN_ID}-toolbar input[type=number]::-webkit-outer-spin-button {
@@ -1472,8 +1481,8 @@ function injectStyles() {
       -webkit-appearance: none;
       appearance: none;
       width: 14px; height: 14px; border-radius: 50%;
-      background: #fff;
-      border: 2px solid #5aa9ff;
+      background: #E6E4D9;
+      border: 2px solid #CE5D97;
       box-shadow: 0 2px 6px rgba(0,0,0,0.4);
       cursor: pointer;
       pointer-events: all;
@@ -1482,12 +1491,12 @@ function injectStyles() {
     }
     #${PLUGIN_ID}-toolbar input[type=range]::-webkit-slider-thumb:hover {
       transform: scale(1.15);
-      box-shadow: 0 2px 10px rgba(90,169,255,0.5);
+      box-shadow: 0 2px 10px rgba(206,93,151,0.5);
     }
     #${PLUGIN_ID}-toolbar input[type=range]::-moz-range-thumb {
       width: 14px; height: 14px; border-radius: 50%;
-      background: #fff;
-      border: 2px solid #5aa9ff;
+      background: #E6E4D9;
+      border: 2px solid #CE5D97;
       box-shadow: 0 2px 6px rgba(0,0,0,0.4);
       cursor: pointer;
       pointer-events: all;
@@ -1498,13 +1507,15 @@ function injectStyles() {
       display: flex; align-items: center; gap: 8px;
       flex-wrap: wrap; width: 100%;
       padding: 8px 0 4px 0;
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid rgba(255,255,255,0.06);
       margin-top: 4px;
     }
     #${PLUGIN_ID}-handy-key {
-      background: rgba(0,0,0,0.35);
-      color: #fff;
-      border: 1px solid rgba(255,255,255,0.12);
+      background: #1C1B1A;
+      color: #E6E4D9;
+      border: 1px solid #000;
+      border-bottom-color: #343331;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       border-radius: 6px;
       padding: 5px 10px;
       font-size: 11px;
@@ -1515,12 +1526,12 @@ function injectStyles() {
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     #${PLUGIN_ID}-handy-key:focus {
-      border-color: #5aa9ff;
-      box-shadow: 0 0 0 2px rgba(90,169,255,0.2);
+      border-color: #CE5D97;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5), 0 0 0 2px rgba(206,93,151,0.25);
     }
     #${PLUGIN_ID}-tunnel-url {
       font-size: 10px;
-      color: #5aa9ff;
+      color: #6FA3D6;
       opacity: 0.85;
       font-family: "SF Mono", Menlo, Consolas, monospace;
       max-width: 260px;
@@ -1531,9 +1542,10 @@ function injectStyles() {
 
     /* ── Mode Buttons (Tab-Style) ──────────────────────────── */
     .${PLUGIN_ID}-mode-btn {
-      background: rgba(255,255,255,0.05);
-      color: #9aa0a6;
-      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, #343331, #282726);
+      color: #878580;
+      border: 1px solid #0b0a0a;
+      border-top-color: #403E3C;
       border-radius: 6px;
       padding: 5px 12px;
       font-size: 11px;
@@ -1542,72 +1554,78 @@ function injectStyles() {
       transition: all 0.15s ease;
     }
     .${PLUGIN_ID}-mode-btn:hover {
-      background: rgba(255,255,255,0.08);
-      color: #e8eaed;
+      border-top-color: #575653;
+      color: #E6E4D9;
     }
     #${PLUGIN_ID}-toolbar .${PLUGIN_ID}-mode-btn.active {
-      background: rgba(90,169,255,0.18) !important;
-      color: #fff !important;
-      border: 1px solid rgba(90,169,255,0.6) !important;
-      box-shadow: 0 0 12px rgba(90,169,255,0.25) !important;
+      background: #343331 !important;
+      background: color-mix(in srgb, #CE5D97 22%, #343331) !important;
+      color: #E6E4D9 !important;
+      border: 1px solid rgba(206,93,151,0.55) !important;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 12px rgba(206,93,151,0.2) !important;
     }
 
+    /* Disconnect stops everything: it stays the strongest red on the bar,
+       above "Device muted", and fills solid red on hover. */
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-stop {
-      background: rgba(255,90,90,0.12) !important;
-      border: 1px solid rgba(255,90,90,0.35) !important;
-      color: #ff8a8a !important;
+      background: linear-gradient(180deg, rgba(209,77,65,0.38), rgba(209,77,65,0.24)), #282726 !important;
+      border: 1px solid rgba(209,77,65,0.8) !important;
+      color: #E8705F !important;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 2px rgba(0,0,0,0.5), 0 0 10px rgba(209,77,65,0.3) !important;
     }
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-stop:hover {
-      background: rgba(255,90,90,0.22) !important;
-      border-color: rgba(255,90,90,0.6) !important;
-      color: #fff !important;
+      background: linear-gradient(180deg, #D14D41, #AF3029) !important;
+      border-color: #D14D41 !important;
+      color: #100F0F !important;
     }
 
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-connect-btn,
     #${PLUGIN_ID}-handy-panel #${PLUGIN_ID}-connect-handy-btn {
-      background: rgba(90,200,120,0.12) !important;
-      border: 1px solid rgba(90,200,120,0.35) !important;
-      color: #8ee0a3 !important;
+      background: linear-gradient(180deg, rgba(135,154,57,0.24), rgba(135,154,57,0.12)), #282726 !important;
+      border: 1px solid rgba(135,154,57,0.5) !important;
+      color: #A9BA5A !important;
     }
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-connect-btn:hover,
     #${PLUGIN_ID}-handy-panel #${PLUGIN_ID}-connect-handy-btn:hover {
-      background: rgba(90,200,120,0.22) !important;
-      border-color: rgba(90,200,120,0.6) !important;
-      color: #fff !important;
+      background: linear-gradient(180deg, rgba(135,154,57,0.38), rgba(135,154,57,0.22)), #282726 !important;
+      border-color: rgba(135,154,57,0.8) !important;
+      color: #E6E4D9 !important;
     }
 
     #${PLUGIN_ID}-handy-panel #${PLUGIN_ID}-reupload-btn {
-      background: rgba(230,190,80,0.12) !important;
-      border: 1px solid rgba(230,190,80,0.35) !important;
-      color: #e6c374 !important;
+      background: linear-gradient(180deg, rgba(208,162,21,0.22), rgba(208,162,21,0.10)), #282726 !important;
+      border: 1px solid rgba(208,162,21,0.45) !important;
+      color: #D0A215 !important;
     }
     #${PLUGIN_ID}-handy-panel #${PLUGIN_ID}-reupload-btn:hover {
-      background: rgba(230,190,80,0.22) !important;
-      border-color: rgba(230,190,80,0.6) !important;
-      color: #fff !important;
+      background: linear-gradient(180deg, rgba(208,162,21,0.34), rgba(208,162,21,0.20)), #282726 !important;
+      border-color: rgba(208,162,21,0.75) !important;
+      color: #E6E4D9 !important;
     }
 
     #${PLUGIN_ID}-toolbar input[type=range].${PLUGIN_ID}-slider {
       -webkit-appearance: none; appearance: none;
       height: 4px; padding: 0; margin: 0; border: 0;
-      border-radius: 2px; background: #444; cursor: pointer;
+      border-radius: 2px; background: #403E3C; cursor: pointer;
+      box-shadow: inset 0 1px 1px rgba(0,0,0,0.6);
     }
     #${PLUGIN_ID}-toolbar input[type=range].${PLUGIN_ID}-slider::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 13px; height: 13px; border-radius: 50%;
-      background: #2a6; border: 2px solid #fff; cursor: pointer;
+      background: #CE5D97; border: 2px solid #E6E4D9; cursor: pointer;
     }
     #${PLUGIN_ID}-toolbar input[type=range].${PLUGIN_ID}-slider::-moz-range-thumb {
       width: 13px; height: 13px; border-radius: 50%;
-      background: #2a6; border: 2px solid #fff; cursor: pointer;
+      background: #CE5D97; border: 2px solid #E6E4D9; cursor: pointer;
     }
     #${PLUGIN_ID}-toolbar input[type=range].${PLUGIN_ID}-slider::-moz-range-track {
-      height: 4px; border-radius: 2px; background: #444;
+      height: 4px; border-radius: 2px; background: #403E3C;
     }
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-invert.active {
-      background: rgba(90,169,255,0.18) !important;
-      color: #fff !important;
-      box-shadow: 0 0 12px rgba(90,169,255,0.25) !important;
+      background: #343331 !important;
+      background: color-mix(in srgb, #CE5D97 22%, #343331) !important;
+      color: #E6E4D9 !important;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 12px rgba(206,93,151,0.2) !important;
     }
 
 
@@ -1643,7 +1661,7 @@ function injectStyles() {
     .${PLUGIN_ID}-group {
       display: inline-flex; align-items: center; gap: 8px;
       padding: 3px 4px 3px 10px;
-      border-left: 1px solid rgba(255,255,255,0.10);
+      border-left: 1px solid rgba(255,255,255,0.08);
     }
     .${PLUGIN_ID}-num {
       min-width: 40px; text-align: right;
@@ -1654,19 +1672,24 @@ function injectStyles() {
     /* ── Stateful buttons ───────────────────────────────────── */
     #${PLUGIN_ID}-toolbar button.${PLUGIN_ID}-primary { font-weight: 600; }
     #${PLUGIN_ID}-toolbar button.is-live {
-      background: rgba(60,200,130,0.14);
-      border-color: rgba(60,200,130,0.45);
-      color: #7de8b4;
+      background: linear-gradient(180deg, rgba(135,154,57,0.26), rgba(135,154,57,0.14)), #282726;
+      border-color: rgba(135,154,57,0.55);
+      color: #A9BA5A;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 2px rgba(0,0,0,0.5);
     }
+    /* muted is a state, not the stop control: a quieter red than Disconnect */
     #${PLUGIN_ID}-toolbar button.is-muted {
-      background: rgba(235,80,80,0.16);
-      border-color: rgba(235,80,80,0.5);
-      color: #ff9a9a;
+      background: linear-gradient(180deg, rgba(209,77,65,0.22), rgba(209,77,65,0.12)), #282726;
+      border-color: rgba(209,77,65,0.5);
+      color: #E8705F;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 2px rgba(0,0,0,0.5);
     }
     #${PLUGIN_ID}-toolbar button.is-on {
-      background: rgba(90,169,255,0.18);
-      border-color: rgba(90,169,255,0.5);
-      color: #9ecbff;
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5);
+      color: #E6E4D9;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 2px rgba(0,0,0,0.5);
     }
     #${PLUGIN_ID}-toolbar button.is-locked {
       opacity: 0.45; cursor: not-allowed;
@@ -1677,12 +1700,14 @@ function injectStyles() {
     .${PLUGIN_ID}-pop {
       position: fixed; left: 0; top: 0; z-index: 10050;
       width: 360px; max-height: 70vh; overflow-y: auto;
-      background: rgba(22,25,31,0.98);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 10px;
-      box-shadow: 0 16px 48px rgba(0,0,0,0.65);
+      background: linear-gradient(180deg, #2D2C2A 0, #282726 64px);
+      border: 1px solid #0d0c0c;
+      border-top-color: #48463F;
+      border-radius: 12px;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.7), 0 20px 50px -12px rgba(0,0,0,0.75);
+      scrollbar-width: thin; scrollbar-color: #403E3C transparent;
       padding: 14px 16px 12px;
-      color: #e8eaed;
+      color: #CECDC3;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 12px;
       opacity: 0; pointer-events: none; transform: translateY(4px);
@@ -1692,10 +1717,10 @@ function injectStyles() {
       opacity: 1; pointer-events: auto; transform: translateY(0);
     }
     .${PLUGIN_ID}-pop-head { margin-bottom: 10px; }
-    .${PLUGIN_ID}-pop-head strong { font-size: 13px; display: block; }
+    .${PLUGIN_ID}-pop-head strong { font-size: 13px; display: block; color: #E6E4D9; }
     .${PLUGIN_ID}-pop-sub {
       display: block; margin-top: 2px; font-size: 11px;
-      color: #8e97a3; line-height: 1.4;
+      color: #878580; line-height: 1.4;
     }
     .${PLUGIN_ID}-cards {
       display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
@@ -1703,56 +1728,64 @@ function injectStyles() {
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-card {
       display: flex; flex-direction: column; gap: 2px;
       text-align: left; padding: 8px 10px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.09);
+      background: linear-gradient(180deg, #343331, #2D2C2A);
+      border: 1px solid #0b0a0a;
+      border-top-color: #403E3C;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       border-radius: 7px; cursor: pointer; color: inherit;
       font-family: inherit; transition: all .12s ease;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-card:hover {
-      background: rgba(90,169,255,0.10);
-      border-color: rgba(90,169,255,0.35);
+      background: linear-gradient(180deg, #403E3C, #343331);
+      border-top-color: #575653;
+      color: #E6E4D9;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel {
-      background: rgba(90,169,255,0.18);
-      border-color: rgba(90,169,255,0.65);
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 2px rgba(0,0,0,0.5);
+      color: #E6E4D9;
     }
     .${PLUGIN_ID}-card-name { font-size: 12px; font-weight: 600; }
     .${PLUGIN_ID}-card-blurb {
-      font-size: 10.5px; color: #8e97a3; line-height: 1.35;
+      font-size: 10.5px; color: #878580; line-height: 1.35;
     }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-card-blurb { color: #B7B5AC; }
 
     .${PLUGIN_ID}-section {
       margin-top: 14px; padding-top: 10px;
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid #343331;
     }
     .${PLUGIN_ID}-sec-title {
       font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-      color: #737d8a; margin-bottom: 8px;
+      color: #6F6E69; margin-bottom: 8px;
     }
     .${PLUGIN_ID}-field { margin-bottom: 10px; }
     .${PLUGIN_ID}-field:last-child { margin-bottom: 0; }
     .${PLUGIN_ID}-field-head {
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
     }
-    .${PLUGIN_ID}-field-head label { font-size: 12px; color: #d3d8de; }
+    .${PLUGIN_ID}-field-head label { font-size: 12px; color: #CECDC3; }
     .${PLUGIN_ID}-field-ctl { display: inline-flex; align-items: center; gap: 5px; }
     .${PLUGIN_ID}-pop input[type=number] {
-      width: 66px; background: rgba(0,0,0,0.35); color: #e8eaed;
-      border: 1px solid rgba(255,255,255,0.14); border-radius: 5px;
+      width: 66px; background: #1C1B1A; color: #E6E4D9;
+      border: 1px solid #000; border-bottom-color: #343331; border-radius: 5px;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       padding: 4px 6px; font-size: 12px; font-family: inherit;
       text-align: right; outline: none;
     }
     .${PLUGIN_ID}-pop input[type=number]:focus {
-      border-color: rgba(90,169,255,0.6);
+      border-color: rgba(206,93,151,0.6);
     }
-    .${PLUGIN_ID}-unit { font-size: 11px; color: #737d8a; min-width: 34px; }
+    .${PLUGIN_ID}-unit { font-size: 11px; color: #6F6E69; min-width: 34px; }
     .${PLUGIN_ID}-field-help {
-      margin-top: 3px; font-size: 10.5px; color: #7c8593; line-height: 1.4;
+      margin-top: 3px; font-size: 10.5px; color: #878580; line-height: 1.4;
     }
     .${PLUGIN_ID}-pop-foot {
       margin-top: 14px; padding-top: 10px;
-      border-top: 1px solid rgba(255,255,255,0.08);
-      font-size: 11px; color: #9aa3b0; line-height: 1.45;
+      border-top: 1px solid #343331;
+      font-size: 11px; color: #878580; line-height: 1.45;
     }
 
     /* ── Pattern popover: pictures, knobs, presets ───────────── */
@@ -1761,17 +1794,18 @@ function injectStyles() {
     .${PLUGIN_ID}-card-top {
       display: flex; align-items: center; justify-content: space-between; gap: 6px;
     }
-    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card .${PLUGIN_ID}-icon { color: #7f8b99; }
-    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-icon { color: #9ecbff; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card .${PLUGIN_ID}-icon { color: #878580; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-card.is-sel .${PLUGIN_ID}-icon { color: #CE5D97; }
 
     .${PLUGIN_ID}-pattern-view {
       margin-top: 10px; padding: 8px 8px 6px;
-      background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.07);
+      background: #1C1B1A; border: 1px solid #000; border-bottom-color: #343331;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       border-radius: 8px;
     }
     #${PLUGIN_ID}-pattern-canvas { display: block; width: 100%; height: 96px; }
     .${PLUGIN_ID}-summary {
-      margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: #cfd6de;
+      margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: #CECDC3;
     }
 
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob {
@@ -1781,122 +1815,137 @@ function injectStyles() {
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-runnable-track {
       height: 4px; border-radius: 2px;
-      background: linear-gradient(90deg, #5aa9ff var(--fill, 0%), rgba(255,255,255,0.12) var(--fill, 0%));
+      background: linear-gradient(90deg, #CE5D97 var(--fill, 0%), #403E3C var(--fill, 0%));
+      box-shadow: inset 0 1px 1px rgba(0,0,0,0.5);
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-track {
-      height: 4px; border-radius: 2px; background: rgba(255,255,255,0.12);
+      height: 4px; border-radius: 2px; background: #403E3C;
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-progress {
-      height: 4px; border-radius: 2px; background: #5aa9ff;
+      height: 4px; border-radius: 2px; background: #CE5D97;
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
-      background: #fff; border: 2px solid #5aa9ff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
+      background: #E6E4D9; border: 2px solid #CE5D97; box-shadow: 0 1px 4px rgba(0,0,0,.5);
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob::-moz-range-thumb {
       width: 12px; height: 12px; border-radius: 50%;
-      background: #fff; border: 2px solid #5aa9ff;
+      background: #E6E4D9; border: 2px solid #CE5D97;
     }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob:focus-visible { outline: none; }
     .${PLUGIN_ID}-pop input[type=range].${PLUGIN_ID}-knob:focus-visible::-webkit-slider-thumb {
-      box-shadow: 0 0 0 3px rgba(90,169,255,.35);
+      box-shadow: 0 0 0 3px rgba(206,93,151,.35);
     }
 
     .${PLUGIN_ID}-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip {
       display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
       padding: 5px 10px; border-radius: 999px; cursor: pointer;
-      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
-      color: #dfe4ea; font: inherit; font-size: 11.5px;
+      background: #1C1B1A; border: 1px solid #000; border-bottom-color: #343331;
+      color: #CECDC3; font: inherit; font-size: 11.5px;
       transition: background .12s ease, border-color .12s ease;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip:hover {
-      background: rgba(90,169,255,0.12); border-color: rgba(90,169,255,0.4);
+      color: #E6E4D9; border-color: rgba(206,93,151,0.4);
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip.is-sel {
-      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.75); color: #fff;
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5); color: #E6E4D9;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }
-    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip .${PLUGIN_ID}-icon { color: #9ecbff; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip .${PLUGIN_ID}-icon { color: #CE5D97; }
     .${PLUGIN_ID}-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
     .${PLUGIN_ID}-chip-dot {
-      width: 6px; height: 6px; border-radius: 50%; background: #f5b342; flex: none;
+      width: 6px; height: 6px; border-radius: 50%; background: #D0A215; flex: none;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-chip-add {
-      border-style: dashed; color: #9aa6b4; background: transparent;
+      border-style: dashed; border-color: #403E3C; color: #878580; background: transparent;
     }
     .${PLUGIN_ID}-preset-edit { display: none; gap: 6px; margin-top: 8px; align-items: center; }
     .${PLUGIN_ID}-preset-edit input[type=text] {
-      flex: 1 1 auto; min-width: 0; background: rgba(0,0,0,0.35); color: #e8eaed;
-      border: 1px solid rgba(90,169,255,0.55); border-radius: 6px;
+      flex: 1 1 auto; min-width: 0; background: #1C1B1A; color: #E6E4D9;
+      border: 1px solid rgba(206,93,151,0.55); border-radius: 6px;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       padding: 5px 8px; font: inherit; font-size: 12px; outline: none;
     }
     .${PLUGIN_ID}-preset-bar {
       display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px;
     }
     .${PLUGIN_ID}-preset-bar:empty { display: none; }
-    .${PLUGIN_ID}-preset-state { font-size: 11px; color: #8e97a3; margin-right: auto; }
+    .${PLUGIN_ID}-preset-state { font-size: 11px; color: #878580; margin-right: auto; }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-edit button,
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button {
-      background: rgba(255,255,255,0.06); color: #e8eaed;
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      background: linear-gradient(180deg, #343331, #282726); color: #CECDC3;
+      border: 1px solid #0b0a0a; border-top-color: #403E3C; border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet {
-      background: transparent; border-color: transparent; color: #8e97a3; padding: 4px 6px;
+      background: transparent; border-color: transparent; box-shadow: none; color: #878580; padding: 4px 6px;
     }
-    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet:hover { color: #e8eaed; }
+    .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.${PLUGIN_ID}-quiet:hover { color: #E6E4D9; }
+    /* Update and Save are the primary actions here: filled accent */
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.is-on,
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-edit button[data-act=save] {
-      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.08)), #CE5D97;
+      border-color: #0b0a0a; border-top-color: #CE5D97; color: #100F0F;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-preset-bar button.is-danger {
-      background: rgba(235,80,80,0.2); border-color: rgba(235,80,80,0.6); color: #ffb3b3;
+      background: linear-gradient(180deg, rgba(209,77,65,0.26), rgba(209,77,65,0.14)), #282726;
+      border-color: rgba(209,77,65,0.6); color: #E8705F;
     }
-    .${PLUGIN_ID}-field-help.is-warn { color: #f5b342; }
+    .${PLUGIN_ID}-field-help.is-warn { color: #D0A215; }
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-pattern-btn {
       max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-pattern-btn.has-preset { border-color: rgba(90,169,255,0.45); }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-pattern-btn.has-preset { border-color: rgba(206,93,151,0.45); }
 
     /* ── Advanced row: every control has a visible name ─────── */
     .${PLUGIN_ID}-adv {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 2px 0 2px 10px; border-left: 1px solid rgba(255,255,255,0.10);
+      padding: 2px 0 2px 10px; border-left: 1px solid rgba(255,255,255,0.08);
     }
-    .${PLUGIN_ID}-adv-label { color: #8e97a3 !important; font-weight: 500; }
+    .${PLUGIN_ID}-adv-label { color: #878580 !important; font-weight: 500; }
     .${PLUGIN_ID}-adv-read {
-      color: #cfd6de !important; font-variant-numeric: tabular-nums; min-width: 0;
+      color: #CECDC3 !important; font-variant-numeric: tabular-nums; min-width: 0;
       font-size: 11px; white-space: nowrap;
     }
     .${PLUGIN_ID}-adv-note {
-      color: #7c8593 !important; font-size: 10.5px; max-width: 260px; line-height: 1.3;
+      color: #878580 !important; font-size: 10.5px; max-width: 260px; line-height: 1.3;
     }
 
     /* ── Script dock (under the toolbar, not floating) ────────── */
+    /* It continues the toolbar inside the player, so it stays as dark as the
+       bar; the inset shadow makes it read as hanging under it. */
     #${PLUGIN_ID}-dock.${PLUGIN_ID}-pop {
       position: relative; left: auto; top: auto; z-index: auto;
       width: auto; max-height: 55vh; overflow-y: auto;
       opacity: 1; pointer-events: auto; transform: none; transition: none;
-      margin: 0; border-radius: 0 0 8px 8px; box-shadow: none;
+      margin: 0; border-radius: 0 0 8px 8px; box-shadow: inset 0 8px 10px -8px rgba(0,0,0,0.6);
       border-top: 0; padding: 10px 14px 12px;
-      background: linear-gradient(180deg, rgba(14,16,20,0.96), rgba(20,22,28,0.96));
+      background: linear-gradient(180deg, rgba(16,15,15,0.96), rgba(28,27,26,0.96));
     }
     .${PLUGIN_ID}-dock-head {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
     }
-    .${PLUGIN_ID}-dock-head strong { font-size: 12.5px; white-space: nowrap; }
+    .${PLUGIN_ID}-dock-head strong { font-size: 12.5px; white-space: nowrap; color: #E6E4D9; }
     .${PLUGIN_ID}-dock-head .${PLUGIN_ID}-memory {
       flex: 1 1 auto; margin: 0; padding: 4px 8px; flex-wrap: nowrap;
     }
     .${PLUGIN_ID}-dock-head .${PLUGIN_ID}-memory span { flex: 1 1 auto; }
     .${PLUGIN_ID}-dock-head > button {
-      background: rgba(255,255,255,0.06); color: #e8eaed;
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      background: linear-gradient(180deg, #343331, #282726); color: #CECDC3;
+      border: 1px solid #0b0a0a; border-top-color: #403E3C; border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap;
     }
     .${PLUGIN_ID}-dock-head > button.is-on {
-      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5); color: #E6E4D9;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }
     .${PLUGIN_ID}-dock-grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -1919,43 +1968,55 @@ function injectStyles() {
     .${PLUGIN_ID}-memory {
       display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
       margin-bottom: 10px; padding: 7px 9px; border-radius: 7px;
-      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
-      font-size: 11px; color: #9aa3b0; line-height: 1.4;
+      background: #1C1B1A; border: 1px solid #000; border-bottom-color: #343331;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+      font-size: 11px; color: #878580; line-height: 1.4;
     }
     .${PLUGIN_ID}-memory span { flex: 1 1 100%; }
-    .${PLUGIN_ID}-memory.is-tuned { border-color: rgba(90,169,255,0.45); color: #cfe3ff; }
+    .${PLUGIN_ID}-memory.is-tuned { border-color: rgba(206,93,151,0.45); color: #CECDC3; }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-memory button,
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-field-head > button {
-      background: rgba(255,255,255,0.06); color: #e8eaed;
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      background: linear-gradient(180deg, #343331, #282726); color: #CECDC3;
+      border: 1px solid #0b0a0a; border-top-color: #403E3C; border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-field-head > button.is-on {
-      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5); color: #E6E4D9;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }
     .${PLUGIN_ID}-sp-pick { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .${PLUGIN_ID}-sp-pick label { font-size: 12px; color: #d3d8de; }
+    .${PLUGIN_ID}-sp-pick label { font-size: 12px; color: #CECDC3; }
     .${PLUGIN_ID}-pop select {
-      background: rgba(0,0,0,0.35); color: #e8eaed; border: 1px solid rgba(255,255,255,0.14);
+      background: #1C1B1A; color: #E6E4D9; border: 1px solid #000; border-bottom-color: #343331;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
       border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 11.5px; max-width: 230px;
     }
     .${PLUGIN_ID}-overview { margin-bottom: 4px; }
     #${PLUGIN_ID}-overview-canvas {
       display: block; width: 100%; height: 44px; cursor: pointer;
-      background: rgba(0,0,0,0.3); border-radius: 5px;
+      background: #1C1B1A; border-radius: 5px;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
     }
-    .${PLUGIN_ID}-field-words { font-size: 11px; color: #9ecbff; margin-right: auto; margin-left: 8px; }
+    .${PLUGIN_ID}-field-words { font-size: 11px; color: #CE5D97; margin-right: auto; margin-left: 8px; }
     #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name {
       max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name.is-tuned { border-color: rgba(90,169,255,0.45); }
+    #${PLUGIN_ID}-toolbar #${PLUGIN_ID}-script-name.is-tuned { border-color: rgba(206,93,151,0.45); }
     .${PLUGIN_ID}-micro-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-micro-row button {
-      background: rgba(255,255,255,0.06); color: #e8eaed; border: 1px solid rgba(255,255,255,0.12);
+      background: linear-gradient(180deg, #343331, #282726); color: #CECDC3;
+      border: 1px solid #0b0a0a; border-top-color: #403E3C;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
       border-radius: 6px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
     }
     .${PLUGIN_ID}-pop .${PLUGIN_ID}-micro-row button.is-on {
-      background: rgba(90,169,255,0.22); border-color: rgba(90,169,255,0.6); color: #fff;
+      background: #343331;
+      background: color-mix(in srgb, #CE5D97 22%, #343331);
+      border-color: rgba(206,93,151,0.5); color: #E6E4D9;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1978,8 +2039,9 @@ function injectStyles() {
 
     const cv = document.createElement("canvas");
     cv.id = `${PLUGIN_ID}-preview`;
-    cv.style.cssText = "width:100%;height:80px;display:block;background:#111;" +
-                       "border:1px solid #333;border-radius:3px;";
+    cv.style.cssText = "width:100%;height:80px;display:block;background:#100F0F;" +
+                       "border:1px solid #000;border-bottom-color:#343331;border-radius:3px;" +
+                       "box-shadow:inset 0 2px 5px rgba(0,0,0,0.5);";
     wrap.appendChild(cv);
     previewCanvas = cv;
 
@@ -1988,11 +2050,11 @@ function injectStyles() {
     legend.style.cssText = "font-size:10px;opacity:0.6;padding-top:2px;" +
                            "display:flex;gap:12px;flex-wrap:wrap;";
     legend.innerHTML =
-      '<span style="color:#96a0b4">\u2014 script</span>' +
-      '<span style="color:#be8cff">- - flow plan</span>' +
-      '<span style="color:#4af">\u2014 target</span>' +
-      '<span style="color:#4f8">\u25AE level sent</span>' +
-      '<span style="color:#fa4">| command</span>' +
+      '<span style="color:#878580">\u2014 script</span>' +
+      '<span style="color:#8B7EC8">- - flow plan</span>' +
+      '<span style="color:#4385BE">\u2014 target</span>' +
+      '<span style="color:#A9BA5A">\u25AE level sent</span>' +
+      '<span style="color:#DA702C">| command</span>' +
       `<span id="${PLUGIN_ID}-preview-stats"></span>`;
     wrap.appendChild(legend);
     return wrap;
@@ -2020,13 +2082,13 @@ function injectStyles() {
     const Y = (v) => h - v * (h - 2 * dpr) - dpr;
 
     // gridlines at 25/50/75/100%
-    g.strokeStyle = "#252525"; g.lineWidth = dpr;
+    g.strokeStyle = "#282726"; g.lineWidth = dpr;
     for (const frac of [0.25, 0.5, 0.75, 1]) {
       g.beginPath(); g.moveTo(0, Y(frac)); g.lineTo(w, Y(frac)); g.stroke();
     }
     // motor floor: below this a steady level is impossible without micro pulsing
     if (scalarStep > 0) {
-      g.strokeStyle = "#553"; g.setLineDash([4 * dpr, 4 * dpr]);
+      g.strokeStyle = "rgba(208,162,21,0.35)"; g.setLineDash([4 * dpr, 4 * dpr]);
       g.beginPath(); g.moveTo(0, Y(scalarStep)); g.lineTo(w, Y(scalarStep)); g.stroke();
       g.setLineDash([]);
     }
@@ -2046,7 +2108,7 @@ function injectStyles() {
       // Position track occupies the full height; it is a separate quantity
       // from intensity, so it gets its own faint styling rather than sharing
       // the 0-1 axis visually.
-      g.strokeStyle = "rgba(150,160,180,0.55)";
+      g.strokeStyle = "rgba(135,133,128,0.7)";
       g.lineWidth = dpr;
       g.beginPath();
       previewScript.pts.forEach(([at, pos], i) => {
@@ -2059,7 +2121,7 @@ function injectStyles() {
       // Flow: the rendered intensity the toy is following, including what
       // is coming next. Drawn before the live traces so they sit on top.
       if (previewScript.flow?.length > 1) {
-        g.strokeStyle = "rgba(190,140,255,0.8)";
+        g.strokeStyle = "rgba(139,126,200,0.85)";
         g.lineWidth = 1.2 * dpr;
         g.setLineDash([5 * dpr, 3 * dpr]);
         g.beginPath();
@@ -2073,7 +2135,7 @@ function injectStyles() {
 
       // Beat markers: where beat mode will actually fire.
       if (previewScript.beats?.length) {
-        g.strokeStyle = "rgba(150,160,180,0.30)";
+        g.strokeStyle = "rgba(135,133,128,0.35)";
         for (const at of previewScript.beats) {
           const x = mediaToX(at);
           if (x < -10 || x > w + 10) continue;
@@ -2091,7 +2153,7 @@ function injectStyles() {
 
     if (pts.length > 1) {
       // level actually sent, as a step-held fill (that is how the toy sees it)
-      g.fillStyle = "rgba(68,255,136,0.30)";
+      g.fillStyle = "rgba(169,186,90,0.35)";
       g.beginPath(); g.moveTo(X(pts[0].t), Y(0));
       let prev = pts[0];
       for (const p of pts) {
@@ -2103,13 +2165,13 @@ function injectStyles() {
       g.closePath(); g.fill();
 
       // target, before smoothing and quantisation
-      g.strokeStyle = "#4af"; g.lineWidth = 1.2 * dpr;
+      g.strokeStyle = "#4385BE"; g.lineWidth = 1.2 * dpr;
       g.beginPath();
       pts.forEach((p, i) => (i ? g.lineTo(X(p.t), Y(p.tg)) : g.moveTo(X(p.t), Y(p.tg))));
       g.stroke();
 
       // tick per actual BLE command
-      g.strokeStyle = "rgba(255,170,68,0.75)"; g.lineWidth = dpr;
+      g.strokeStyle = "rgba(218,112,44,0.85)"; g.lineWidth = dpr;
       let sent = 0;
       for (const p of pts) {
         if (!p.s) continue;
@@ -2129,7 +2191,7 @@ function injectStyles() {
       stats.textContent =
         `${rate} cmd/s · now ${last ? (last.lv * 100).toFixed(0) : 0}% · ` +
         `drift ${drift > 0 ? "+" : ""}${drift}ms · ${secs}s window`;
-      stats.style.color = Math.abs(drift) > 150 ? "#f84" : "";
+      stats.style.color = Math.abs(drift) > 150 ? "#D0A215" : "";
     }
     previewRaf = requestAnimationFrame(drawPreview);
   }
@@ -2373,14 +2435,14 @@ function injectStyles() {
     g.beginPath(); g.moveTo(0, Y(1)); g.lineTo(w, Y(1)); g.stroke();
     const silent = !vibeSubstep && peak > 0 && peak < scalarStep;
     if (scalarStep > 0) {
-      g.strokeStyle = "rgba(230,200,90,0.45)";
+      g.strokeStyle = "rgba(208,162,21,0.5)";
       g.setLineDash([4 * dpr, 4 * dpr]);
       g.beginPath(); g.moveTo(0, Y(scalarStep)); g.lineTo(w, Y(scalarStep)); g.stroke();
       g.setLineDash([]);
     }
 
     // the pattern, filled so on/off shapes read as blocks
-    const col = silent ? "235,90,90" : "90,169,255";
+    const col = silent ? "209,77,65" : "206,93,151";
     const grad = g.createLinearGradient(0, Y(1), 0, Y(0));
     grad.addColorStop(0, `rgba(${col},0.45)`);
     grad.addColorStop(1, `rgba(${col},0.06)`);
@@ -2396,7 +2458,7 @@ function injectStyles() {
     // time axis: a handful of round-number ticks
     const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
     const tick  = steps.find((s) => secs / s <= 6) || 600;
-    g.fillStyle = "rgba(200,206,214,0.55)";
+    g.fillStyle = "rgba(206,205,195,0.55)";
     g.font = `${10 * dpr}px -apple-system, "Segoe UI", sans-serif`;
     g.textBaseline = "bottom";
     for (let t = 0; t <= secs + 1e-6; t += tick) {
@@ -2411,14 +2473,14 @@ function injectStyles() {
     g.textBaseline = "middle";
     const label = (txt, v, color) => {
       const tw = g.measureText(txt).width;
-      g.fillStyle = "rgba(22,25,31,0.85)";
+      g.fillStyle = "rgba(28,27,26,0.85)";
       g.fillRect(w - tw - 8 * dpr, Y(v) - 7 * dpr, tw + 6 * dpr, 13 * dpr);
       g.fillStyle = color;
       g.fillText(txt, w - tw - 5 * dpr, Y(v));
     };
     if (peak > 0) label(`peak ${Math.round(peak * 100)}%`, Math.max(peak, 0.12), `rgb(${col})`);
     if (scalarStep > 0 && Math.abs(peak - scalarStep) > 0.1) {
-      label(`motor floor ${Math.round(scalarStep * 100)}%`, scalarStep, "rgba(230,200,90,0.8)");
+      label(`motor floor ${Math.round(scalarStep * 100)}%`, scalarStep, "rgba(208,162,21,0.9)");
     }
 
     const sum = byId(`${PLUGIN_ID}-pattern-summary`);
@@ -3321,12 +3383,12 @@ function injectStyles() {
     const bw = w / lv.length;
     lv.forEach((v, i) => {
       const bh = Math.max(v > 0 ? 1.5 * dpr : 0, v * (h - 2 * dpr));
-      g.fillStyle = `rgba(90,169,255,${0.25 + 0.6 * v})`;
+      g.fillStyle = `rgba(206,93,151,${0.25 + 0.6 * v})`;
       g.fillRect(i * bw, h - bh, Math.max(1, bw - 0.5), bh);
     });
     if (videoEl && flowOverview.t1 > flowOverview.t0) {
       const x = ((videoEl.currentTime * 1000 - flowOverview.t0) / (flowOverview.t1 - flowOverview.t0)) * w;
-      g.fillStyle = "#fff";
+      g.fillStyle = "#E6E4D9";
       g.fillRect(Math.round(Math.max(0, Math.min(w - dpr, x))), 0, dpr * 1.5, h);
     }
   }
@@ -3449,7 +3511,7 @@ function injectStyles() {
 
   function updateToolbarInfo(message) {
     const el = byId(`${PLUGIN_ID}-status`);
-    if (el) { el.textContent = `ℹ ${message}`; el.style.color = "#fa0"; }
+    if (el) { el.textContent = `ℹ ${message}`; el.style.color = "#D0A215"; }
   }
 
   // ── Toolbar ────────────────────────────────────────────────────────────────
@@ -3462,9 +3524,9 @@ function injectStyles() {
     bar.addEventListener("pointerdown", () => tryTakeover("toolbar"), true);
     bar.style.cssText = `
       display:flex; align-items:center; gap:8px;
-      padding:4px 10px; background:rgba(0,0,0,0.75);
-      color:#fff; font-size:12px; font-family:sans-serif;
-      border-top:1px solid #444; flex-wrap:wrap; z-index:9999;
+      padding:4px 10px; background:rgba(16,15,15,0.85);
+      color:#CECDC3; font-size:12px; font-family:sans-serif;
+      border-top:1px solid #403E3C; flex-wrap:wrap; z-index:9999;
     `;
 
     // ── Row 1 ──────────────────────────────────────────────────────────────
@@ -3590,7 +3652,7 @@ function injectStyles() {
     const row2 = document.createElement("div");
     row2.id = `${PLUGIN_ID}-advanced`;
     row2.style.cssText = "display:none;align-items:center;gap:10px;width:100%;" +
-                         "flex-wrap:wrap;padding-top:4px;border-top:1px solid #333;";
+                         "flex-wrap:wrap;padding-top:4px;border-top:1px solid #343331;";
     // The advanced row holds device and app settings only. Script tuning
     // lives in the script panel, manual tuning in the pattern panel.
     row2.appendChild(modeWrap);
@@ -3683,7 +3745,7 @@ function injectStyles() {
       statusEl.textContent = d
         ? `\u25CC Toy follows ${where} in another tab${d.playing ? " (playing)" : ""} \u00b7 Take over`
         : "\u25CC No tab is driving the toy \u00b7 Take over";
-      statusEl.style.color = "#9ecbff";
+      statusEl.style.color = "#6FA3D6";
       statusEl.title = "One tab drives the toy at a time, across all browsers. Pressing play " +
                        "here takes over too. Stop, mute and Manual off work from any tab.";
       statusEl.style.cursor = "pointer";
@@ -3695,7 +3757,7 @@ function injectStyles() {
 
     if (!wsReady) {
       statusEl.textContent = `⚠ Backend unreachable (${BACKEND_URL})`;
-      statusEl.style.color = "#f90";
+      statusEl.style.color = "#D0A215";
       statusEl.title = statusEl.textContent;
       return;
     }
@@ -3704,7 +3766,7 @@ function injectStyles() {
     // new page can talk to an old backend and new fixes silently do nothing.
     if (backendStatusSeen && statusData && statusData.version !== PLUGIN_VERSION) {
       statusEl.textContent = `\u26A0 Old backend (${statusData.version || "before 1.30"}): run Stop Backend, then Start Backend`;
-      statusEl.style.color = "#f90";
+      statusEl.style.color = "#D0A215";
       statusEl.title = `This page is ${PLUGIN_VERSION} but the backend is ${statusData.version || "older"}. ` +
                        "Reloading plugins does not restart it: Settings \u203a Tasks \u203a IntifaceSync \u203a " +
                        "Stop Backend, then Start Backend.";
@@ -3713,7 +3775,7 @@ function injectStyles() {
 
     if (!outputOn) {
       statusEl.textContent = "⛔ Output disabled (E)";
-      statusEl.style.color = "#f66";
+      statusEl.style.color = "#E8705F";
       statusEl.title = "All device output is cut. Press E to resume.";
       return;
     }
@@ -3729,16 +3791,16 @@ function injectStyles() {
       } else if (statusData.beatPicked && statusData.vibeEffective === "beat") {
         devNames += ` ♩${statusData.beatPeaks} peaks`;
       }
-      if (error)           { statusEl.textContent = `⚠ ${error}`;              statusEl.style.color = "#f90"; }
-      else if (!connected) { statusEl.textContent = "● Intiface: disconnected"; statusEl.style.color = "#f44"; }
-      else if (playing)    { statusEl.textContent = `▶ ${devNames}`;            statusEl.style.color = "#4f4"; }
-      else                 { statusEl.textContent = `■ ${devNames}`;            statusEl.style.color = "#aaa"; }
+      if (error)           { statusEl.textContent = `⚠ ${error}`;              statusEl.style.color = "#E8705F"; }
+      else if (!connected) { statusEl.textContent = "● Intiface: disconnected"; statusEl.style.color = "#E8705F"; }
+      else if (playing)    { statusEl.textContent = `▶ ${devNames}`;            statusEl.style.color = "#A9BA5A"; }
+      else                 { statusEl.textContent = `■ ${devNames}`;            statusEl.style.color = "#B7B5AC"; }
     } else {
       const { connected, playing, error } = statusData;
-      if (error)           { statusEl.textContent = `⚠ ${error}`;              statusEl.style.color = "#f90"; }
-      else if (!connected) { statusEl.textContent = "● Handy: disconnected";   statusEl.style.color = "#f44"; }
-      else if (playing)    { statusEl.textContent = "▶ Handy: playing";         statusEl.style.color = "#4f4"; }
-      else                 { statusEl.textContent = "■ Handy: connected";       statusEl.style.color = "#aaa"; }
+      if (error)           { statusEl.textContent = `⚠ ${error}`;              statusEl.style.color = "#E8705F"; }
+      else if (!connected) { statusEl.textContent = "● Handy: disconnected";   statusEl.style.color = "#E8705F"; }
+      else if (playing)    { statusEl.textContent = "▶ Handy: playing";         statusEl.style.color = "#A9BA5A"; }
+      else                 { statusEl.textContent = "■ Handy: connected";       statusEl.style.color = "#B7B5AC"; }
     }
     statusEl.title = statusEl.textContent;
   }

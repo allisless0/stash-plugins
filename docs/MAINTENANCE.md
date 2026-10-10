@@ -47,13 +47,13 @@ Keep those greps in step with any refactor of the safety chain.
 
 | Plugin | Version | Type | Hotkey | Scope | LOC |
 |---|---|---|---|---|---|
-| QuickTools | 1.10.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` `F` dbl-click, middle-click, wheel | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere; `F` on scene and performer lists | ~2590 |
-| IntifaceSync (vibe fork) | 1.33-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
-| Collections | 1.1.1 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
-| ScriptBadges | 1.1.0 | UI only | none | any page with scene cards | ~150 |
-| Todo | 1.1.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
+| QuickTools | 1.11.0 | UI only | `R` `M` `Shift+M` `U` `D` `T` `F` dbl-click, middle-click, wheel | `/scenes/<id>`; `T` also `/performers/<id>`; `T` `D` on hovered cards anywhere; `F` on scene and performer lists | ~2590 |
+| IntifaceSync (vibe fork) | 1.34-vibe | UI + Python backend | `E` `\` `[` `]` `0` | scene player | ~3300 JS + ~2800 PY |
+| Collections | 1.2.0 | UI only | none (top-bar tab, O button) | nav, `/scenes`, `/scenes/<id>` | ~720 |
+| ScriptBadges | 1.2.0 | UI only | none | any page with scene cards | ~150 |
+| Todo | 1.2.0 | UI only | none (top-bar button, page chip) | every page | ~800 |
 | Insights | 2.0.0 | UI only | none (Stats page) | `/stats`; watch tracker on scene pages | ~2700 |
-| Lockdown | 1.3.0 | UI only | none (top-bar button) | every page while locked | ~750 |
+| Lockdown | 1.4.0 | UI only | none (top-bar button) | every page while locked | ~750 |
 | ~~QuickCriteria~~ | 2.3.0 | archived, not published | `R` | `/performers/<id>` | ~710 |
 
 **Both shipped plugins listen for keys on the scene page**, and the rating
@@ -1646,6 +1646,55 @@ flags, more icons (not overdone), and tabs that change colour when active.
   under 3 times dropped); `networks` walks parents to the top (guarded against
   loops) and lists independents apart; `pairs` skips casts over six.
 
+### 4.15 Shared Flexoki theme (all plugins)
+
+User asked, after Insights 2.0.0, to "apply the same theme to all my other
+plugins". The spec is `docs/THEME.md`: Flexoki dark palette, raised surfaces
+(lit top border, gradient, drop shadow), sunk wells (inner shadow), the button,
+selected-chip and icon-badge recipes, and the rule that anything sitting inside
+Stash's own UI (navbar buttons, card badges, studio-page tabs) takes Flexoki
+accents but no dark slabs. Colours only: no layout, DOM, listener or logic
+changes. A grep for hex colours outside the palette came back empty for every
+plugin.
+
+Versions: QuickTools 1.11.0, Collections 1.2.0, ScriptBadges 1.2.0, Todo 1.2.0,
+Lockdown 1.4.0, IntifaceSync 1.34-vibe (its `.py` changed only in
+`PLUGIN_VERSION`; restarting the backend is still needed to clear the stale
+warning).
+
+Accents and the decisions worth keeping:
+- **QuickTools:** rating yellow, markers blue, tags green, filters purple,
+  delete red, wheel cyan. Toasts take the accent of what made them, through an
+  extra class (`qt-tags`, `qt-filters`, `qt-wheel`) beside `qt-info`; toast
+  timing only looks at `qt-err`, so behaviour is unchanged. "Marker added" was
+  passing `""` and so got the default red border, which read like a delete
+  warning; it is `qt-info` now. Errors are orange, not red, so they stay
+  distinct from the red "Marked for delete" toast. "create" rows are yellow so
+  they do not blend with the green "already on" in the tag panel.
+- **Collections:** orange. The lit top-bar tab uses
+  `.coll-nav a.btn.btn-primary.active` to outrank Bootstrap's active rule;
+  idle tabs keep Stash's look. Hardcore yellow, Easy blue, round over red.
+  `VERSION` in the JS is bumped with the manifest.
+- **ScriptBadges:** "Script" solid green with dark text; "No script" a dark
+  pill with an orange edge. The outline is a box-shadow so badge size is
+  unchanged.
+- **Todo:** green, pins yellow, delete red, scenes cyan, performers magenta.
+  New edges on the page card, icon tiles, avatars and thumbnails are
+  box-shadow rings, not borders: a border would push the aligned 40px media
+  column by a pixel. Group-header hover colour comes from `:has()` on the
+  header's media; older browsers keep the plain underline.
+- **Lockdown:** lock red; O drops magenta (were blue); gave-up coral. Every
+  `display`/`visibility`/`opacity`/`pointer-events` line used for enforcement
+  was diffed: only colour values changed. The navbar button stays Stash's,
+  with a red icon.
+- **IntifaceSync:** brand magenta (active mode, every `is-on`, selected
+  patterns and presets, preview curve); green live/connect; red
+  disconnect/errors, with Disconnect the strongest red on the bar and "Device
+  muted" quieter; yellow warnings, stale backend and the motor-floor line.
+  Scope: script grey, flow purple, target blue, level green, command ticks
+  orange. The toolbar stays a translucent dark strip so it sits in the player.
+  Logic diffed with colours masked: no change.
+
 ### 4.6 QuickTools `D`: mark for delete (1.1.0-1.2.0)
 
 Toggles a tag (default `Marked for Delete`, `deleteTagName` setting) on the
@@ -1723,6 +1772,7 @@ under new labels that mean something different. Recalculate makes ratings
 | QuickTools | 1.8.0 `F` applying verified against a real Stash 0.31.1 (URL comparison over 14 saved filters); rename and delete tested on a fake GraphQL only. Check in Stash: rename a filter and see the new name in Stash's own saved-filter menu without a reload; F F opens Stash's edit-filter dialog on /scenes and toggles favourite on a performer page. Performer filters (1.9.0) tested on the fake GraphQL only: check one on the real Performers page. |
 | QuickTools | 1.6.0 hovered cards tested on harness markup (`.scene-card`, `.performer-card`, a table row), not Stash's real grid. Check in Stash: T over a scene card, a performer card, the list view and the wall. If a view does not respond, its card class is missing from `CARD_SEL`. |
 | QuickTools | 1.5.0 `T` tested in a harness against a fake GraphQL (bulk ADD/REMOVE), not a real Stash. Check: T on a scene and on a performer page; the tags appear in Stash's own tag list without a reload (Apollo refetch of FindScene / FindPerformer). |
+| All | The Flexoki restyle (QuickTools 1.11.0, Collections 1.2.0, ScriptBadges 1.2.0, Todo 1.2.0, Lockdown 1.4.0, IntifaceSync 1.34-vibe) passed every unit test but was not looked at in a browser. Check each panel in the real Stash, especially elements inside Stash's own UI (navbar buttons, card badges, studio tabs) and the IntifaceSync toolbar over the player. |
 | Insights | 2.0.0 tested on a synthetic 1500-scene library in a harness (with Stash's flag stylesheet), not a real Stash. Check on the real library: the counts query is accepted in one go (else it falls back to one query per row), `is_missing` links open the same counts, the `video_codec`/`audio_codec`/`resolution`/`framerate`/`file_count`/`has_markers` criterion shapes open the right lists, `findDuplicateScenes` time on a big library, and flags render next to the text. |
 | Insights | 1.0.0 tested on a synthetic 400-scene library in a harness, not a real Stash. Check on the real library: load time and progress text, the dashboard placement on /stats, trait links open the right filtered lists (some criterion shapes, e.g. `filter_favorites`, `performer_count`, `created_at`, were not verified against the bundle), and the O Stats import count matches its file. |
 | Insights | Performance on very large libraries (tens of thousands of scenes) unmeasured; the compute is linear but every trait dimension is computed on first view. |
@@ -1750,6 +1800,15 @@ under new labels that mean something different. Recalculate makes ratings
 ---
 
 ## 6b. Session log
+
+### 2026-10-10 (late night): Flexoki theme on every plugin
+
+User asked for the Insights 2.0 theme on all the other plugins. The theme was
+written down as `docs/THEME.md` and five agents restyled QuickTools, Lockdown,
+Todo, IntifaceSync, and Collections with ScriptBadges in parallel, colours
+only. Checked afterwards: no hex colour outside the palette in any plugin, the
+IntifaceSync `.py` diff is the version line only, validate.sh passes. See
+§4.15.
 
 ### 2026-10-10 (late night): Insights 2.0.0, redesign
 

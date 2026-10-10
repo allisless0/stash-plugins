@@ -78,6 +78,9 @@ Backend tasks; reloading plugins does not restart the Python process.
 Plain comments that explain *why*, not what. No emoji in code. Keep the
 existing formatting of each file; they are not uniform and that is fine.
 
+All plugins share one look: the Flexoki theme in `docs/THEME.md` (palette,
+raised and sunk surfaces, button and chip recipes). New UI follows it.
+
 ## Publishing
 
 Pushing to `main` runs `.github/workflows/deploy.yml`: validate, build the

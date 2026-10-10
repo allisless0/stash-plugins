@@ -1,6 +1,6 @@
 name: ScriptBadges
 description: "Shows on every scene card whether the scene has a funscript, so you can see at a glance what still needs one."
-version: 1.1.0
+version: 1.2.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:

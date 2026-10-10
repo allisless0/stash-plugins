@@ -82,8 +82,16 @@
   padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
   line-height: 1.5; white-space: nowrap; cursor: default;
 }
-.sb-badge.has  { color: #d9f7e4; background: rgba(20,110,60,.85); }
-.sb-badge.none { color: #ffe2c2; background: rgba(0,0,0,.72); border: 1px solid rgba(240,150,60,.8); }
+/* Flexoki: filled green for "has", dark well with an orange edge for "none".
+   Both sit on video thumbnails, so each carries its own dark outline and drop
+   shadow to stay legible over bright frames. The outline is a shadow, not a
+   border, so "has" keeps its 1.0 size. */
+.sb-badge.has  { color: #100F0F; background: #879A39;
+  background: linear-gradient(180deg, #879A39, color-mix(in srgb, #879A39 78%, #66800B));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 0 0 1px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.6); }
+.sb-badge.none { color: #E6E4D9; background: rgba(16,15,15,.8); border: 1px solid #DA702C;
+  border-color: color-mix(in srgb, #DA702C 80%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 3px rgba(0,0,0,.6); }
 /* the badge carries the speed now; Stash's bare number would sit under it */
 .scene-card.sb-done .scene-interactive-speed-overlay { display: none; }
 `;

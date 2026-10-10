@@ -1,6 +1,6 @@
 name: QuickTools
 description: "Keyboard and mouse shortcuts for the scene player and performer pages. R rates, M adds a marker (Shift+M a range, U undoes), D marks the scene for delete, T adds and removes tags on scenes and performers (also the card under the mouse in any list), F switches, renames and deletes saved scene and performer filters, the mouse wheel seeks over the player (and sets volume on its left half), double-click or middle-click jumps through the scene queue. Each feature can be turned off."
-version: 1.10.0
+version: 1.11.0
 url: https://github.com/allisless0/stash-plugins
 
 ui:

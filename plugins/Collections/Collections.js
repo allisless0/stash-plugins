@@ -14,7 +14,7 @@
   window.__CollectionsLoaded = true;
 
   const PLUGIN_ID      = "Collections";
-  const VERSION        = "1.1.1";
+  const VERSION        = "1.2.0";
   const DEFAULT_CONFIG = "Cock Hero = Cock Hero, score, mode:beat";
   const DEBUG          = (() => { try { return localStorage.getItem("collectionsDebug") === "1"; } catch { return false; } })();
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
@@ -426,37 +426,57 @@
   position: absolute; top: 10px; left: 10px; z-index: 5;
   display: inline-flex; align-items: center; gap: 7px;
   padding: 4px 10px; border-radius: 999px; cursor: pointer; user-select: none;
-  font: 600 12px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff;
-  background: rgba(0,0,0,.62); border: 1px solid rgba(255,255,255,.18);
-  box-shadow: 0 2px 10px rgba(0,0,0,.4);
+  font: 600 12px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; color: #E6E4D9;
+  /* Flexoki raised surface, slightly see-through because it floats over the video */
+  background: rgba(40,39,38,.9);
+  background: linear-gradient(180deg, rgba(45,44,42,.92), rgba(40,39,38,.92));
+  border: 1px solid #0d0c0c; border-top-color: #48463F;
+  box-shadow: 0 1px 0 rgba(0,0,0,.7), 0 8px 20px -8px rgba(0,0,0,.75);
 }
-.coll-chip .coll-dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa3b0; }
-.coll-chip.is-hc   { border-color: rgba(245,196,66,.7); }
-.coll-chip.is-hc .coll-dot { background: #f5c442; box-shadow: 0 0 6px #f5c442; }
-.coll-chip.is-easy { border-color: rgba(120,190,255,.6); }
-.coll-chip.is-easy .coll-dot { background: #78beff; }
-.coll-chip.is-over { border-color: rgba(235,110,90,.7); }
-.coll-chip.is-over .coll-dot { background: #eb6e5a; }
-.coll-chip .coll-sub { font-weight: 400; opacity: .75; }
+.coll-chip .coll-dot { width: 8px; height: 8px; border-radius: 50%; background: #878580; }
+/* state chips: tinted with their accent like a selected Flexoki chip */
+.coll-chip.is-hc   { --c: #D0A215; }
+.coll-chip.is-easy { --c: #4385BE; }
+.coll-chip.is-over { --c: #D14D41; }
+.coll-chip.is-hc, .coll-chip.is-easy, .coll-chip.is-over {
+  background: rgba(52,51,49,.92);
+  background: color-mix(in srgb, color-mix(in srgb, var(--c) 22%, #343331) 92%, transparent);
+  border-color: color-mix(in srgb, var(--c) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 0 rgba(0,0,0,.7), 0 8px 20px -8px rgba(0,0,0,.75);
+}
+.coll-chip.is-hc .coll-dot { background: #D0A215; box-shadow: 0 0 6px #D0A215; }
+.coll-chip.is-easy .coll-dot { background: #4385BE; }
+.coll-chip.is-over .coll-dot { background: #D14D41; }
+.coll-chip .coll-sub { font-weight: 400; color: #B7B5AC; }
 .coll-best {
   position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1px;
   pointer-events: none; z-index: 3; border-radius: 1px;
 }
-.coll-best.hc   { background: #f5c442; box-shadow: 0 0 4px rgba(245,196,66,.8); }
-.coll-best.easy { background: rgba(120,190,255,.6); }
+.coll-best.hc   { background: #D0A215; box-shadow: 0 0 4px rgba(208,162,21,.8), inset 0 1px 0 rgba(255,255,255,.3); }
+.coll-best.easy { background: rgba(67,133,190,.75); }
 /* top centre: top-left is Stash's rating ribbon and selection box, top-right
    the studio overlay, the bottom corners specs and ScriptBadges */
 .coll-badge {
   position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
   z-index: 2; pointer-events: none;
   padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600;
-  color: #fff; background: rgba(0,0,0,.72); border: 1px solid rgba(245,196,66,.6);
+  color: #E6E4D9; background: rgba(16,15,15,.8); border: 1px solid rgba(208,162,21,.65);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 3px rgba(0,0,0,.6);
   white-space: nowrap;
 }
-.coll-badge .coll-easy { color: #9ecbff; font-weight: 500; }
+.coll-badge .coll-easy { color: #6FA3D6; font-weight: 500; }
 .scene-card-preview { position: relative; }
-.coll-nav svg { width: 1em; height: 1em; }
+.coll-nav svg { width: 1em; height: 1em; color: #DA702C; }
 .coll-nav a.coll-missing { opacity: .5; }
+/* the lit tab: Flexoki orange chip. btn-primary in the selector so it outranks
+   Bootstrap's .btn-primary:not(:disabled):not(.disabled).active */
+.coll-nav a.btn.btn-primary.active {
+  background: #343331;
+  background: color-mix(in srgb, #DA702C 22%, #343331);
+  border-color: color-mix(in srgb, #DA702C 50%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+  color: #E6E4D9;
+}
 /* a tab that is not the current page never keeps a pressed/focus look */
 .coll-nav a.btn:not(.active):not(:hover) {
   background-color: transparent !important; border-color: transparent !important; box-shadow: none !important;
